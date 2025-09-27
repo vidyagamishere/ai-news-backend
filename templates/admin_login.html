@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Login - AI News{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+        <div class="card shadow-lg border-0">
+            <div class="card-header text-center">
+                <i class="fas fa-shield-alt fa-2x mb-2"></i>
+                <h4>Admin Login</h4>
+                <p class="mb-0">Secure access to AI News Database</p>
+            </div>
+            <div class="card-body p-4">
+                <!-- Email Input Step -->
+                <div id="email-step">
+                    <form id="email-form">
+                        <div class="mb-3">
+                            <label for="email" class="form-label">
+                                <i class="fas fa-envelope me-2"></i>Admin Email
+                            </label>
+                            <input type="email" class="form-control form-control-lg" id="email" 
+                                   value="admin@vidyagam.com" readonly 
+                                   style="background-color: #f8f9fa;">
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-lg w-100" id="send-otp-btn">
+                            <i class="fas fa-paper-plane me-2"></i>Send OTP
+                        </button>
+                    </form>
+                </div>
+
+                <!-- OTP Verification Step -->
+                <div id="otp-step" style="display: none;">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        OTP has been sent to <strong>admin@vidyagam.com</strong>
+                    </div>
+                    <form id="otp-form">
+                        <div class="mb-3">
+                            <label for="otp" class="form-label">
+                                <i class="fas fa-key me-2"></i>Enter OTP
+                            </label>
+                            <input type="text" class="form-control form-control-lg text-center" 
+                                   id="otp" placeholder="000000" maxlength="6" 
+                                   style="font-size: 24px; letter-spacing: 5px;">
+                        </div>
+                        <button type="submit" class="btn btn-success btn-lg w-100" id="verify-otp-btn">
+                            <i class="fas fa-check me-2"></i>Verify & Login
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary mt-2 w-100" id="back-btn">
+                            <i class="fas fa-arrow-left me-2"></i>Back to Email
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Loading and Messages -->
+                <div id="loading" style="display: none;" class="text-center py-3">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 mb-0">Processing...</p>
+                </div>
+
+                <div id="message-area" class="mt-3"></div>
+            </div>
+            
+            <div class="card-footer text-center bg-light">
+                <small class="text-muted">
+                    <i class="fas fa-lock me-1"></i>Secured with email OTP verification
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Debug Info (only shown if no email service) -->
+<div id="debug-info" class="row justify-content-center mt-4" style="display: none;">
+    <div class="col-md-6 col-lg-5">
+        <div class="alert alert-warning">
+            <strong><i class="fas fa-bug me-2"></i>Debug Mode:</strong>
+            <div id="debug-otp" class="mt-2"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$(document).ready(function() {
+    const emailStep = $('#email-step');
+    const otpStep = $('#otp-step');
+    const loading = $('#loading');
+    const messageArea = $('#message-area');
+    const debugInfo = $('#debug-info');
+    
+    // Send OTP
+    $('#email-form').on('submit', function(e) {
+        e.preventDefault();
+        
+        loading.show();
+        emailStep.hide();
+        messageArea.empty();
+        
+        $.ajax({
+            url: '/send_otp',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                email: $('#email').val()
+            }),
+            success: function(response) {
+                loading.hide();
+                
+                if (response.success) {
+                    otpStep.show();
+                    $('#otp').focus();
+                    
+                    // Show debug OTP if available
+                    if (response.debug_otp) {
+                        $('#debug-otp').html(`Your OTP: <strong style="font-size: 18px; color: #007bff;">${response.debug_otp}</strong>`);
+                        debugInfo.show();
+                    }
+                    
+                    showMessage('success', response.message);
+                } else {
+                    emailStep.show();
+                    showMessage('danger', response.message);
+                }
+            },
+            error: function() {
+                loading.hide();
+                emailStep.show();
+                showMessage('danger', 'Failed to send OTP. Please try again.');
+            }
+        });
+    });
+    
+    // Verify OTP
+    $('#otp-form').on('submit', function(e) {
+        e.preventDefault();
+        
+        const otp = $('#otp').val();
+        if (otp.length !== 6) {
+            showMessage('warning', 'Please enter a 6-digit OTP');
+            return;
+        }
+        
+        loading.show();
+        otpStep.hide();
+        messageArea.empty();
+        
+        $.ajax({
+            url: '/verify_otp',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                email: $('#email').val(),
+                otp: otp
+            }),
+            success: function(response) {
+                loading.hide();
+                
+                if (response.success) {
+                    showMessage('success', response.message + ' Redirecting to dashboard...');
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1500);
+                } else {
+                    otpStep.show();
+                    showMessage('danger', response.message);
+                    $('#otp').val('').focus();
+                }
+            },
+            error: function() {
+                loading.hide();
+                otpStep.show();
+                showMessage('danger', 'OTP verification failed. Please try again.');
+                $('#otp').val('').focus();
+            }
+        });
+    });
+    
+    // Back button
+    $('#back-btn').on('click', function() {
+        otpStep.hide();
+        emailStep.show();
+        debugInfo.hide();
+        messageArea.empty();
+        $('#otp').val('');
+    });
+    
+    // Auto-format OTP input
+    $('#otp').on('input', function() {
+        this.value = this.value.replace(/[^0-9]/g, '');
+    });
+    
+    function showMessage(type, message) {
+        messageArea.html(`
+            <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'warning' ? 'exclamation-triangle' : 'exclamation-circle'} me-2"></i>
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        `);
+    }
+});
+</script>
+{% endblock %}

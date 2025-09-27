@@ -1,0 +1,311 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - AI News{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>
+                <i class="fas fa-tachometer-alt me-2"></i>Database Management Dashboard
+            </h1>
+            <div class="text-end">
+                <small class="text-muted d-block">PostgreSQL Database</small>
+                <small class="text-muted">{{ tables|length }} tables available</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Database Statistics Cards -->
+<div class="row mb-4">
+    {% for table in tables %}
+    <div class="col-xl-3 col-lg-4 col-md-6 mb-3">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="card-title text-primary mb-2">
+                            <i class="fas fa-table me-2"></i>{{ table.name }}
+                        </h6>
+                        <h4 class="text-dark mb-0">{{ "{:,}".format(table.count) }}</h4>
+                        <small class="text-muted">records</small>
+                    </div>
+                    <div class="dropdown">
+                        <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" 
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-cog"></i>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('view_table', table_name=table.name) }}">
+                                    <i class="fas fa-eye me-2"></i>View Data
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="#" onclick="downloadTable('{{ table.name }}')">
+                                    <i class="fas fa-download me-2"></i>Download CSV
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="#" onclick="uploadData('{{ table.name }}')">
+                                    <i class="fas fa-upload me-2"></i>Upload Data
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item text-success" href="#" onclick="addRecord('{{ table.name }}')">
+                                    <i class="fas fa-plus me-2"></i>Add Record
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent">
+                <a href="{{ url_for('view_table', table_name=table.name) }}" 
+                   class="btn btn-primary btn-sm w-100">
+                    <i class="fas fa-eye me-2"></i>Manage Table
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Quick Actions -->
+<div class="row">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-bolt me-2"></i>Quick Actions
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-outline-primary w-100" onclick="triggerScraping()">
+                            <i class="fas fa-sync-alt me-2"></i>Trigger Scraping
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-outline-success w-100" onclick="updateSources()">
+                            <i class="fas fa-rss me-2"></i>Update RSS Sources
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-outline-info w-100" onclick="viewSystemHealth()">
+                            <i class="fas fa-heartbeat me-2"></i>System Health
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-outline-warning w-100" onclick="exportAllData()">
+                            <i class="fas fa-file-export me-2"></i>Export All Data
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- System Status -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-info-circle me-2"></i>System Information
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <strong>Database:</strong> PostgreSQL<br>
+                        <strong>Connection:</strong> Railway Cloud
+                    </div>
+                    <div class="col-md-4">
+                        <strong>Admin User:</strong> {{ admin_email }}<br>
+                        <strong>Session:</strong> Active
+                    </div>
+                    <div class="col-md-4">
+                        <strong>Total Tables:</strong> {{ tables|length }}<br>
+                        <strong>Total Records:</strong> {{ tables|sum(attribute='count')|string|replace(',', '') }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-upload me-2"></i>Upload Data
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <input type="hidden" id="uploadTableName" name="table_name">
+                    <div class="mb-3">
+                        <label for="csvFile" class="form-label">Select CSV File</label>
+                        <input type="file" class="form-control" id="csvFile" name="file" accept=".csv" required>
+                        <div class="form-text">Upload CSV file with matching column names</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="performUpload()">
+                    <i class="fas fa-upload me-2"></i>Upload
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Loading Modal -->
+<div class="modal fade" id="loadingModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-body text-center p-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-3 mb-0" id="loadingMessage">Processing...</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function downloadTable(tableName) {
+    $('#loadingMessage').text('Preparing download...');
+    $('#loadingModal').modal('show');
+    
+    // Create a temporary form to download
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/download/' + tableName;
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+    
+    setTimeout(() => {
+        $('#loadingModal').modal('hide');
+    }, 2000);
+}
+
+function uploadData(tableName) {
+    $('#uploadTableName').val(tableName);
+    $('#uploadModal .modal-title').html(`<i class="fas fa-upload me-2"></i>Upload Data to ${tableName}`);
+    $('#uploadModal').modal('show');
+}
+
+function addRecord(tableName) {
+    window.location.href = `/table/${tableName}?action=add`;
+}
+
+function performUpload() {
+    const formData = new FormData();
+    const fileInput = document.getElementById('csvFile');
+    const tableName = document.getElementById('uploadTableName').value;
+    
+    if (!fileInput.files[0]) {
+        alert('Please select a CSV file');
+        return;
+    }
+    
+    formData.append('file', fileInput.files[0]);
+    formData.append('table_name', tableName);
+    
+    $('#uploadModal').modal('hide');
+    $('#loadingMessage').text('Uploading data...');
+    $('#loadingModal').modal('show');
+    
+    fetch('/upload_data', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        $('#loadingModal').modal('hide');
+        if (data.success) {
+            alert(`Upload successful: ${data.message}`);
+            location.reload();
+        } else {
+            alert(`Upload failed: ${data.message}`);
+        }
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Upload failed: ' + error);
+    });
+}
+
+function triggerScraping() {
+    $('#loadingMessage').text('Triggering scraping...');
+    $('#loadingModal').modal('show');
+    
+    fetch('https://ai-news-scraper-production.up.railway.app/scrape', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({force: true})
+    })
+    .then(response => response.json())
+    .then(data => {
+        $('#loadingModal').modal('hide');
+        alert(`Scraping completed: ${data.new_articles || 0} new articles`);
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Scraping failed: ' + error);
+    });
+}
+
+function updateSources() {
+    $('#loadingMessage').text('Updating RSS sources...');
+    $('#loadingModal').modal('show');
+    
+    fetch('https://ai-news-scraper-production.up.railway.app/admin/update-sources', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-admin-key': 'update-sources-2025'
+        },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        $('#loadingModal').modal('hide');
+        alert(`Sources updated: ${data.sources_updated || 0} sources`);
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Source update failed: ' + error);
+    });
+}
+
+function viewSystemHealth() {
+    window.open('https://ai-news-scraper-production.up.railway.app/health', '_blank');
+}
+
+function exportAllData() {
+    $('#loadingMessage').text('Exporting all data...');
+    $('#loadingModal').modal('show');
+    
+    // This would trigger a full database export
+    setTimeout(() => {
+        $('#loadingModal').modal('hide');
+        alert('Export feature coming soon!');
+    }, 2000);
+}
+</script>
+{% endblock %}

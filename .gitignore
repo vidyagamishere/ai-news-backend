@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+test.db*
+
+# Testing
+test*.py
+test*.db
+archive/
+
+# Development files
+main_*.py
+requirements_*.txt
+*backup*
+*test*
+*minimal*
+*debug*
+*neon*
+*asyncpg*
+*working*
+*simple*
+*clean*
+
+# Documentation
+*.md
+!README.md
+
+# Environment
+.env
+.env.local
+.env.production
+.env.development
+
+# Deployment
+railway.toml*
+runtime.txt*
+Procfile.disabled
+*.disabled*
+
+# Migration files
+migrate_*.py
+migration_*.py
+*.sql
+
+# Cache
+.cache/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+token.txt
+*.bak
+*.backup

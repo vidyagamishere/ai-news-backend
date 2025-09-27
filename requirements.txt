@@ -1,0 +1,21 @@
+# Complete requirements for Railway FastAPI deployment with PostgreSQL-only support
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+python-dotenv>=0.19.0
+requests>=2.31.0
+feedparser>=6.0.10
+beautifulsoup4>=4.12.0
+PyJWT>=2.8.0
+python-jose[cryptography]>=3.3.0
+anthropic>=0.25.0
+lxml>=4.9.0
+pytz>=2023.3
+python-dateutil>=2.8.0
+jinja2>=3.1.0
+sendgrid>=6.9.7
+email-validator>=2.0.0
+
+# PostgreSQL database support (required)
+psycopg2-binary>=2.9.7

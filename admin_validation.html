@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI News Scraper - Admin Source Validation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f7fa;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            margin-bottom: 15px;
+            color: #444;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .control-group label {
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .control-group select,
+        .control-group input {
+            padding: 8px;
+            border: 2px solid #e1e5e9;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .control-group select:focus,
+        .control-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5a67d8;
+        }
+        
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #38a169;
+        }
+        
+        .btn-warning {
+            background: #ed8936;
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            background: #dd7724;
+        }
+        
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #e53e3e;
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .metric {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            border-left: 4px solid #667eea;
+        }
+        
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2d3748;
+        }
+        
+        .metric-label {
+            font-size: 12px;
+            color: #718096;
+            text-transform: uppercase;
+            margin-top: 5px;
+        }
+        
+        .success { color: #38a169; border-left-color: #38a169; }
+        .warning { color: #d69e2e; border-left-color: #d69e2e; }
+        .error { color: #e53e3e; border-left-color: #e53e3e; }
+        
+        .source-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .source-item {
+            padding: 15px;
+            border: 1px solid #e2e8f0;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+        
+        .source-item:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .source-item.success {
+            border-left: 4px solid #38a169;
+            background: #f0fff4;
+        }
+        
+        .source-item.warning {
+            border-left: 4px solid #d69e2e;
+            background: #fffbf0;
+        }
+        
+        .source-item.error {
+            border-left: 4px solid #e53e3e;
+            background: #fff5f5;
+        }
+        
+        .source-header {
+            display: flex;
+            justify-content: between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        
+        .source-name {
+            font-weight: bold;
+            font-size: 16px;
+            color: #2d3748;
+            margin-bottom: 5px;
+        }
+        
+        .source-url {
+            font-size: 12px;
+            color: #718096;
+            word-break: break-all;
+        }
+        
+        .source-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+        
+        .stat {
+            background: white;
+            padding: 8px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .source-message {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .test-single {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .test-single h3 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 10px;
+            align-items: end;
+        }
+        
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #e2e8f0;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 14px;
+            font-weight: 500;
+            color: #718096;
+            transition: all 0.3s ease;
+        }
+        
+        .tab.active {
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .health-score {
+            font-size: 36px;
+            font-weight: bold;
+            text-align: center;
+            padding: 20px;
+            border-radius: 50%;
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+        
+        .health-excellent { background: #38a169; }
+        .health-good { background: #48bb78; }
+        .health-fair { background: #d69e2e; }
+        .health-poor { background: #e53e3e; }
+        
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            border-left: 4px solid;
+        }
+        
+        .alert-info {
+            background: #ebf8ff;
+            border-color: #3182ce;
+            color: #2c5282;
+        }
+        
+        .alert-success {
+            background: #f0fff4;
+            border-color: #38a169;
+            color: #276749;
+        }
+        
+        .alert-warning {
+            background: #fffbf0;
+            border-color: #d69e2e;
+            color: #975a16;
+        }
+        
+        .alert-error {
+            background: #fff5f5;
+            border-color: #e53e3e;
+            color: #c53030;
+        }
+        
+        .filters {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .filters h4 {
+            margin-bottom: 10px;
+            color: #495057;
+        }
+        
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 6px 12px;
+            border: 1px solid #dee2e6;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s ease;
+        }
+        
+        .filter-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 AI News Scraper - Source Validation</h1>
+            <p>Admin panel for testing and validating RSS feed sources</p>
+        </div>
+
+        <!-- API Key Input -->
+        <div class="card">
+            <h2>🔐 Authentication</h2>
+            <div class="control-group">
+                <label for="adminKey">Admin API Key:</label>
+                <input type="password" id="adminKey" placeholder="Enter your admin API key">
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab(event, 'bulk-validation')">🚀 Bulk Validation</button>
+            <button class="tab" onclick="switchTab(event, 'single-test')">🔬 Single Test</button>
+            <button class="tab" onclick="switchTab(event, 'health-check')">❤️ Health Check</button>
+            <button class="tab" onclick="switchTab(event, 'quick-tests')">⚡ Quick Tests</button>
+        </div>
+
+        <!-- Bulk Validation Tab -->
+        <div id="bulk-validation" class="tab-content active">
+            <div class="card">
+                <h2>🚀 Bulk Source Validation</h2>
+                
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="contentType">Content Type:</label>
+                        <select id="contentType">
+                            <option value="">All Types</option>
+                            <option value="newsletters">📬 Newsletters</option>
+                            <option value="blogs">✍️ Blogs</option>
+                            <option value="podcasts">🎧 Podcasts</option>
+                            <option value="videos">📹 Videos</option>
+                            <option value="events">📅 Events</option>
+                            <option value="learn">🎓 Learning</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="priority">Priority:</label>
+                        <select id="priority">
+                            <option value="">All Priorities</option>
+                            <option value="1">Priority 1 (High)</option>
+                            <option value="2">Priority 2</option>
+                            <option value="3">Priority 3</option>
+                            <option value="4">Priority 4</option>
+                            <option value="5">Priority 5 (Low)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="timeout">Timeout (seconds):</label>
+                        <input type="number" id="timeout" value="10" min="5" max="30">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="maxConcurrent">Max Concurrent:</label>
+                        <input type="number" id="maxConcurrent" value="5" min="1" max="10">
+                    </div>
+                </div>
+                
+                <button class="btn btn-primary" onclick="validateSources()">
+                    🔍 Validate Sources
+                </button>
+            </div>
+        </div>
+
+        <!-- Single Test Tab -->
+        <div id="single-test" class="tab-content">
+            <div class="card">
+                <h2>🔬 Single Source Test</h2>
+                
+                <div class="test-single">
+                    <h3>Test Individual RSS Feed</h3>
+                    <div class="form-row">
+                        <div class="control-group">
+                            <label for="testUrl">RSS URL:</label>
+                            <input type="url" id="testUrl" placeholder="https://example.com/feed.xml">
+                        </div>
+                        <div class="control-group">
+                            <label for="testName">Source Name:</label>
+                            <input type="text" id="testName" placeholder="Test Source">
+                        </div>
+                        <button class="btn btn-primary" onclick="validateSingleSource()">
+                            🧪 Test Feed
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Health Check Tab -->
+        <div id="health-check" class="tab-content">
+            <div class="card">
+                <h2>❤️ System Health Check</h2>
+                <p>Comprehensive health analysis of all configured sources</p>
+                
+                <button class="btn btn-success" onclick="runHealthCheck()">
+                    🏥 Run Health Check
+                </button>
+            </div>
+        </div>
+
+        <!-- Quick Tests Tab -->
+        <div id="quick-tests" class="tab-content">
+            <div class="card">
+                <h2>⚡ Quick Tests</h2>
+                <p>Fast validation options for common scenarios</p>
+                
+                <div class="controls">
+                    <button class="btn btn-warning" onclick="validatePrioritySources()">
+                        🎯 Test Priority Sources (1-2)
+                    </button>
+                    <button class="btn btn-primary" onclick="validateNewsletters()">
+                        📬 Test Newsletters Only
+                    </button>
+                    <button class="btn btn-success" onclick="quickTest()">
+                        ⚡ Quick Test (Top 10)
+                    </button>
+                    <button class="btn btn-primary" onclick="getSystemStatus()">
+                        📊 System Status
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <span>Validating sources... This may take a moment.</span>
+        </div>
+
+        <!-- Results Section -->
+        <div id="results" class="results">
+            <div class="card">
+                <h2>📊 Validation Results</h2>
+                
+                <!-- Summary Metrics -->
+                <div id="summary" class="summary"></div>
+                
+                <!-- Filters -->
+                <div class="filters">
+                    <h4>Filter Results:</h4>
+                    <div class="filter-buttons">
+                        <button class="filter-btn active" onclick="filterResults('all')">All</button>
+                        <button class="filter-btn" onclick="filterResults('success')">✅ Success</button>
+                        <button class="filter-btn" onclick="filterResults('warning')">⚠️ Warning</button>
+                        <button class="filter-btn" onclick="filterResults('error')">❌ Error</button>
+                    </div>
+                </div>
+                
+                <!-- Source Results -->
+                <div id="sourceResults" class="source-list"></div>
+            </div>
+        </div>
+
+        <!-- Health Results -->
+        <div id="healthResults" class="results">
+            <div class="card">
+                <h2>🏥 Health Check Results</h2>
+                <div id="healthContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentResults = [];
+        let currentFilter = 'all';
+        
+        // API base URL - update this to match your deployment
+        const API_BASE = window.location.origin;
+        
+        function getAdminKey() {
+            const key = document.getElementById('adminKey').value;
+            if (!key) {
+                alert('Please enter your admin API key first');
+                return null;
+            }
+            return key;
+        }
+        
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('healthResults').style.display = 'none';
+        }
+        
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+        
+        function showResults() {
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('healthResults').style.display = 'none';
+        }
+        
+        function showHealthResults() {
+            document.getElementById('healthResults').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+        }
+        
+        function switchTab(evt, tabName) {
+            // Hide all tab contents
+            const tabContents = document.getElementsByClassName('tab-content');
+            for (let content of tabContents) {
+                content.classList.remove('active');
+            }
+            
+            // Remove active class from all tabs
+            const tabs = document.getElementsByClassName('tab');
+            for (let tab of tabs) {
+                tab.classList.remove('active');
+            }
+            
+            // Show selected tab and mark as active
+            document.getElementById(tabName).classList.add('active');
+            evt.target.classList.add('active');
+        }
+        
+        async function makeApiCall(endpoint, options = {}) {
+            const adminKey = getAdminKey();
+            if (!adminKey) return null;
+            
+            const defaultOptions = {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Admin-Key': adminKey
+                }
+            };
+            
+            const finalOptions = { ...defaultOptions, ...options };
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin${endpoint}`, finalOptions);
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.message || `HTTP ${response.status}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API call failed:', error);
+                alert(`API call failed: ${error.message}`);
+                return null;
+            }
+        }
+        
+        async function validateSources() {
+            showLoading();
+            
+            const data = {
+                content_type: document.getElementById('contentType').value || undefined,
+                priority: document.getElementById('priority').value ? parseInt(document.getElementById('priority').value) : undefined,
+                timeout: parseInt(document.getElementById('timeout').value),
+                max_concurrent: parseInt(document.getElementById('maxConcurrent').value)
+            };
+            
+            const result = await makeApiCall('/validate-sources', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            });
+            
+            hideLoading();
+            
+            if (result) {
+                currentResults = result.results || [];
+                displayResults(result);
+                showResults();
+            }
+        }
+        
+        async function validateSingleSource() {
+            const url = document.getElementById('testUrl').value;
+            const name = document.getElementById('testName').value || 'Test Source';
+            
+            if (!url) {
+                alert('Please enter an RSS URL to test');
+                return;
+            }
+            
+            showLoading();
+            
+            const data = {
+                rss_url: url,
+                name: name,
+                content_type: 'test'
+            };
+            
+            const result = await makeApiCall('/validate-single-source', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            });
+            
+            hideLoading();
+            
+            if (result) {
+                currentResults = [result.source_validation];
+                displayResults({
+                    results: currentResults,
+                    summary: {
+                        total_sources: 1,
+                        successful: result.source_validation.status === 'success' ? 1 : 0,
+                        warnings: result.source_validation.status === 'warning' ? 1 : 0,
+                        errors: result.source_validation.status === 'error' ? 1 : 0,
+                        success_rate: result.source_validation.status !== 'error' ? 100 : 0
+                    }
+                });
+                showResults();
+            }
+        }
+        
+        async function runHealthCheck() {
+            showLoading();
+            
+            const result = await makeApiCall('/health-check');
+            
+            hideLoading();
+            
+            if (result) {
+                displayHealthResults(result);
+                showHealthResults();
+            }
+        }
+        
+        async function validatePrioritySources() {
+            showLoading();
+            
+            const result = await makeApiCall('/validate-priority-sources', {
+                method: 'POST',
+                body: JSON.stringify({ max_priority: 2 })
+            });
+            
+            hideLoading();
+            
+            if (result) {
+                currentResults = result.results || [];
+                displayResults(result);
+                showResults();
+            }
+        }
+        
+        async function validateNewsletters() {
+            showLoading();
+            
+            const result = await makeApiCall('/validate-newsletters');
+            
+            hideLoading();
+            
+            if (result) {
+                currentResults = result.results || [];
+                displayResults(result);
+                showResults();
+            }
+        }
+        
+        async function quickTest() {
+            showLoading();
+            
+            const result = await makeApiCall('/quick-test');
+            
+            hideLoading();
+            
+            if (result) {
+                currentResults = result.results || [];
+                displayResults(result);
+                showResults();
+            }
+        }
+        
+        async function getSystemStatus() {
+            showLoading();
+            
+            const result = await makeApiCall('/validation-status');
+            
+            hideLoading();
+            
+            if (result) {
+                alert(`System Status: ${result.system_status}\nTotal Sources: ${result.total_configured_sources}\nContent Types: ${result.content_types.join(', ')}`);
+            }
+        }
+        
+        function displayResults(data) {
+            const summary = data.summary || {};
+            const results = data.results || [];
+            
+            // Display summary metrics
+            const summaryHTML = `
+                <div class="metric success">
+                    <div class="metric-value">${summary.successful || 0}</div>
+                    <div class="metric-label">Successful</div>
+                </div>
+                <div class="metric warning">
+                    <div class="metric-value">${summary.warnings || 0}</div>
+                    <div class="metric-label">Warnings</div>
+                </div>
+                <div class="metric error">
+                    <div class="metric-value">${summary.errors || 0}</div>
+                    <div class="metric-label">Errors</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${summary.success_rate || 0}%</div>
+                    <div class="metric-label">Success Rate</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${summary.total_entries || 0}</div>
+                    <div class="metric-label">Total Entries</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${summary.avg_response_time || 0}s</div>
+                    <div class="metric-label">Avg Response Time</div>
+                </div>
+            `;
+            
+            document.getElementById('summary').innerHTML = summaryHTML;
+            
+            // Display source results
+            displaySourceResults(results);
+        }
+        
+        function displaySourceResults(results) {
+            const container = document.getElementById('sourceResults');
+            
+            if (!results || results.length === 0) {
+                container.innerHTML = '<p>No results to display</p>';
+                return;
+            }
+            
+            const resultsHTML = results.map(source => {
+                const statusClass = source.status;
+                const statusEmoji = {
+                    'success': '✅',
+                    'warning': '⚠️',
+                    'error': '❌'
+                }[source.status] || '❓';
+                
+                return `
+                    <div class="source-item ${statusClass}" data-status="${source.status}">
+                        <div class="source-header">
+                            <div>
+                                <div class="source-name">${statusEmoji} ${source.name}</div>
+                                <div class="source-url">${source.url}</div>
+                            </div>
+                        </div>
+                        
+                        <div class="source-stats">
+                            <div class="stat">
+                                <strong>${source.entries_count || 0}</strong><br>
+                                <small>Entries</small>
+                            </div>
+                            <div class="stat">
+                                <strong>${source.response_time || 0}s</strong><br>
+                                <small>Response Time</small>
+                            </div>
+                            <div class="stat">
+                                <strong>P${source.priority || 'N/A'}</strong><br>
+                                <small>Priority</small>
+                            </div>
+                            <div class="stat">
+                                <strong>${source.content_type || 'N/A'}</strong><br>
+                                <small>Type</small>
+                            </div>
+                        </div>
+                        
+                        <div class="source-message ${statusClass}">
+                            ${source.message}
+                        </div>
+                        
+                        ${source.sample_titles && source.sample_titles.length > 0 ? `
+                            <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                                <strong>Recent titles:</strong><br>
+                                ${source.sample_titles.slice(0, 2).map(title => `• ${title}`).join('<br>')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+            
+            container.innerHTML = resultsHTML;
+        }
+        
+        function displayHealthResults(data) {
+            const healthReport = data.health_report || {};
+            const summary = data.summary || {};
+            
+            const score = healthReport.overall_health_score || 0;
+            let scoreClass = 'health-poor';
+            if (score >= 90) scoreClass = 'health-excellent';
+            else if (score >= 75) scoreClass = 'health-good';
+            else if (score >= 50) scoreClass = 'health-fair';
+            
+            const healthHTML = `
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <div class="health-score ${scoreClass}">${score}%</div>
+                    <h3>Overall Health Score</h3>
+                </div>
+                
+                <div class="summary">
+                    <div class="metric">
+                        <div class="metric-value">${healthReport.problematic_sources || 0}</div>
+                        <div class="metric-label">Problematic Sources</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${healthReport.slow_sources || 0}</div>
+                        <div class="metric-label">Slow Sources</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${healthReport.stale_sources || 0}</div>
+                        <div class="metric-label">Stale Sources</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${summary.total_sources || 0}</div>
+                        <div class="metric-label">Total Sources</div>
+                    </div>
+                </div>
+                
+                ${healthReport.problematic_details && healthReport.problematic_details.length > 0 ? `
+                    <div class="alert alert-error">
+                        <h4>🚨 Problematic Sources</h4>
+                        ${healthReport.problematic_details.map(source => `
+                            <div>• <strong>${source.name}</strong>: ${source.message}</div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+                
+                ${healthReport.slow_details && healthReport.slow_details.length > 0 ? `
+                    <div class="alert alert-warning">
+                        <h4>🐌 Slow Sources</h4>
+                        ${healthReport.slow_details.map(source => `
+                            <div>• <strong>${source.name}</strong>: ${source.response_time}s</div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+                
+                ${healthReport.stale_details && healthReport.stale_details.length > 0 ? `
+                    <div class="alert alert-info">
+                        <h4>📰 Stale Sources</h4>
+                        ${healthReport.stale_details.map(source => `
+                            <div>• <strong>${source.name}</strong>: ${source.days_old} days old</div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+            `;
+            
+            document.getElementById('healthContent').innerHTML = healthHTML;
+        }
+        
+        function filterResults(status) {
+            currentFilter = status;
+            
+            // Update filter button states
+            const filterButtons = document.querySelectorAll('.filter-btn');
+            filterButtons.forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Filter and display results
+            const filteredResults = status === 'all' ? currentResults : currentResults.filter(r => r.status === status);
+            displaySourceResults(filteredResults);
+        }
+        
+        // Initialize with system status check
+        document.addEventListener('DOMContentLoaded', function() {
+            // You can add any initialization code here
+            console.log('AI News Scraper Admin Validation Panel loaded');
+        });
+    </script>
+</body>
+</html>

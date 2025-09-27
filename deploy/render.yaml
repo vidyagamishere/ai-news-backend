@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: ai-news-scraper
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    branch: main
+    healthCheckPath: /api/health
+    envVars:
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-3-haiku-20240307
+      - key: DATABASE_PATH
+        value: /app/data/ai_news.db
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: CACHE_ENABLED
+        value: true
+      - key: RATE_LIMIT_REQUESTS_PER_MINUTE
+        value: 60
+    disk:
+      name: ai-news-data
+      mountPath: /app/data
+      sizeGB: 1
