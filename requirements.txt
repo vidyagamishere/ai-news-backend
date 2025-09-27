@@ -19,3 +19,7 @@ email-validator>=2.0.0
 
 # PostgreSQL database support (required)
 psycopg2-binary>=2.9.7
+
+# Scraping dependencies for Crawl4AI and Mistral integration
+aiohttp>=3.9.0
+pandas>=2.0.0

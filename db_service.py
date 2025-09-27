@@ -656,6 +656,80 @@ class PostgreSQLService:
             logger.error(f"❌ Failed to migrate table {table_name}: {e}")
             raise e
     
+    def get_ai_sources(self) -> List[Dict[str, Any]]:
+        """Get all AI sources for scraping"""
+        try:
+            query = """
+                SELECT id, name, url, website, category, priority, is_active
+                FROM ai_sources 
+                WHERE is_active = TRUE 
+                ORDER BY priority DESC, name
+            """
+            sources = self.execute_query(query, fetch_all=True)
+            
+            if not sources:
+                # Return default sources if none exist
+                logger.warning("⚠️ No AI sources found in database, using defaults")
+                return [
+                    {'id': 1, 'name': 'OpenAI Blog', 'url': 'https://openai.com/blog/', 'website': 'https://openai.com/blog/', 'category': 'company', 'priority': 10, 'is_active': True},
+                    {'id': 2, 'name': 'Google AI Blog', 'url': 'https://ai.googleblog.com/', 'website': 'https://ai.googleblog.com/', 'category': 'company', 'priority': 10, 'is_active': True},
+                    {'id': 3, 'name': 'Anthropic News', 'url': 'https://www.anthropic.com/news', 'website': 'https://www.anthropic.com/news', 'category': 'company', 'priority': 9, 'is_active': True},
+                    {'id': 4, 'name': 'DeepMind Blog', 'url': 'https://deepmind.google/discover/blog/', 'website': 'https://deepmind.google/discover/blog/', 'category': 'research', 'priority': 9, 'is_active': True},
+                ]
+            
+            return [dict(source) for source in sources]
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get AI sources: {e}")
+            return []
+    
+    def insert_article(self, article_data: Dict[str, Any]) -> bool:
+        """Insert scraped article into articles table"""
+        try:
+            # Check if article already exists
+            existing_query = "SELECT id FROM articles WHERE url = %s"
+            existing = self.execute_query(existing_query, (article_data['url'],), fetch_one=True)
+            
+            if existing:
+                logger.info(f"📄 Article already exists: {article_data.get('title', 'Unknown')}")
+                return False
+            
+            # Insert new article
+            insert_query = """
+                INSERT INTO articles (
+                    id, title, description, content_summary, url, source, 
+                    category, content_type, significance_score, published_date, 
+                    scraped_date, llm_processed, is_current_day
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+            """
+            
+            values = (
+                article_data.get('id'),
+                article_data.get('title'),
+                article_data.get('description'),
+                article_data.get('content_summary'),
+                article_data.get('url'),
+                article_data.get('source'),
+                article_data.get('category', 'ai_news'),
+                article_data.get('content_type', 'article'),
+                article_data.get('significance_score', 5.0),
+                article_data.get('published_date'),
+                article_data.get('scraped_date'),
+                article_data.get('llm_processed', False),
+                True  # is_current_day
+            )
+            
+            self.execute_query(insert_query, values, fetch_all=False)
+            logger.info(f"✅ Article inserted: {article_data.get('title', 'Unknown')}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to insert article: {e}")
+            logger.error(f"Article data: {article_data}")
+            return False
+
     def close_connections(self):
         """Close all connections in the pool"""
         if hasattr(self, 'connection_pool'):

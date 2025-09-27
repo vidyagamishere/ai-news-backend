@@ -154,7 +154,7 @@ class AuthService:
                 
                 # Ensure admin flag defaults to False if column doesn't exist yet
                 if 'is_admin' not in user_dict or user_dict['is_admin'] is None:
-                    user_dict['is_admin'] = email == 'admin@vidyagam.com'
+                    user_dict['is_admin'] = email == 'admin@vidygam.com'
                 
                 logger.info(f"✅ User found: {email} (Admin: {user_dict.get('is_admin', False)})")
                 return user_dict
@@ -179,7 +179,7 @@ class AuthService:
                         if user_dict.get('preferences'):
                             if isinstance(user_dict['preferences'], str):
                                 user_dict['preferences'] = json.loads(user_dict['preferences'])
-                        user_dict['is_admin'] = email == 'admin@vidyagam.com'
+                        user_dict['is_admin'] = email == 'admin@vidygam.com'
                         logger.info(f"✅ User found (fallback): {email} (Admin: {user_dict.get('is_admin', False)})")
                         return user_dict
                 except Exception:
@@ -204,7 +204,7 @@ class AuthService:
             existing_user = self.get_user_by_email(user_data['email'])
             
             # Check if this is an admin user
-            is_admin = user_data.get('email') == 'admin@vidyagam.com'
+            is_admin = user_data.get('email') == 'admin@vidygam.com'
             
             if existing_user:
                 # Update existing user with admin flag
@@ -291,7 +291,7 @@ class AuthService:
                 
                 # Ensure admin flag is preserved
                 if 'is_admin' not in user_dict or user_dict['is_admin'] is None:
-                    user_dict['is_admin'] = user_dict.get('email') == 'admin@vidyagam.com'
+                    user_dict['is_admin'] = user_dict.get('email') == 'admin@vidygam.com'
                 
                 logger.info(f"✅ User preferences updated: {user_id} (Admin: {user_dict.get('is_admin', False)})")
                 return user_dict
@@ -319,7 +319,7 @@ class AuthService:
                         if user_dict.get('preferences'):
                             if isinstance(user_dict['preferences'], str):
                                 user_dict['preferences'] = json.loads(user_dict['preferences'])
-                        user_dict['is_admin'] = user_dict.get('email') == 'admin@vidyagam.com'
+                        user_dict['is_admin'] = user_dict.get('email') == 'admin@vidygam.com'
                         logger.info(f"✅ User preferences updated (fallback): {user_id}")
                         return user_dict
                 except Exception:

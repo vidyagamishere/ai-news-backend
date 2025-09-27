@@ -195,3 +195,67 @@ async def get_content_types(
                 'database': 'postgresql'
             }
         )
+
+
+@router.post("/admin/scrape")
+async def admin_initiate_scraping(
+    current_user: UserResponse = Depends(get_current_user_optional),
+    content_service: ContentService = Depends(get_content_service)
+):
+    """
+    Admin-only endpoint to initiate AI news scraping process
+    Uses Crawl4AI + Mistral-Small-3 as specified in functional requirements
+    """
+    # Check if user is admin
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                'error': 'Admin access required',
+                'message': 'Only admin@vidyagam.com can initiate scraping'
+            }
+        )
+    
+    try:
+        logger.info(f"🔧 Admin scraping initiated by: {current_user.email}")
+        
+        # Import the admin scraping interface
+        from crawl4ai_scraper import AdminScrapingInterface
+        from db_service import get_database_service
+        
+        # Initialize scraping interface
+        db_service = get_database_service()
+        admin_scraper = AdminScrapingInterface(db_service)
+        
+        # Start scraping process
+        result = await admin_scraper.initiate_scraping(current_user.email)
+        
+        if result['success']:
+            logger.info(f"✅ Admin scraping completed: {result['articles_processed']} articles processed")
+            return {
+                'success': True,
+                'message': 'Scraping process completed successfully',
+                'data': result,
+                'admin': current_user.email
+            }
+        else:
+            logger.error(f"❌ Admin scraping failed: {result['message']}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    'error': 'Scraping process failed',
+                    'message': result['message'],
+                    'admin': current_user.email
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Admin scraping endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to initiate scraping',
+                'message': str(e),
+                'admin': current_user.email if current_user else 'unknown'
+            }
+        )

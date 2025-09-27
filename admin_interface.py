@@ -34,7 +34,7 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', 'admin-interface-secret-2025')
 POSTGRES_URL = os.getenv('POSTGRES_URL', "postgresql://postgres:FgvftzrGueiGipLiRRMKMElppasuzBjptZlwPL@autorack.proxy.rlwy.net:51308/railway")
 
 # Admin configuration
-ADMIN_EMAIL = "admin@vidyagam.com"
+ADMIN_EMAIL = "admin@vidygam.com"
 BREVO_API_KEY = os.getenv('BREVO_API_KEY', '')  # Add your Brevo API key
 
 class DatabaseManager:
