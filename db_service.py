@@ -167,7 +167,51 @@ class PostgreSQLService:
                             preferences JSONB DEFAULT '{}',
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             last_login_at TIMESTAMP,
-                            verified_email BOOLEAN DEFAULT FALSE
+                            verified_email BOOLEAN DEFAULT FALSE,
+                            is_admin BOOLEAN DEFAULT FALSE
+                        );
+                    """)
+                    
+                    # Create user_preferences table for detailed preferences as per functional requirements
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS user_preferences (
+                            id SERIAL PRIMARY KEY,
+                            user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
+                            experience_level VARCHAR(50) DEFAULT 'beginner',
+                            professional_roles TEXT[],
+                            newsletter_frequency VARCHAR(20) DEFAULT 'weekly',
+                            email_notifications BOOLEAN DEFAULT TRUE,
+                            breaking_news_alerts BOOLEAN DEFAULT FALSE,
+                            push_notifications BOOLEAN DEFAULT FALSE,
+                            mobile_number VARCHAR(20),
+                            onboarding_completed BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id)
+                        );
+                    """)
+                    
+                    # Create user_topic_preferences table for AI topic selections
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS user_topic_preferences (
+                            id SERIAL PRIMARY KEY,
+                            user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
+                            topic_id VARCHAR(100) REFERENCES ai_topics(id) ON DELETE CASCADE,
+                            selected BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, topic_id)
+                        );
+                    """)
+                    
+                    # Create user_content_type_preferences table for content type selections
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS user_content_type_preferences (
+                            id SERIAL PRIMARY KEY,
+                            user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
+                            content_type_id INTEGER REFERENCES content_types(id) ON DELETE CASCADE,
+                            selected BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, content_type_id)
                         );
                     """)
                     
@@ -254,7 +298,10 @@ class PostgreSQLService:
                         ("idx_article_topics_topic", "CREATE INDEX IF NOT EXISTS idx_article_topics_topic ON article_topics(topic_id);"),
                         ("idx_users_email", "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);"),
                         ("idx_ai_sources_enabled", "CREATE INDEX IF NOT EXISTS idx_ai_sources_enabled ON ai_sources(enabled);"),
-                        ("idx_ai_sources_topic", "CREATE INDEX IF NOT EXISTS idx_ai_sources_topic ON ai_sources(ai_topic_id);")
+                        ("idx_ai_sources_topic", "CREATE INDEX IF NOT EXISTS idx_ai_sources_topic ON ai_sources(ai_topic_id);"),
+                        ("idx_user_preferences_user", "CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id);"),
+                        ("idx_user_topic_prefs_user", "CREATE INDEX IF NOT EXISTS idx_user_topic_prefs_user ON user_topic_preferences(user_id);"),
+                        ("idx_user_content_prefs_user", "CREATE INDEX IF NOT EXISTS idx_user_content_prefs_user ON user_content_type_preferences(user_id);")
                     ]
                     
                     for index_name, index_query in index_queries:
@@ -729,6 +776,125 @@ class PostgreSQLService:
             logger.error(f"❌ Failed to insert article: {e}")
             logger.error(f"Article data: {article_data}")
             return False
+    
+    def save_user_preferences(self, user_id: str, preferences: Dict[str, Any]) -> bool:
+        """Save user preferences according to functional requirements"""
+        try:
+            with self.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Insert or update user preferences
+                    cursor.execute("""
+                        INSERT INTO user_preferences (
+                            user_id, experience_level, professional_roles, 
+                            newsletter_frequency, email_notifications, breaking_news_alerts,
+                            push_notifications, mobile_number, onboarding_completed, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (user_id) 
+                        DO UPDATE SET
+                            experience_level = EXCLUDED.experience_level,
+                            professional_roles = EXCLUDED.professional_roles,
+                            newsletter_frequency = EXCLUDED.newsletter_frequency,
+                            email_notifications = EXCLUDED.email_notifications,
+                            breaking_news_alerts = EXCLUDED.breaking_news_alerts,
+                            push_notifications = EXCLUDED.push_notifications,
+                            mobile_number = EXCLUDED.mobile_number,
+                            onboarding_completed = EXCLUDED.onboarding_completed,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (
+                        user_id,
+                        preferences.get('experience_level', 'beginner'),
+                        preferences.get('user_roles', []),
+                        preferences.get('newsletter_frequency', 'weekly'),
+                        preferences.get('email_notifications', True),
+                        preferences.get('breaking_news_alerts', False),
+                        preferences.get('push_notifications', False),
+                        preferences.get('mobile_number'),
+                        preferences.get('onboarding_completed', True)
+                    ))
+                    
+                    # Clear existing topic preferences
+                    cursor.execute("DELETE FROM user_topic_preferences WHERE user_id = %s", (user_id,))
+                    
+                    # Insert selected topics
+                    topics = preferences.get('topics', [])
+                    for topic in topics:
+                        if topic.get('selected', False):
+                            cursor.execute("""
+                                INSERT INTO user_topic_preferences (user_id, topic_id, selected)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (user_id, topic_id) DO UPDATE SET selected = EXCLUDED.selected
+                            """, (user_id, topic['id'], True))
+                    
+                    # Clear existing content type preferences
+                    cursor.execute("DELETE FROM user_content_type_preferences WHERE user_id = %s", (user_id,))
+                    
+                    # Insert selected content types
+                    content_types = preferences.get('content_types', [])
+                    for content_type in content_types:
+                        # Get content type ID
+                        cursor.execute("SELECT id FROM content_types WHERE name = %s", (content_type,))
+                        ct_result = cursor.fetchone()
+                        if ct_result:
+                            cursor.execute("""
+                                INSERT INTO user_content_type_preferences (user_id, content_type_id, selected)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (user_id, content_type_id) DO UPDATE SET selected = EXCLUDED.selected
+                            """, (user_id, ct_result['id'], True))
+                    
+                    conn.commit()
+                    logger.info(f"✅ User preferences saved for user: {user_id}")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to save user preferences: {e}")
+            return False
+    
+    def get_user_preferences(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user preferences with topics and content types"""
+        try:
+            query = """
+                SELECT 
+                    up.*,
+                    COALESCE(
+                        JSON_AGG(
+                            DISTINCT jsonb_build_object(
+                                'id', at.id,
+                                'name', at.name,
+                                'category', at.category,
+                                'selected', utp.selected
+                            )
+                        ) FILTER (WHERE at.id IS NOT NULL),
+                        '[]'::json
+                    ) as topics,
+                    COALESCE(
+                        JSON_AGG(
+                            DISTINCT jsonb_build_object(
+                                'id', ct.id,
+                                'name', ct.name,
+                                'display_name', ct.display_name,
+                                'selected', uctp.selected
+                            )
+                        ) FILTER (WHERE ct.id IS NOT NULL),
+                        '[]'::json
+                    ) as content_types
+                FROM user_preferences up
+                LEFT JOIN user_topic_preferences utp ON up.user_id = utp.user_id
+                LEFT JOIN ai_topics at ON utp.topic_id = at.id
+                LEFT JOIN user_content_type_preferences uctp ON up.user_id = uctp.user_id
+                LEFT JOIN content_types ct ON uctp.content_type_id = ct.id
+                WHERE up.user_id = %s
+                GROUP BY up.id
+            """
+            
+            result = self.execute_query(query, (user_id,), fetch_one=True)
+            
+            if result:
+                return dict(result)
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get user preferences: {e}")
+            return None
 
     def close_connections(self):
         """Close all connections in the pool"""
