@@ -254,7 +254,7 @@ class AdminScrapingInterface:
         self.db_service = db_service
         self.scraper = Crawl4AIScraper()
         
-    async def initiate_scraping(self, admin_email: str = "admin@vidygam.com") -> Dict[str, Any]:
+    async def initiate_scraping(self, admin_email: str = "admin@vidyagam.com") -> Dict[str, Any]:
         """
         Admin-initiated scraping process as specified:
         1. Select AI sources from ai_sources table
