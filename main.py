@@ -69,8 +69,7 @@ app = FastAPI(
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://ai-news-react.vercel.app",
-    "https://ai-news-frontend-i2c1gb343.vercel.app",
+
     "https://www.vidyagam.com",
 ]
 

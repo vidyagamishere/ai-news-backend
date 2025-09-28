@@ -331,11 +331,11 @@ async def verify_otp(
             
         logger.info(f"✅ OTP validation skipped for testing: {request.email}")
         
-        # Create user data from request
+        # Create user data from request with safer access to userData
         user_data = {
             'sub': f"otp_user_{int(datetime.utcnow().timestamp())}",
             'email': request.email,
-            'name': request.userData.get('name', ''),
+            'name': request.userData.get('name', '') if request.userData else '',
             'picture': ''
         }
         

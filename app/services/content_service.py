@@ -26,14 +26,21 @@ class ContentService:
             logger.info(f"📊 Getting digest - User: {user_id or 'anonymous'}, Personalized: {personalized}")
             
             # Get articles with topic information using database view
-            articles_query = """
-                SELECT * FROM digest_articles
-                WHERE published_at > NOW() - INTERVAL '7 days'
-                ORDER BY published_at DESC, significance_score DESC
-                LIMIT 100
-            """
+            # First check if any articles exist
+            count_query = "SELECT COUNT(*) as count FROM articles"
+            article_count = db.execute_query(count_query, fetch_one=True)
             
-            articles = db.execute_query(articles_query)
+            if article_count and article_count['count'] > 0:
+                articles_query = """
+                    SELECT * FROM digest_articles
+                    WHERE published_at > NOW() - INTERVAL '7 days'
+                    ORDER BY published_at DESC, significance_score DESC
+                    LIMIT 100
+                """
+                articles = db.execute_query(articles_query)
+            else:
+                logger.info("📊 No articles found in database, returning empty digest")
+                articles = []
             
             # Process articles for response
             processed_articles = []
@@ -62,17 +69,30 @@ class ContentService:
                 processed_articles.append(article_dict)
             
             # Get top stories (high significance score)
-            top_stories = [article for article in processed_articles if article.get('significance_score', 0) >= 8][:10]
-            
-            # Organize content by type using content_type_name from database view
-            content = {
-                'blog': [a for a in processed_articles if a.get('content_type_name') == 'blogs'][:20],
-                'audio': [a for a in processed_articles if a.get('content_type_name') == 'podcasts'][:15],
-                'video': [a for a in processed_articles if a.get('content_type_name') == 'videos'][:15],
-                'events': [a for a in processed_articles if a.get('content_type_name') == 'events'][:10],
-                'learning': [a for a in processed_articles if a.get('content_type_name') == 'learning'][:10],
-                'demos': [a for a in processed_articles if a.get('content_type_name') == 'demos'][:10]
-            }
+            if processed_articles:
+                top_stories = [article for article in processed_articles if article.get('significance_score', 0) >= 8][:10]
+                
+                # Organize content by type using content_type_name from database view
+                content = {
+                    'blog': [a for a in processed_articles if a.get('content_type_name') == 'blogs'][:20],
+                    'audio': [a for a in processed_articles if a.get('content_type_name') == 'podcasts'][:15],
+                    'video': [a for a in processed_articles if a.get('content_type_name') == 'videos'][:15],
+                    'events': [a for a in processed_articles if a.get('content_type_name') == 'events'][:10],
+                    'learning': [a for a in processed_articles if a.get('content_type_name') == 'learning'][:10],
+                    'demos': [a for a in processed_articles if a.get('content_type_name') == 'demos'][:10]
+                }
+            else:
+                # No articles found - provide empty structure with helpful message
+                logger.info("📊 No articles in database - providing empty digest structure")
+                top_stories = []
+                content = {
+                    'blog': [],
+                    'audio': [],
+                    'video': [],
+                    'events': [],
+                    'learning': [],
+                    'demos': []
+                }
             
             # Create summary
             summary = {
@@ -80,7 +100,9 @@ class ContentService:
                 'top_stories_count': len(top_stories),
                 'content_distribution': {k: len(v) for k, v in content.items()},
                 'latest_update': datetime.utcnow().isoformat(),
-                'personalization_note': f"{'Personalized' if personalized else 'General'} content for AI professionals"
+                'personalization_note': f"{'Personalized' if personalized else 'General'} content for AI professionals",
+                'status': 'empty_database' if len(processed_articles) == 0 else 'success',
+                'message': 'No articles found. Admin can use the scraping feature to populate the database.' if len(processed_articles) == 0 else 'Articles loaded successfully'
             }
             
             response = {
@@ -112,14 +134,21 @@ class ContentService:
         try:
             db = get_database_service()
             
-            query = """
-                SELECT * FROM articles_with_topics
-                WHERE content_type_name = %s
-                ORDER BY published_at DESC
-                LIMIT %s
-            """
+            # First check if any articles exist
+            count_query = "SELECT COUNT(*) as count FROM articles"
+            article_count = db.execute_query(count_query, fetch_one=True)
             
-            articles = db.execute_query(query, (content_type, limit))
+            if article_count and article_count['count'] > 0:
+                query = """
+                    SELECT * FROM articles_with_topics
+                    WHERE content_type_name = %s
+                    ORDER BY published_at DESC
+                    LIMIT %s
+                """
+                articles = db.execute_query(query, (content_type, limit))
+            else:
+                logger.info(f"📊 No articles found for content type: {content_type}")
+                articles = []
             
             processed_articles = []
             for article in articles:
