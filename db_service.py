@@ -25,6 +25,7 @@ class PostgreSQLService:
         """Initialize PostgreSQL connection pool and migrate from SQLite if needed"""
         self.database_url = os.getenv('POSTGRES_URL') or os.getenv('DATABASE_URL')
         self.sqlite_path = '/app/ai_news.db'  # Docker path to latest SQLite database
+        self.skip_schema_init = os.getenv('SKIP_SCHEMA_INIT', 'false').lower() == 'true'
         
         if not self.database_url:
             raise ValueError("POSTGRES_URL or DATABASE_URL environment variable is required")
@@ -32,6 +33,7 @@ class PostgreSQLService:
         logger.info(f"🐘 Initializing PostgreSQL service")
         logger.info(f"📊 Database URL configured: {self.database_url[:50]}...")
         logger.info(f"📁 SQLite migration source: {self.sqlite_path}")
+        logger.info(f"⚙️ Skip schema initialization: {self.skip_schema_init}")
         
         # Create connection pool
         try:
@@ -42,11 +44,13 @@ class PostgreSQLService:
             )
             logger.info("✅ PostgreSQL connection pool created successfully")
             
-            # Initialize database schema and migrate data
-            self.initialize_database()
-            
-            # Migrate data from SQLite if available
-            self.migrate_from_sqlite()
+            # Initialize database schema only if not skipped
+            if not self.skip_schema_init:
+                self.initialize_database()
+                # Migrate data from SQLite if available
+                self.migrate_from_sqlite()
+            else:
+                logger.info("⏭️ Skipping database schema initialization (existing database)")
             
         except Exception as e:
             logger.error(f"❌ Failed to create PostgreSQL connection pool: {e}")

@@ -32,12 +32,13 @@ RUN apt-get update && apt-get install -y \
 # Copy Python packages from builder stage
 COPY --from=builder /root/.local /home/appuser/.local
 
-# Copy application code for clean PostgreSQL architecture
-COPY clean_main.py .
-COPY simple_db_service.py .
-COPY create_ai_sources.py .
-COPY migration_endpoint.py .
+# Copy application code for modular FastAPI architecture
+COPY main.py .
+COPY db_service.py .
+COPY crawl4ai_scraper.py .
 COPY requirements.txt .
+COPY app/ ./app/
+COPY templates/ ./templates/
 
 # Set proper ownership
 RUN chown -R appuser:appuser /app
@@ -55,5 +56,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Run the clean PostgreSQL application
-CMD python3 clean_main.py
+# Run the modular FastAPI application
+CMD python3 main.py
