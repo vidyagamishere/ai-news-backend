@@ -3,12 +3,16 @@
 Authentication dependencies for FastAPI dependency injection
 """
 
+import logging
 from typing import Optional
+from datetime import datetime
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.services.auth_service import AuthService
 from app.models.schemas import UserResponse
+
+logger = logging.getLogger(__name__)
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
@@ -32,9 +36,24 @@ async def get_current_user_optional(
         user_data = auth_service.verify_jwt_token(token)
         
         if user_data:
-            user = auth_service.get_user_by_email(user_data['email'])
-            if user:
-                return UserResponse(**user)
+            # Use data from JWT token directly, including admin flag
+            is_admin = user_data.get('is_admin', False)
+            email = user_data.get('email', '')
+            
+            logger.info(f"🔐 Token verified for: {email} (Admin: {is_admin})")
+            
+            user_response_data = {
+                'id': user_data.get('sub', ''),
+                'email': email,
+                'name': user_data.get('name', ''),
+                'profile_image': user_data.get('picture', ''),
+                'subscription_tier': 'free',
+                'preferences': {},
+                'created_at': datetime.utcnow(),
+                'verified_email': True,
+                'is_admin': is_admin
+            }
+            return UserResponse(**user_response_data)
         
         return None
         
@@ -65,15 +84,25 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        user = auth_service.get_user_by_email(user_data['email'])
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        # Use data from JWT token directly, including admin flag
+        is_admin = user_data.get('is_admin', False)
+        email = user_data.get('email', '')
         
-        return UserResponse(**user)
+        logger.info(f"🔐 Token verified (required) for: {email} (Admin: {is_admin})")
+        
+        user_response_data = {
+            'id': user_data.get('sub', ''),
+            'email': email,
+            'name': user_data.get('name', ''),
+            'profile_image': user_data.get('picture', ''),
+            'subscription_tier': 'free',
+            'preferences': {},
+            'created_at': datetime.utcnow(),
+            'verified_email': True,
+            'is_admin': is_admin
+        }
+        
+        return UserResponse(**user_response_data)
         
     except HTTPException:
         raise
