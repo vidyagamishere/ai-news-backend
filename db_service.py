@@ -552,7 +552,7 @@ class PostgreSQLService:
         """Get all AI sources for scraping"""
         try:
             query = """
-                SELECT id, name, url, website, category, priority, is_active
+                SELECT id, name, rss_url, website, category, priority, is_active
                 FROM ai_sources 
                 WHERE is_active = TRUE 
                 ORDER BY priority DESC, name

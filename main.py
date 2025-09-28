@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import modular components
-from app.routers import health, auth, content
+from app.routers import health, auth, content, admin
 from db_service import initialize_database, close_database_service
 
 
@@ -90,6 +90,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, tags=["authentication"])
 app.include_router(content.router, tags=["content"])
+app.include_router(admin.router, tags=["admin"])
 
 # Additional endpoints for compatibility
 @app.get("/sources")

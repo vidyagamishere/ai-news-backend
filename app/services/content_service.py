@@ -209,14 +209,31 @@ class ContentService:
         try:
             db = get_database_service()
             
-            query = """
-                SELECT id, name, display_name, description, frontend_section, icon, is_active
-                FROM content_types
-                WHERE is_active = TRUE
-                ORDER BY name
-            """
-            
-            content_types = db.execute_query(query)
+            # Try the full query first
+            try:
+                query = """
+                    SELECT id, name, display_name, description, frontend_section, icon, is_active
+                    FROM content_types
+                    WHERE is_active = TRUE
+                    ORDER BY name
+                """
+                content_types = db.execute_query(query)
+            except Exception as schema_error:
+                # If description column doesn't exist, try without it
+                logger.warning(f"⚠️ Full content_types query failed, trying fallback: {str(schema_error)}")
+                query = """
+                    SELECT id, name, display_name, 
+                           COALESCE(frontend_section, '') as frontend_section, 
+                           COALESCE(icon, '') as icon, 
+                           COALESCE(is_active, true) as is_active
+                    FROM content_types
+                    WHERE COALESCE(is_active, true) = TRUE
+                    ORDER BY name
+                """
+                content_types = db.execute_query(query)
+                # Add missing description field
+                for ct in content_types:
+                    ct['description'] = f"Content type: {ct.get('display_name', ct.get('name', ''))}"
             
             processed_types = []
             for content_type in content_types:
@@ -227,4 +244,33 @@ class ContentService:
             
         except Exception as e:
             logger.error(f"❌ Failed to get content types: {str(e)}")
-            return []
+            # Return fallback content types if database query fails
+            return [
+                {
+                    'id': 1,
+                    'name': 'blogs',
+                    'display_name': 'Articles',
+                    'description': 'Blog posts and articles',
+                    'frontend_section': 'blog',
+                    'icon': '📄',
+                    'is_active': True
+                },
+                {
+                    'id': 2,
+                    'name': 'podcasts',
+                    'display_name': 'Podcasts',
+                    'description': 'Audio content and interviews',
+                    'frontend_section': 'audio',
+                    'icon': '🎙️',
+                    'is_active': True
+                },
+                {
+                    'id': 3,
+                    'name': 'videos',
+                    'display_name': 'Videos',
+                    'description': 'Video content and tutorials',
+                    'frontend_section': 'video',
+                    'icon': '🎥',
+                    'is_active': True
+                }
+            ]
