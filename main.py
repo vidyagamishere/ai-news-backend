@@ -163,7 +163,7 @@ async def cleanup_test_users(request: dict):
                OR email LIKE '%@example.com'
         """
         
-        db.execute_query(cleanup_query, fetch_results=False)
+        db.execute_query(cleanup_query, fetch_all=False)
         
         logger.info("✅ Test users cleaned up successfully")
         return {
@@ -221,7 +221,7 @@ async def setup_foreign_keys(request: dict):
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
-            db.execute_query(create_ai_topics_query, fetch_results=False)
+            db.execute_query(create_ai_topics_query, fetch_all=False)
             
             # Insert sample topics
             sample_topics = [
@@ -241,7 +241,7 @@ async def setup_foreign_keys(request: dict):
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (category) DO NOTHING;
                 """
-                db.execute_query(insert_query, (category, description, keywords, priority), fetch_results=False)
+                db.execute_query(insert_query, (category, description, keywords, priority), fetch_all=False)
         
         # Check and add ai_topics_id column to ai_sources
         column_exists_query = """
@@ -252,7 +252,7 @@ async def setup_foreign_keys(request: dict):
         
         if not column_exists:
             # Add ai_topics_id column
-            db.execute_query("ALTER TABLE ai_sources ADD COLUMN ai_topics_id INTEGER;", fetch_results=False)
+            db.execute_query("ALTER TABLE ai_sources ADD COLUMN ai_topics_id INTEGER;", fetch_all=False)
             
             # Add foreign key constraint for ai_topics_id
             try:
@@ -260,7 +260,7 @@ async def setup_foreign_keys(request: dict):
                     ALTER TABLE ai_sources 
                     ADD CONSTRAINT fk_ai_sources_ai_topics_id 
                     FOREIGN KEY (ai_topics_id) REFERENCES ai_topics(id) ON DELETE SET NULL;
-                """, fetch_results=False)
+                """, fetch_all=False)
             except Exception as fk_error:
                 logger.warning(f"⚠️ Could not add ai_topics_id foreign key: {str(fk_error)}")
         
@@ -278,7 +278,7 @@ async def setup_foreign_keys(request: dict):
                     ALTER TABLE ai_sources 
                     ADD CONSTRAINT fk_ai_sources_category 
                     FOREIGN KEY (category) REFERENCES ai_topics(category) ON DELETE SET NULL;
-                """, fetch_results=False)
+                """, fetch_all=False)
         except Exception as cat_fk_error:
             logger.warning(f"⚠️ Could not add category foreign key: {str(cat_fk_error)}")
         

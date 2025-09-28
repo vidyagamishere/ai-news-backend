@@ -92,7 +92,7 @@ def send_otp_email(email: str, otp: str, name: str = "") -> bool:
         }
         
         # Determine sender and subject based on email domain
-        is_admin = email == "admin@vidygam.com"
+        is_admin = email == "admin@vidyagam.com"
         sender_email = "noreply@vidyagam.com"
         sender_name = "Vidyagam AI News"
         subject = f"{'Admin ' if is_admin else ''}Login OTP - Vidyagam AI News"
@@ -343,7 +343,7 @@ async def verify_otp(
         user = auth_service.create_or_update_user(user_data)
         
         # Check if this is an admin user
-        is_admin = request.email == 'admin@vidygam.com'
+        is_admin = request.email == 'admin@vidyagam.com'
         if is_admin:
             logger.info(f"🔑 Admin authentication successful for: {request.email}")
         
