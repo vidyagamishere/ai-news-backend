@@ -136,14 +136,25 @@ class AuthService:
         try:
             db = get_database_service()
             
-            query = """
-                SELECT id, email, name, profile_image, subscription_tier, preferences, 
-                       created_at, last_login_at, verified_email, is_admin
-                FROM users 
-                WHERE email = %s
-            """
-            
-            result = db.execute_query(query, (email,), fetch_one=True)
+            # Try with all columns first, then fall back if columns don't exist
+            try:
+                query = """
+                    SELECT id, email, name, profile_image, subscription_tier, preferences, 
+                           created_at, last_login_at, verified_email, is_admin
+                    FROM users 
+                    WHERE email = %s
+                """
+                result = db.execute_query(query, (email,), fetch_one=True)
+            except Exception as e:
+                # Fall back to basic columns that should always exist
+                logger.warning(f"⚠️ Full user query failed, using basic columns: {str(e)}")
+                query = """
+                    SELECT id, email, subscription_tier, preferences, 
+                           created_at, last_login_at, verified_email
+                    FROM users 
+                    WHERE email = %s
+                """
+                result = db.execute_query(query, (email,), fetch_one=True)
             
             if result:
                 user_dict = dict(result)
@@ -207,19 +218,25 @@ class AuthService:
             is_admin = user_data.get('email') == 'admin@vidyagam.com'
             
             if existing_user:
-                # Update existing user with admin flag
-                query = """
-                    UPDATE users 
-                    SET name = %s, profile_image = %s, is_admin = %s, last_login_at = CURRENT_TIMESTAMP
-                    WHERE email = %s
-                    RETURNING id, email, name, profile_image, subscription_tier, preferences, verified_email, is_admin
-                """
-                
-                result = db.execute_query(
-                    query, 
-                    (user_data.get('name'), user_data.get('picture'), is_admin, user_data['email']),
-                    fetch_one=True
-                )
+                # Update existing user with admin flag - try with full columns first
+                try:
+                    query = """
+                        UPDATE users 
+                        SET is_admin = %s, last_login_at = CURRENT_TIMESTAMP
+                        WHERE email = %s
+                        RETURNING id, email, subscription_tier, preferences, verified_email, is_admin
+                    """
+                    result = db.execute_query(query, (is_admin, user_data['email']), fetch_one=True)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not update user with is_admin column: {str(e)}")
+                    # Try without is_admin column
+                    query = """
+                        UPDATE users 
+                        SET last_login_at = CURRENT_TIMESTAMP
+                        WHERE email = %s
+                        RETURNING id, email, subscription_tier, preferences, verified_email
+                    """
+                    result = db.execute_query(query, (user_data['email'],), fetch_one=True)
                 
                 logger.info(f"✅ User updated: {user_data['email']} (Admin: {is_admin})")
                 
@@ -227,17 +244,22 @@ class AuthService:
                 # Create new user with admin flag
                 user_id = user_data.get('sub', f"user_{int(datetime.utcnow().timestamp())}")
                 
-                query = """
-                    INSERT INTO users (id, email, name, profile_image, verified_email, is_admin, created_at, last_login_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    RETURNING id, email, name, profile_image, subscription_tier, preferences, verified_email, is_admin
-                """
-                
-                result = db.execute_query(
-                    query,
-                    (user_id, user_data['email'], user_data.get('name'), user_data.get('picture'), True, is_admin),
-                    fetch_one=True
-                )
+                try:
+                    query = """
+                        INSERT INTO users (id, email, verified_email, is_admin, created_at, last_login_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id, email, subscription_tier, preferences, verified_email, is_admin
+                    """
+                    result = db.execute_query(query, (user_id, user_data['email'], True, is_admin), fetch_one=True)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not create user with is_admin column: {str(e)}")
+                    # Try without is_admin column
+                    query = """
+                        INSERT INTO users (id, email, verified_email, created_at, last_login_at)
+                        VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id, email, subscription_tier, preferences, verified_email
+                    """
+                    result = db.execute_query(query, (user_id, user_data['email'], True), fetch_one=True)
                 
                 logger.info(f"✅ New user created: {user_data['email']} (Admin: {is_admin})")
             
@@ -250,8 +272,12 @@ class AuthService:
                 else:
                     user_dict['preferences'] = {}
                 
-                # Ensure is_admin flag is properly set from database
+                # Ensure is_admin flag is properly set
                 user_dict['is_admin'] = user_dict.get('is_admin', is_admin)
+                
+                # Ensure missing fields have default values
+                user_dict['name'] = user_dict.get('name', user_data.get('name', ''))
+                user_dict['profile_image'] = user_dict.get('profile_image', user_data.get('picture', ''))
                 
                 if user_dict['is_admin']:
                     logger.info(f"🔑 Admin user confirmed from database: {user_dict.get('email')}")

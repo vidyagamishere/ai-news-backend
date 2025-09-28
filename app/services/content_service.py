@@ -31,10 +31,13 @@ class ContentService:
             article_count = db.execute_query(count_query, fetch_one=True)
             
             if article_count and article_count['count'] > 0:
+                # Query articles table directly instead of using views that may not exist
                 articles_query = """
-                    SELECT * FROM digest_articles
-                    WHERE published_at > NOW() - INTERVAL '7 days'
-                    ORDER BY published_at DESC, significance_score DESC
+                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display
+                    FROM articles a
+                    LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    WHERE a.published_at > NOW() - INTERVAL '7 days'
+                    ORDER BY a.published_at DESC, a.significance_score DESC
                     LIMIT 100
                 """
                 articles = db.execute_query(articles_query)
@@ -139,10 +142,13 @@ class ContentService:
             article_count = db.execute_query(count_query, fetch_one=True)
             
             if article_count and article_count['count'] > 0:
+                # Query articles table directly instead of using views that may not exist
                 query = """
-                    SELECT * FROM articles_with_topics
-                    WHERE content_type_name = %s
-                    ORDER BY published_at DESC
+                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display
+                    FROM articles a
+                    LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    WHERE ct.name = %s
+                    ORDER BY a.published_at DESC
                     LIMIT %s
                 """
                 articles = db.execute_query(query, (content_type, limit))
