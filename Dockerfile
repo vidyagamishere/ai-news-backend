@@ -37,8 +37,10 @@ COPY main.py .
 COPY db_service.py .
 COPY crawl4ai_scraper.py .
 COPY requirements.txt .
+COPY railway.json .
 COPY app/ ./app/
 COPY templates/ ./templates/
+COPY __init__.py .
 
 # Set proper ownership
 RUN chown -R appuser:appuser /app
