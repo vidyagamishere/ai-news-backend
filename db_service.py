@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
 PostgreSQL Database Service for AI News Scraper
-Single database backend using psycopg2 with connection pooling and SQLite migration
+Single database backend using psycopg2 with connection pooling
 """
 
 import os
 import json
 import logging
 import traceback
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from contextlib import contextmanager
@@ -22,9 +21,8 @@ logger = logging.getLogger(__name__)
 
 class PostgreSQLService:
     def __init__(self):
-        """Initialize PostgreSQL connection pool and migrate from SQLite if needed"""
+        """Initialize PostgreSQL connection pool"""
         self.database_url = os.getenv('POSTGRES_URL') or os.getenv('DATABASE_URL')
-        self.sqlite_path = '/app/ai_news.db'  # Docker path to latest SQLite database
         self.skip_schema_init = os.getenv('SKIP_SCHEMA_INIT', 'false').lower() == 'true'
         
         if not self.database_url:
@@ -32,7 +30,6 @@ class PostgreSQLService:
         
         logger.info(f"🐘 Initializing PostgreSQL service")
         logger.info(f"📊 Database URL configured: {self.database_url[:50]}...")
-        logger.info(f"📁 SQLite migration source: {self.sqlite_path}")
         logger.info(f"⚙️ Skip schema initialization: {self.skip_schema_init}")
         
         # Create connection pool
@@ -47,8 +44,6 @@ class PostgreSQLService:
             # Initialize database schema only if not skipped
             if not self.skip_schema_init:
                 self.initialize_database()
-                # Migrate data from SQLite if available
-                self.migrate_from_sqlite()
             else:
                 logger.info("⏭️ Skipping database schema initialization (existing database)")
             
@@ -551,161 +546,7 @@ class PostgreSQLService:
         
         logger.info("✅ AI sources populated successfully")
     
-    def migrate_from_sqlite(self):
-        """Migrate data from SQLite to PostgreSQL"""
-        logger.info("🔄 Starting SQLite to PostgreSQL migration...")
-        
-        # Check if SQLite database exists
-        if not os.path.exists(self.sqlite_path):
-            logger.info(f"📁 SQLite database not found at {self.sqlite_path}, skipping migration")
-            return
-        
-        try:
-            # Connect to SQLite database
-            sqlite_conn = sqlite3.connect(self.sqlite_path)
-            sqlite_conn.row_factory = sqlite3.Row
-            sqlite_cursor = sqlite_conn.cursor()
-            
-            logger.info("✅ Connected to SQLite database for migration")
-            
-            # Get PostgreSQL connection
-            with self.get_db_connection() as pg_conn:
-                with pg_conn.cursor() as pg_cursor:
-                    
-                    # Check if migration already done
-                    pg_cursor.execute("SELECT COUNT(*) FROM articles")
-                    existing_articles = pg_cursor.fetchone()['count']
-                    
-                    if existing_articles > 0:
-                        logger.info(f"📊 PostgreSQL already has {existing_articles} articles, skipping migration")
-                        return
-                    
-                    # Migrate articles table
-                    self.migrate_table(sqlite_cursor, pg_cursor, 'articles', [
-                        'source', 'title', 'url', 'published_at', 'description', 'content',
-                        'significance_score', 'scraped_at', 'category', 'reading_time',
-                        'image_url', 'keywords'
-                    ])
-                    
-                    # Migrate users table
-                    self.migrate_table(sqlite_cursor, pg_cursor, 'users', [
-                        'id', 'email', 'name', 'profile_image', 'subscription_tier',
-                        'preferences', 'created_at', 'last_login_at', 'verified_email'
-                    ])
-                    
-                    # Migrate user_passwords table if exists
-                    try:
-                        self.migrate_table(sqlite_cursor, pg_cursor, 'user_passwords', [
-                            'user_id', 'password_hash', 'salt'
-                        ])
-                    except Exception as e:
-                        logger.info(f"⚠️ Skipping user_passwords migration: {e}")
-                    
-                    # Migrate user_sessions table if exists
-                    try:
-                        self.migrate_table(sqlite_cursor, pg_cursor, 'user_sessions', [
-                            'id', 'user_id', 'token_hash', 'created_at', 'expires_at', 'last_used_at'
-                        ])
-                    except Exception as e:
-                        logger.info(f"⚠️ Skipping user_sessions migration: {e}")
-                    
-                    # Migrate daily_archives table if exists
-                    try:
-                        self.migrate_table(sqlite_cursor, pg_cursor, 'daily_archives', [
-                            'archive_date', 'digest_data', 'article_count', 'created_at', 'metadata'
-                        ])
-                    except Exception as e:
-                        logger.info(f"⚠️ Skipping daily_archives migration: {e}")
-                    
-                    # Commit all migrations
-                    pg_conn.commit()
-                    
-                    logger.info("✅ SQLite to PostgreSQL migration completed successfully")
-            
-            sqlite_conn.close()
-            
-        except Exception as e:
-            logger.error(f"❌ SQLite migration failed: {e}")
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
-            # Don't raise error - continue with empty PostgreSQL database
     
-    def migrate_table(self, sqlite_cursor, pg_cursor, table_name, columns):
-        """Migrate a specific table from SQLite to PostgreSQL"""
-        logger.info(f"📦 Migrating table: {table_name}")
-        
-        try:
-            # Check if table exists in SQLite
-            sqlite_cursor.execute(f"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-            if sqlite_cursor.fetchone()[0] == 0:
-                logger.info(f"⚠️ Table {table_name} not found in SQLite, skipping")
-                return
-            
-            # Get data from SQLite
-            sqlite_cursor.execute(f"SELECT * FROM {table_name}")
-            rows = sqlite_cursor.fetchall()
-            
-            if not rows:
-                logger.info(f"📊 No data in {table_name} table")
-                return
-            
-            # Get actual columns from SQLite table
-            sqlite_cursor.execute(f"PRAGMA table_info({table_name})")
-            sqlite_columns_info = sqlite_cursor.fetchall()
-            sqlite_columns = [col[1] for col in sqlite_columns_info]
-            
-            # Filter columns to only those that exist in both databases
-            available_columns = [col for col in columns if col in sqlite_columns]
-            
-            if table_name in ['articles', 'daily_archives']:
-                # Skip 'id' column for SERIAL columns
-                available_columns = [col for col in available_columns if col != 'id']
-            
-            if not available_columns:
-                logger.warning(f"⚠️ No compatible columns found for {table_name}")
-                return
-            
-            # Prepare insert statement
-            placeholders = ', '.join(['%s'] * len(available_columns))
-            columns_str = ', '.join(available_columns)
-            insert_query = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
-            
-            # Migrate each row
-            migrated_count = 0
-            for row in rows:
-                row_dict = dict(row)
-                
-                # Extract values for available columns
-                values = []
-                for col in available_columns:
-                    value = row_dict.get(col)
-                    
-                    # Handle JSON fields for PostgreSQL
-                    if table_name in ['users', 'daily_archives'] and col in ['preferences', 'digest_data', 'metadata']:
-                        if isinstance(value, str):
-                            try:
-                                # Parse JSON string and convert to dict
-                                parsed_value = json.loads(value)
-                                values.append(json.dumps(parsed_value))  # Store as JSON string for JSONB
-                            except (json.JSONDecodeError, TypeError):
-                                values.append('{}')  # Default empty JSON
-                        else:
-                            values.append(json.dumps(value) if value else '{}')
-                    else:
-                        values.append(value)
-                
-                # Insert row
-                try:
-                    pg_cursor.execute(insert_query, values)
-                    migrated_count += 1
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to migrate row in {table_name}: {e}")
-                    continue
-            
-            logger.info(f"✅ Migrated {migrated_count} rows from {table_name}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to migrate table {table_name}: {e}")
-            raise e
     
     def get_ai_sources(self) -> List[Dict[str, Any]]:
         """Get all AI sources for scraping"""
