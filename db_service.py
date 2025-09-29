@@ -552,10 +552,9 @@ class PostgreSQLService:
         """Get all AI sources for scraping"""
         try:
             query = """
-                SELECT id, name, rss_url, website, category, priority, is_active
-                FROM ai_sources 
-                WHERE is_active = TRUE 
-                ORDER BY priority DESC, name
+                SELECT id, name, rss_url, website, COALESCE(c.name, 'general')
+                FROM ai_sources s LEFT JOIN ai_topics t ON s.ai_topic_id = t.id LEFT JOIN ai_categories_master c ON t.category_id = c.id WHERE s.enabled = TRUE 
+                ORDER BY priority DESC, s.name
             """
             sources = self.execute_query(query, fetch_all=True)
             
