@@ -398,13 +398,14 @@ class PostgreSQLService:
                 ct.name as content_type_name,
                 ct.display_name as content_type_display,
                 STRING_AGG(DISTINCT at2.name, ', ') as topic_names,
-                STRING_AGG(DISTINCT at2.category, ', ') as topic_categories,
+                STRING_AGG(DISTINCT COALESCE(ac.name, at2.category, 'general'), ', ') as topic_categories,
                 COALESCE(
                     JSON_AGG(
                         DISTINCT jsonb_build_object(
                             'id', at2.id,
                             'name', at2.name,
-                            'category', at2.category
+                            'category', COALESCE(ac.name, at2.category, 'general'),
+                            'category_id', at2.category_id
                         )
                     ) FILTER (WHERE at2.id IS NOT NULL),
                     '[]'::json
@@ -414,6 +415,7 @@ class PostgreSQLService:
             LEFT JOIN content_types ct ON a.content_type_id = ct.id
             LEFT JOIN article_topics att ON a.id = att.article_id
             LEFT JOIN ai_topics at2 ON att.topic_id = at2.id
+            LEFT JOIN ai_categories_master ac ON at2.category_id = ac.id
             GROUP BY a.id, ct.name, ct.display_name;
         """)
         
