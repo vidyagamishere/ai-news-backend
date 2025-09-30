@@ -7,11 +7,27 @@ Implements the exact scraping process: Crawl4AI -> Mistral-Small-3 -> Structured
 import os
 import tempfile
 
-# Set up writable directories for Railway deployment BEFORE any Crawl4AI imports
-temp_base_dir = tempfile.mkdtemp(prefix='crawl4ai_')
-os.environ['CRAWL4AI_CACHE_DIR'] = temp_base_dir
-os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(temp_base_dir, 'browsers')
-os.environ['CRAWL4AI_BASE_DIRECTORY'] = temp_base_dir
+# Detect Railway deployment environment
+IS_RAILWAY_DEPLOYMENT = (
+    os.environ.get('RAILWAY_ENVIRONMENT') or 
+    os.environ.get('RAILWAY_PROJECT_ID') or 
+    os.environ.get('RAILWAY_SERVICE_ID') or
+    '/home/appuser' in os.path.expanduser('~') or
+    os.path.exists('/app') or  # Common Railway app directory
+    'railway' in os.environ.get('HOSTNAME', '').lower()
+)
+
+# For Railway deployment, force fallback mode to avoid permission issues
+if IS_RAILWAY_DEPLOYMENT:
+    CRAWL4AI_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.info("🚂 Railway deployment detected - using fallback scraping mode")
+else:
+    # Set up writable directories for local/other deployments
+    temp_base_dir = tempfile.mkdtemp(prefix='crawl4ai_')
+    os.environ['CRAWL4AI_CACHE_DIR'] = temp_base_dir
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(temp_base_dir, 'browsers')
+    os.environ['CRAWL4AI_BASE_DIRECTORY'] = temp_base_dir
 
 import json
 import logging
@@ -26,16 +42,21 @@ import aiohttp
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Crawl4AI imports - after environment setup
-try:
-    from crawl4ai import AsyncWebCrawler
-    from crawl4ai.extraction_strategy import JsonCssExtractionStrategy, CosineStrategy
-    from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
-    CRAWL4AI_AVAILABLE = True
-    logger.info(f"✅ Crawl4AI available - using cache dir: {temp_base_dir}")
-except ImportError as e:
+# Crawl4AI imports - only for non-Railway environments
+if not IS_RAILWAY_DEPLOYMENT:
+    try:
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.extraction_strategy import JsonCssExtractionStrategy, CosineStrategy
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        CRAWL4AI_AVAILABLE = True
+        logger.info(f"✅ Crawl4AI available - using cache dir: {temp_base_dir}")
+    except ImportError as e:
+        CRAWL4AI_AVAILABLE = False
+        logger.warning(f"⚠️ Crawl4AI not installed - falling back to basic scraping: {e}")
+else:
+    # Set dummy variables for Railway deployment
+    temp_base_dir = "/tmp"
     CRAWL4AI_AVAILABLE = False
-    logger.warning(f"⚠️ Crawl4AI not installed - falling back to basic scraping: {e}")
 
 @dataclass
 class ScrapedArticle:
@@ -247,12 +268,22 @@ class Crawl4AIScraper:
             return await self._fallback_scrape(url)
     
     async def _fallback_scrape(self, url: str) -> Optional[Dict[str, Any]]:
-        """Fallback basic scraping when Crawl4AI is not available"""
+        """Enhanced fallback scraping for Railway deployment"""
         try:
-            logger.info(f"🔄 Using fallback scraping for: {url}")
+            logger.info(f"🔄 Using enhanced fallback scraping for: {url}")
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as response:
+            # Enhanced headers to avoid blocking
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Referer': 'https://google.com/',
+            }
+            
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=30, allow_redirects=True) as response:
                     if response.status != 200:
                         logger.error(f"❌ Failed to fetch {url}: HTTP {response.status}")
                         return None
@@ -263,70 +294,188 @@ class Crawl4AIScraper:
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(html_content, 'html.parser')
                     
-                    # Remove script and style elements
-                    for script in soup(["script", "style", "nav", "footer", "aside"]):
-                        script.decompose()
+                    # Remove unwanted elements
+                    for element in soup(["script", "style", "nav", "footer", "aside", "iframe", "noscript", "form"]):
+                        element.decompose()
                     
-                    # Extract title
-                    title_tag = soup.find('title')
-                    title = title_tag.get_text() if title_tag else "No title found"
-                    
-                    # Try to find better title in h1 tags
-                    h1_tag = soup.find('h1')
-                    if h1_tag and len(h1_tag.get_text().strip()) > 10:
-                        title = h1_tag.get_text().strip()
+                    # Extract title with multiple fallbacks
+                    title = self._extract_title(soup)
                     
                     # Extract meta description
-                    meta_desc = soup.find('meta', attrs={'name': 'description'})
-                    description = meta_desc.get('content') if meta_desc else ""
+                    description = self._extract_description(soup)
                     
-                    # Extract author from meta tags or common selectors
-                    author = None
-                    author_meta = soup.find('meta', attrs={'name': 'author'})
-                    if author_meta:
-                        author = author_meta.get('content')
-                    else:
-                        author_elem = soup.find(class_=lambda x: x and 'author' in x.lower())
-                        if author_elem:
-                            author = author_elem.get_text().strip()
+                    # Extract author with multiple methods
+                    author = self._extract_author(soup)
                     
-                    # Extract main content
-                    content = ""
+                    # Extract publication date
+                    pub_date = self._extract_date(soup)
                     
-                    # Try to find article content using common selectors
-                    content_selectors = [
-                        'article', '.content', '.post-content', '.entry-content', 
-                        '.article-body', 'main', '.main-content', '.story-body'
-                    ]
+                    # Extract main content with priority selectors
+                    content = self._extract_content(soup)
                     
-                    for selector in content_selectors:
-                        content_elem = soup.select_one(selector)
-                        if content_elem:
-                            content = content_elem.get_text()
-                            break
-                    
-                    # If no specific content found, extract all text
-                    if not content:
-                        content = soup.get_text()
-                    
-                    # Clean up content
-                    content = self._clean_content(content)[:5000]
+                    # Extract tags/keywords
+                    tags = self._extract_tags(soup)
                     
                     return {
                         "title": title.strip(),
                         "description": description.strip(),
                         "content": content.strip(),
                         "author": author,
-                        "date": None,
-                        "tags": [],
+                        "date": pub_date,
+                        "tags": tags,
                         "url": url,
                         "extracted_at": datetime.now(timezone.utc).isoformat(),
-                        "extraction_method": "fallback_basic"
+                        "extraction_method": "enhanced_fallback"
                     }
                     
         except Exception as e:
-            logger.error(f"❌ Fallback scraping failed for {url}: {str(e)}")
+            logger.error(f"❌ Enhanced fallback scraping failed for {url}: {str(e)}")
             return None
+    
+    def _extract_title(self, soup) -> str:
+        """Extract title with multiple fallback methods"""
+        # Try og:title first
+        og_title = soup.find('meta', property='og:title')
+        if og_title and og_title.get('content'):
+            return og_title['content']
+        
+        # Try h1 tags
+        h1_tag = soup.find('h1')
+        if h1_tag and len(h1_tag.get_text().strip()) > 10:
+            return h1_tag.get_text().strip()
+        
+        # Try title tag
+        title_tag = soup.find('title')
+        if title_tag:
+            title = title_tag.get_text().strip()
+            # Remove common site suffixes
+            for suffix in [' | ', ' - ', ' :: ']:
+                if suffix in title:
+                    title = title.split(suffix)[0]
+                    break
+            return title
+        
+        return "No title found"
+    
+    def _extract_description(self, soup) -> str:
+        """Extract description with multiple methods"""
+        # Try og:description
+        og_desc = soup.find('meta', property='og:description')
+        if og_desc and og_desc.get('content'):
+            return og_desc['content']
+        
+        # Try meta description
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc and meta_desc.get('content'):
+            return meta_desc['content']
+        
+        # Try excerpt or summary classes
+        for selector in ['.excerpt', '.summary', '.description', '.lead']:
+            elem = soup.select_one(selector)
+            if elem:
+                return elem.get_text().strip()[:200]
+        
+        return ""
+    
+    def _extract_author(self, soup) -> Optional[str]:
+        """Extract author with multiple methods"""
+        # Try meta author
+        author_meta = soup.find('meta', attrs={'name': 'author'})
+        if author_meta and author_meta.get('content'):
+            return author_meta['content']
+        
+        # Try JSON-LD structured data
+        json_ld = soup.find('script', type='application/ld+json')
+        if json_ld:
+            try:
+                data = json.loads(json_ld.string)
+                if isinstance(data, dict) and 'author' in data:
+                    author = data['author']
+                    if isinstance(author, dict) and 'name' in author:
+                        return author['name']
+                    elif isinstance(author, str):
+                        return author
+            except:
+                pass
+        
+        # Try common author selectors
+        author_selectors = [
+            '.author', '.byline', '[data-author]', '.writer', '.post-author',
+            '.author-name', '.by-author', '.article-author'
+        ]
+        
+        for selector in author_selectors:
+            elem = soup.select_one(selector)
+            if elem:
+                author_text = elem.get_text().strip()
+                # Clean up common prefixes
+                for prefix in ['By ', 'by ', 'Author: ', 'Written by ']:
+                    if author_text.startswith(prefix):
+                        author_text = author_text[len(prefix):]
+                return author_text
+        
+        return None
+    
+    def _extract_date(self, soup) -> Optional[str]:
+        """Extract publication date"""
+        # Try datetime attributes
+        time_elem = soup.find('time')
+        if time_elem and time_elem.get('datetime'):
+            return time_elem['datetime']
+        
+        # Try meta published time
+        pub_time = soup.find('meta', property='article:published_time')
+        if pub_time and pub_time.get('content'):
+            return pub_time['content']
+        
+        return None
+    
+    def _extract_content(self, soup) -> str:
+        """Extract main content with priority selectors"""
+        # Priority content selectors
+        content_selectors = [
+            'article', '[role="main"]', 'main', '.content', '.post-content', 
+            '.entry-content', '.article-body', '.story-body', '.post-body',
+            '.main-content', '.article-content', '.blog-content'
+        ]
+        
+        for selector in content_selectors:
+            content_elem = soup.select_one(selector)
+            if content_elem:
+                # Remove nested unwanted elements
+                for unwanted in content_elem(['script', 'style', 'nav', 'footer', 'aside', '.ad', '.advertisement']):
+                    unwanted.decompose()
+                
+                content = content_elem.get_text()
+                if len(content.strip()) > 100:  # Ensure meaningful content
+                    return self._clean_content(content)[:8000]
+        
+        # Fallback to body content
+        body = soup.find('body')
+        if body:
+            content = body.get_text()
+            return self._clean_content(content)[:5000]
+        
+        return ""
+    
+    def _extract_tags(self, soup) -> List[str]:
+        """Extract tags and keywords"""
+        tags = []
+        
+        # Try meta keywords
+        keywords_meta = soup.find('meta', attrs={'name': 'keywords'})
+        if keywords_meta and keywords_meta.get('content'):
+            tags.extend([tag.strip() for tag in keywords_meta['content'].split(',')])
+        
+        # Try tag/category elements
+        for selector in ['.tags', '.categories', '.keywords', '.topics', '.tag']:
+            elements = soup.select(f'{selector} a, {selector} span')
+            for elem in elements:
+                tag_text = elem.get_text().strip()
+                if tag_text and len(tag_text) < 50:
+                    tags.append(tag_text)
+        
+        return list(set(tags))[:10]  # Remove duplicates and limit
     
     def _clean_content(self, content: str) -> str:
         """Clean and normalize text content"""
