@@ -390,6 +390,33 @@ class PostgreSQLService:
                     users u ON upc.user_id = u.id;
         """)
         
+        # Enhanced articles view with topic information  
+        cursor.execute("""
+            CREATE OR REPLACE VIEW articles_with_topics AS
+            SELECT 
+                a.*,
+                ct.name as content_type_name,
+                ct.display_name as content_type_display,
+                STRING_AGG(DISTINCT at2.name, ', ') as topic_names,
+                STRING_AGG(DISTINCT at2.category, ', ') as topic_categories,
+                COALESCE(
+                    JSON_AGG(
+                        DISTINCT jsonb_build_object(
+                            'id', at2.id,
+                            'name', at2.name,
+                            'category', at2.category
+                        )
+                    ) FILTER (WHERE at2.id IS NOT NULL),
+                    '[]'::json
+                ) as topics,
+                COUNT(DISTINCT att.topic_id) as topic_count
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            LEFT JOIN article_topics att ON a.id = att.article_id
+            LEFT JOIN ai_topics at2 ON att.topic_id = at2.id
+            GROUP BY a.id, ct.name, ct.display_name;
+        """)
+        
         # Optimized digest view
         cursor.execute("""
             CREATE OR REPLACE VIEW digest_articles AS
@@ -424,10 +451,10 @@ class PostgreSQLService:
             ("videos", "Videos", "Video content and tutorials", "video", "📹"),
             ("podcasts", "Podcasts", "Audio content and podcast episodes", "audio", "🎧"),
             ("events", "Events", "Conferences, webinars, and industry events", "events", "📅"),
-            ("demos", "Demos & Tools", "Interactive demonstrations and AI tools", "demos", "🛠️")
-            ("papers", "Research papers", "Interactive demonstrations and AI tools", "papers", "🛠️")
+            ("demos", "Demos & Tools", "Interactive demonstrations and AI tools", "demos", "🛠️"),
+            ("papers", "Research papers", "Academic papers and research documents", "papers", "📄"),
             ("learning", "Learning Resources", "Courses, tutorials, and educational content", "learning", "📚"),
-            ("newsletters", "Newsletters & Email Updates", "Feed", "learning", "📚"),   
+            ("newsletters", "Newsletters & Email Updates", "Feed updates and newsletters", "newsletters", "📧"),   
         ]
         
         for name, display_name, description, section, icon in content_types:
