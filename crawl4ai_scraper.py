@@ -15,6 +15,16 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import aiohttp
 
+# Crawl4AI imports
+try:
+    from crawl4ai import AsyncWebCrawler
+    from crawl4ai.extraction_strategy import JsonCssExtractionStrategy, CosineStrategy
+    from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+    CRAWL4AI_AVAILABLE = True
+except ImportError:
+    CRAWL4AI_AVAILABLE = False
+    logger.warning("⚠️ Crawl4AI not installed - falling back to basic scraping")
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -51,11 +61,161 @@ class Crawl4AIScraper:
         automatically converting it into clean Markdown or JSON.
         """
         try:
-            # Use Crawl4AI to extract content (simulated for now - in production, use actual Crawl4AI library)
             logger.info(f"🕷️ Scraping URL with Crawl4AI: {url}")
             
-            # For now, simulate Crawl4AI response with basic web scraping
-            # In production, replace this with actual Crawl4AI implementation
+            if CRAWL4AI_AVAILABLE:
+                # Use full Crawl4AI implementation with browser automation
+                return await self._crawl4ai_full_scrape(url)
+            else:
+                # Fallback to basic scraping
+                return await self._fallback_scrape(url)
+                
+        except Exception as e:
+            logger.error(f"❌ Crawl4AI scraping failed for {url}: {str(e)}")
+            return None
+    
+    async def _crawl4ai_full_scrape(self, url: str) -> Optional[Dict[str, Any]]:
+        """Full Crawl4AI implementation with browser automation and advanced extraction"""
+        try:
+            # Configure Crawl4AI with advanced options
+            crawler_strategy = AsyncPlaywrightCrawlerStrategy(
+                headless=True,
+                browser_type="chromium",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Connection": "keep-alive",
+                }
+            )
+            
+            # Define extraction strategy for structured content
+            extraction_strategy = JsonCssExtractionStrategy({
+                "article": {
+                    "title": "h1, title, .title, [data-title], .headline, .entry-title, .post-title",
+                    "author": ".author, .byline, [data-author], .writer, .post-author",
+                    "date": "time, .date, .published, [datetime], .post-date, .article-date",
+                    "content": "article, .content, .post-content, .entry-content, .article-body, main, .main-content",
+                    "description": "meta[name='description'], .description, .excerpt, .summary",
+                    "tags": ".tags, .categories, .keywords, .topics, .tag",
+                    "image": "img[src], .featured-image img, .article-image img"
+                }
+            })
+            
+            # Initialize the async crawler
+            async with AsyncWebCrawler(
+                crawler_strategy=crawler_strategy,
+                always_by_pass_cache=True,
+                verbose=True
+            ) as crawler:
+                
+                # Perform the crawl with advanced options
+                result = await crawler.arun(
+                    url=url,
+                    extraction_strategy=extraction_strategy,
+                    bypass_cache=True,
+                    process_iframes=True,
+                    remove_overlay_elements=True,
+                    simulate_user=True,
+                    override_navigator=True,
+                    wait_for="body",
+                    delay_before_return_html=2.0,
+                    css_selector="body",
+                    screenshot=False,
+                    magic=True  # Enable AI-powered content extraction
+                )
+                
+                if not result.success:
+                    logger.error(f"❌ Crawl4AI failed for {url}: {result.error_message}")
+                    return await self._fallback_scrape(url)
+                
+                # Extract structured data
+                extracted_data = {}
+                
+                # Parse extracted JSON if available
+                if result.extracted_content:
+                    try:
+                        json_data = json.loads(result.extracted_content)
+                        if isinstance(json_data, list) and json_data:
+                            extracted_data = json_data[0].get("article", {})
+                        elif isinstance(json_data, dict):
+                            extracted_data = json_data.get("article", {})
+                    except json.JSONDecodeError:
+                        logger.warning(f"⚠️ Could not parse extracted JSON for {url}")
+                
+                # Get clean markdown content
+                markdown_content = result.markdown or ""
+                
+                # Extract title from multiple sources
+                title = (
+                    extracted_data.get("title") or 
+                    result.metadata.get("title") or
+                    "No title found"
+                )
+                if isinstance(title, list):
+                    title = title[0] if title else "No title found"
+                
+                # Extract description
+                description = (
+                    extracted_data.get("description") or
+                    result.metadata.get("description") or
+                    ""
+                )
+                if isinstance(description, list):
+                    description = description[0] if description else ""
+                
+                # Extract author
+                author = extracted_data.get("author")
+                if isinstance(author, list):
+                    author = author[0] if author else None
+                
+                # Extract publication date
+                pub_date = extracted_data.get("date")
+                if isinstance(pub_date, list):
+                    pub_date = pub_date[0] if pub_date else None
+                
+                # Extract main content (prefer structured extraction, fallback to markdown)
+                content = ""
+                if extracted_data.get("content"):
+                    content = extracted_data["content"]
+                    if isinstance(content, list):
+                        content = " ".join(content)
+                else:
+                    content = markdown_content
+                
+                # Clean and limit content for LLM processing
+                content = self._clean_content(content)[:8000]
+                
+                # Extract tags/topics
+                tags = extracted_data.get("tags", [])
+                if isinstance(tags, str):
+                    tags = [tags]
+                
+                return {
+                    "title": title.strip(),
+                    "description": description.strip(),
+                    "content": content.strip(),
+                    "author": author,
+                    "date": pub_date,
+                    "tags": tags,
+                    "url": url,
+                    "markdown": markdown_content[:3000],  # Keep some markdown for reference
+                    "extracted_at": datetime.now(timezone.utc).isoformat(),
+                    "extraction_method": "crawl4ai_full",
+                    "links": result.links[:10] if result.links else [],  # Extract some links
+                    "media": result.media[:5] if result.media else []  # Extract some media
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Full Crawl4AI scraping failed for {url}: {str(e)}")
+            return await self._fallback_scrape(url)
+    
+    async def _fallback_scrape(self, url: str) -> Optional[Dict[str, Any]]:
+        """Fallback basic scraping when Crawl4AI is not available"""
+        try:
+            logger.info(f"🔄 Using fallback scraping for: {url}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=30) as response:
                     if response.status != 200:
@@ -64,41 +224,92 @@ class Crawl4AIScraper:
                     
                     html_content = await response.text()
                     
-                    # Extract basic content (simplified version - Crawl4AI would do this better)
+                    # Extract basic content using BeautifulSoup
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(html_content, 'html.parser')
                     
                     # Remove script and style elements
-                    for script in soup(["script", "style"]):
+                    for script in soup(["script", "style", "nav", "footer", "aside"]):
                         script.decompose()
-                    
-                    # Extract text content
-                    text_content = soup.get_text()
-                    
-                    # Clean up text
-                    lines = (line.strip() for line in text_content.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    text = ' '.join(chunk for chunk in chunks if chunk)
                     
                     # Extract title
                     title_tag = soup.find('title')
                     title = title_tag.get_text() if title_tag else "No title found"
                     
+                    # Try to find better title in h1 tags
+                    h1_tag = soup.find('h1')
+                    if h1_tag and len(h1_tag.get_text().strip()) > 10:
+                        title = h1_tag.get_text().strip()
+                    
                     # Extract meta description
                     meta_desc = soup.find('meta', attrs={'name': 'description'})
                     description = meta_desc.get('content') if meta_desc else ""
                     
+                    # Extract author from meta tags or common selectors
+                    author = None
+                    author_meta = soup.find('meta', attrs={'name': 'author'})
+                    if author_meta:
+                        author = author_meta.get('content')
+                    else:
+                        author_elem = soup.find(class_=lambda x: x and 'author' in x.lower())
+                        if author_elem:
+                            author = author_elem.get_text().strip()
+                    
+                    # Extract main content
+                    content = ""
+                    
+                    # Try to find article content using common selectors
+                    content_selectors = [
+                        'article', '.content', '.post-content', '.entry-content', 
+                        '.article-body', 'main', '.main-content', '.story-body'
+                    ]
+                    
+                    for selector in content_selectors:
+                        content_elem = soup.select_one(selector)
+                        if content_elem:
+                            content = content_elem.get_text()
+                            break
+                    
+                    # If no specific content found, extract all text
+                    if not content:
+                        content = soup.get_text()
+                    
+                    # Clean up content
+                    content = self._clean_content(content)[:5000]
+                    
                     return {
-                        "title": title,
-                        "description": description,
-                        "content": text[:5000],  # Limit content for LLM processing
+                        "title": title.strip(),
+                        "description": description.strip(),
+                        "content": content.strip(),
+                        "author": author,
+                        "date": None,
+                        "tags": [],
                         "url": url,
-                        "extracted_at": datetime.now(timezone.utc).isoformat()
+                        "extracted_at": datetime.now(timezone.utc).isoformat(),
+                        "extraction_method": "fallback_basic"
                     }
                     
         except Exception as e:
-            logger.error(f"❌ Crawl4AI scraping failed for {url}: {str(e)}")
+            logger.error(f"❌ Fallback scraping failed for {url}: {str(e)}")
             return None
+    
+    def _clean_content(self, content: str) -> str:
+        """Clean and normalize text content"""
+        if not content:
+            return ""
+        
+        # Split into lines and clean
+        lines = (line.strip() for line in content.splitlines())
+        
+        # Remove empty lines and join with spaces
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        cleaned = ' '.join(chunk for chunk in chunks if chunk)
+        
+        # Remove excessive whitespace
+        import re
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        
+        return cleaned.strip()
     
     async def process_with_mistral(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
@@ -108,27 +319,36 @@ class Crawl4AIScraper:
         try:
             logger.info(f"🧠 Processing with Mistral-Small-3: {scraped_data.get('title', 'Unknown')}")
             
-            # Create specific prompt for structured output
+            # Create specific prompt for structured output with enhanced data
+            extraction_method = scraped_data.get('extraction_method', 'unknown')
+            author_info = scraped_data.get('author', 'Not specified')
+            tags_info = scraped_data.get('tags', [])
+            
             prompt = f"""
 You are an AI news analyst. Analyze the following scraped content and extract key information in JSON format.
 
 Content Title: {scraped_data.get('title', '')}
 Content Description: {scraped_data.get('description', '')}
-Content Text: {scraped_data.get('content', '')[:3000]}
+Author: {author_info}
+Existing Tags: {tags_info}
+Content Text: {scraped_data.get('content', '')[:4000]}
 Source URL: {scraped_data.get('url', '')}
+Extraction Method: {extraction_method}
 
 Please analyze this content and return ONLY a valid JSON object with the following structure:
 {{
-    "headline": "Clear, concise headline for the article",
+    "headline": "Clear, concise headline for the article (use original title if good)",
     "author": "Author name if found, or null",
-    "summary": "2-3 sentence summary of the key points",
+    "summary": "2-3 sentence summary of the key points and significance",
     "date": "Publication date if found, or null",
     "content_type": "article",
-    "significance_score": "Number from 1-10 indicating importance of this AI news",
-    "key_topics": ["list", "of", "key", "AI", "topics", "covered"]
+    "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
+    "key_topics": ["list", "of", "key", "AI", "tech", "topics", "covered"],
+    "category": "One of: AI/ML, Robotics, Startups, Research, Industry, Policy, Hardware, Software"
 }}
 
-Focus on AI, machine learning, and technology content. Be accurate and concise.
+Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
+If this is not AI/tech related content, set significance_score to 1-3.
 """
 
             # Call Mistral-Small-3 API
@@ -145,17 +365,17 @@ Focus on AI, machine learning, and technology content. Be accurate and concise.
             }
             
             if not self.mistral_api_key:
-                # Fallback for demo purposes
+                # Enhanced fallback for demo purposes
                 logger.warning("⚠️ Using fallback processing (no Mistral API key)")
                 return ScrapedArticle(
                     headline=scraped_data.get('title', 'AI News Article'),
-                    author=None,
+                    author=scraped_data.get('author'),
                     summary=scraped_data.get('description', 'AI news and developments'),
-                    content=scraped_data.get('content', '')[:500],
-                    date=scraped_data.get('extracted_at'),
+                    content=scraped_data.get('content', '')[:1000],
+                    date=scraped_data.get('date') or scraped_data.get('extracted_at'),
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
-                    significance_score=7.0
+                    significance_score=6.0
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -180,10 +400,10 @@ Focus on AI, machine learning, and technology content. Be accurate and concise.
                         
                         return ScrapedArticle(
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
-                            author=parsed_data.get('author'),
+                            author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', ''),
-                            date=parsed_data.get('date'),
+                            date=parsed_data.get('date') or scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0))
@@ -278,7 +498,7 @@ class AdminScrapingInterface:
             logger.info(f"📡 Found {len(sources)} AI sources to scrape")
             
             # Step 2-4: Scrape all sources with Crawl4AI + Mistral-Small-3
-            source_urls = [source.get('url') or source.get('website') for source in sources if source.get('url') or source.get('website')]
+            source_urls = [source.get('rss_url') or source.get('website') for source in sources if source.get('rss_url') or source.get('website')]
             articles = await self.scraper.scrape_multiple_sources(source_urls)
             
             # Step 5: Insert results into articles table
@@ -289,11 +509,9 @@ class AdminScrapingInterface:
                         'id': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.headline,
                         'description': article.summary,
-                        'content_summary': article.summary,
+                        'content': article.summary,
                         'url': article.url,
                         'source': article.source,
-                        'category': 'ai_news',
-                        'content_type': article.content_type,
                         'significance_score': article.significance_score,
                         'published_date': article.date,
                         'scraped_date': datetime.now(timezone.utc).isoformat(),

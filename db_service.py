@@ -310,33 +310,7 @@ class PostgreSQLService:
                         except Exception as idx_error:
                             logger.warning(f"⚠️ Index {index_name} creation failed: {idx_error}")
                             # Continue with other indexes
-                    
-                    # Consolidate sources tables - migrate any data from old 'sources' table to 'ai_sources'
-                    cursor.execute("""
-                        DO $$
-                        BEGIN
-                            -- Check if old 'sources' table exists and migrate data
-                            IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'sources') THEN
-                                -- Migrate data from sources to ai_sources if ai_sources is empty
-                                INSERT INTO ai_sources (name, rss_url, website, content_type, category, enabled, priority)
-                                SELECT 
-                                    name, 
-                                    COALESCE(rss_url, url) as rss_url,
-                                    website,
-                                    COALESCE(content_type, 'articles') as content_type,
-                                    COALESCE(category, 'general') as category,
-                                    COALESCE(enabled, true) as enabled,
-                                    COALESCE(priority, 5) as priority
-                                FROM sources
-                                WHERE NOT EXISTS (SELECT 1 FROM ai_sources WHERE ai_sources.name = sources.name);
-                                
-                                -- Drop the old sources table
-                                DROP TABLE sources CASCADE;
-                                
-                                RAISE NOTICE 'Migrated data from sources table to ai_sources and dropped old table';
-                            END IF;
-                        END $$;
-                    """)
+                  
                     
                     # Create optimized database views
                     self.create_database_views(cursor)
@@ -360,29 +334,35 @@ class PostgreSQLService:
         
         # Enhanced articles view with topic information
         cursor.execute("""
-            CREATE OR REPLACE VIEW articles_with_topics AS
-            SELECT 
-                a.*,
-                ct.name as content_type_name,
-                ct.display_name as content_type_display,
-                STRING_AGG(DISTINCT at2.name, ', ') as topic_names,
-                STRING_AGG(DISTINCT at2.category, ', ') as topic_categories,
-                COALESCE(
-                    JSON_AGG(
-                        DISTINCT jsonb_build_object(
-                            'id', at2.id,
-                            'name', at2.name,
-                            'category', at2.category
-                        )
-                    ) FILTER (WHERE at2.id IS NOT NULL),
-                    '[]'::json
-                ) as topics,
-                COUNT(DISTINCT att.topic_id) as topic_count
-            FROM articles a
-            LEFT JOIN content_types ct ON a.content_type_id = ct.id
-            LEFT JOIN article_topics att ON a.id = att.article_id
-            LEFT JOIN ai_topics at2 ON att.topic_id = at2.id
-            GROUP BY a.id, ct.name, ct.display_name;
+            CREATE OR REPLACE VIEW personalized_article_feed AS
+                SELECT 
+                    a.id AS article_id,
+                    a.title,
+                    a.url,
+                    a.published_at,
+                    a.description,
+                    a.reading_time,
+                    a.significance_score,
+                    -- NEW COLUMN inserted cleanly after significance_score
+                    ct.name AS content_type_name, 
+                    t.name AS ai_topic_name,
+                    m.name AS selected_category,
+                    m.id AS selected_category_id,
+                    upc.user_id,
+                    u.experience_level,
+                    u.professional_role
+                FROM 
+                    articles a
+                JOIN 
+                    ai_topics t ON a.ai_topic_id = t.id 
+                JOIN 
+                    ai_categories_master m ON t.category_id = m.id 
+                JOIN 
+                    content_types ct ON a.content_type_id = ct.id 
+                JOIN 
+                    user_preferences_category upc ON m.id = upc.category_id 
+                JOIN
+                    users u ON upc.user_id = u.id;
         """)
         
         # Optimized digest view
@@ -416,11 +396,13 @@ class PostgreSQLService:
         
         content_types = [
             ("blogs", "Blog Articles", "News articles, analysis pieces, and written content", "blog", "📝"),
-            ("podcasts", "Podcasts", "Audio content and podcast episodes", "audio", "🎧"),
             ("videos", "Videos", "Video content and tutorials", "video", "📹"),
+            ("podcasts", "Podcasts", "Audio content and podcast episodes", "audio", "🎧"),
             ("events", "Events", "Conferences, webinars, and industry events", "events", "📅"),
-            ("learning", "Learning Resources", "Courses, tutorials, and educational content", "learning", "📚"),
             ("demos", "Demos & Tools", "Interactive demonstrations and AI tools", "demos", "🛠️")
+            ("papers", "Research papers", "Interactive demonstrations and AI tools", "papers", "🛠️")
+            ("learning", "Learning Resources", "Courses, tutorials, and educational content", "learning", "📚"),
+            ("newsletters", "Newsletters & Email Updates", "Feed", "learning", "📚"),   
         ]
         
         for name, display_name, description, section, icon in content_types:
@@ -443,39 +425,8 @@ class PostgreSQLService:
         if count > 0:
             logger.info(f"📊 Found {count} existing AI topics, skipping population")
             return
-        
-        ai_topics = [
-            ("ml_foundations", "Machine Learning", "Core ML algorithms, techniques, and foundations", "research"),
-            ("deep_learning", "Deep Learning", "Neural networks, deep learning research and applications", "research"),
-            ("nlp_llm", "Natural Language Processing", "Language models, NLP, and conversational AI", "language"),
-            ("computer_vision", "Computer Vision", "Image recognition, visual AI, and computer vision", "research"),
-            ("ai_tools", "AI Tools & Platforms", "New AI tools and platforms for developers", "platform"),
-            ("ai_research", "AI Research Papers", "Latest academic research and scientific breakthroughs", "research"),
-            ("ai_ethics", "AI Ethics & Safety", "Responsible AI, safety research, and ethical considerations", "policy"),
-            ("robotics", "Robotics & Automation", "Physical AI, robotics, and automation systems", "robotics"),
-            ("ai_business", "AI in Business", "Enterprise AI and industry applications", "company"),
-            ("ai_startups", "AI Startups & Funding", "New AI companies and startup ecosystem", "startup"),
-            ("ai_regulation", "AI Policy & Regulation", "Government policies and AI governance", "policy"),
-            ("ai_hardware", "AI Hardware & Computing", "AI chips and hardware innovations", "hardware"),
-            ("ai_automotive", "AI in Automotive", "Self-driving cars and automotive AI", "automotive"),
-            ("ai_healthcare", "AI in Healthcare", "Medical AI applications and healthcare tech", "healthcare"),
-            ("ai_finance", "AI in Finance", "Financial AI, trading, and fintech applications", "finance"),
-            ("ai_gaming", "AI in Gaming", "Game AI, procedural generation, and gaming tech", "gaming"),
-            ("ai_creative", "AI in Creative Arts", "AI for art, music, design, and creative content", "creative"),
-            ("ai_cloud", "AI Cloud Services", "Cloud-based AI services and infrastructure", "cloud"),
-            ("ai_events", "AI Events & Conferences", "AI conferences, workshops, and industry events", "events"),
-            ("ai_learning", "AI Learning & Education", "AI courses, tutorials, and educational content", "learning"),
-            ("ai_news", "AI News & Updates", "Latest AI news and industry updates", "news"),
-            ("ai_international", "AI International", "Global AI developments and international news", "international"),
-        ]
-        
-        for topic_id, name, description, category in ai_topics:
-            cursor.execute("""
-                INSERT INTO ai_topics (id, name, description, category, is_active)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-            """, (topic_id, name, description, category, True))
-        
+        # Need to add ai_topics insert queries 
+       
         logger.info("✅ AI topics populated successfully")
     
     def populate_ai_sources(self, cursor):
@@ -491,58 +442,60 @@ class PostgreSQLService:
         logger.info("📋 Populating ai_sources table...")
         
         # Comprehensive AI news sources
-        ai_sources = [
+        # ai_sources = [
             # AI Research & Papers
-            ("OpenAI Blog", "https://openai.com/blog/rss/", "https://openai.com/blog", "blogs", "research", True, 1),
-            ("Anthropic Blog", "https://www.anthropic.com/news", "https://www.anthropic.com", "blogs", "research", True, 1),
-            ("DeepMind Blog", "https://deepmind.google/discover/blog/", "https://deepmind.google", "blogs", "research", True, 1),
-            ("AI Research", "https://ai.googleblog.com/feeds/posts/default", "https://ai.googleblog.com", "blogs", "research", True, 2),
-            ("Meta AI Blog", "https://ai.meta.com/blog/", "https://ai.meta.com", "blogs", "research", True, 2),
+        #    ("OpenAI Blog", "https://openai.com/blog/rss/", "https://openai.com/blog", "blogs", "research", True, 1),
+        #    ("Anthropic Blog", "https://www.anthropic.com/news", "https://www.anthropic.com", "blogs", "research", True, 1),
+        #   ("DeepMind Blog", "https://deepmind.google/discover/blog/", "https://deepmind.google", "blogs", "research", True, 1),
+        #    ("AI Research", "https://ai.googleblog.com/feeds/posts/default", "https://ai.googleblog.com", "blogs", "research", True, 2),
+        #    ("Meta AI Blog", "https://ai.meta.com/blog/", "https://ai.meta.com", "blogs", "research", True, 2),
             
             # Industry & Business
-            ("VentureBeat AI", "https://venturebeat.com/ai/feed/", "https://venturebeat.com/ai", "blogs", "business", True, 2),
-            ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/", "https://techcrunch.com", "blogs", "business", True, 2),
-            ("The Information AI", "https://www.theinformation.com/topics/artificial-intelligence", "https://www.theinformation.com", "blogs", "business", True, 3),
-            ("MIT Technology Review AI", "https://www.technologyreview.com/topic/artificial-intelligence/", "https://www.technologyreview.com", "blogs", "research", True, 2),
+        #    ("VentureBeat AI", "https://venturebeat.com/ai/feed/", "https://venturebeat.com/ai", "blogs", "business", True, 2),
+        #    ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/", "https://techcrunch.com", "blogs", "business", True, 2),
+        #    ("The Information AI", "https://www.theinformation.com/topics/artificial-intelligence", "https://www.theinformation.com", "blogs", "business", True, 3),
+        #    ("MIT Technology Review AI", "https://www.technologyreview.com/topic/artificial-intelligence/", "https://www.technologyreview.com", "blogs", "research", True, 2),
             
             # Technical News
-            ("Towards Data Science", "https://towardsdatascience.com/feed", "https://towardsdatascience.com", "blogs", "technical", True, 3),
-            ("AI News", "https://artificialintelligence-news.com/feed/", "https://artificialintelligence-news.com", "blogs", "technical", True, 3),
-            ("Machine Learning Mastery", "https://machinelearningmastery.com/feed/", "https://machinelearningmastery.com", "blogs", "education", True, 4),
-            ("Analytics Vidhya", "https://www.analyticsvidhya.com/blog/feed/", "https://www.analyticsvidhya.com", "blogs", "education", True, 4),
+        #    ("Towards Data Science", "https://towardsdatascience.com/feed", "https://towardsdatascience.com", "blogs", "technical", True, 3),
+        #    ("Towards Data Science", "https://towardsdatascience.com/feed", "https://towardsdatascience.com", "blogs", "technical", True, 3),
+        #    ("Towards Data Science", "https://towardsdatascience.com/feed", "https://towardsdatascience.com", "blogs", "technical", True, 3),
+        #    ("AI News", "https://artificialintelligence-news.com/feed/", "https://artificialintelligence-news.com", "blogs", "technical", True, 3),
+        #    ("Machine Learning Mastery", "https://machinelearningmastery.com/feed/", "https://machinelearningmastery.com", "blogs", "education", True, 4),
+        #    ("Analytics Vidhya", "https://www.analyticsvidhya.com/blog/feed/", "https://www.analyticsvidhya.com", "blogs", "education", True, 4),
             
             # Podcasts
-            ("Lex Fridman Podcast", "https://lexfridman.com/podcast/", "https://lexfridman.com", "podcasts", "interviews", True, 2),
-            ("AI Podcast", "https://blogs.nvidia.com/ai-podcast/", "https://blogs.nvidia.com", "podcasts", "technical", True, 3),
-            ("The AI Podcast by NVIDIA", "https://soundcloud.com/theaipodcast", "https://soundcloud.com/theaipodcast", "podcasts", "technical", True, 3),
+        #    ("Lex Fridman Podcast", "https://lexfridman.com/podcast/", "https://lexfridman.com", "podcasts", "interviews", True, 2),
+        #   ("AI Podcast", "https://blogs.nvidia.com/ai-podcast/", "https://blogs.nvidia.com", "podcasts", "technical", True, 3),
+        #    ("The AI Podcast by NVIDIA", "https://soundcloud.com/theaipodcast", "https://soundcloud.com/theaipodcast", "podcasts", "technical", True, 3),
             
             # Videos & YouTube
-            ("Two Minute Papers", "https://www.youtube.com/c/K%C3%A1rolyZsolnai", "https://www.youtube.com/c/K%C3%A1rolyZsolnai", "videos", "education", True, 3),
-            ("AI Explained", "https://www.youtube.com/c/AIExplained-Official", "https://www.youtube.com/c/AIExplained-Official", "videos", "education", True, 4),
-            ("Yannic Kilcher", "https://www.youtube.com/c/YannicKilcher", "https://www.youtube.com/c/YannicKilcher", "videos", "research", True, 4),
+        #    ("Two Minute Papers", "https://www.youtube.com/c/K%C3%A1rolyZsolnai", "https://www.youtube.com/c/K%C3%A1rolyZsolnai", "videos", "education", True, 3),
+        #    ("AI Explained", "https://www.youtube.com/c/AIExplained-Official", "https://www.youtube.com/c/AIExplained-Official", "videos", "education", True, 4),
+        #    ("Yannic Kilcher", "https://www.youtube.com/c/YannicKilcher", "https://www.youtube.com/c/YannicKilcher", "videos", "research", True, 4),
             
             # Learning Resources
-            ("Coursera AI Blog", "https://blog.coursera.org/tag/artificial-intelligence/", "https://blog.coursera.org", "learning", "education", True, 4),
-            ("edX AI News", "https://blog.edx.org/tag/artificial-intelligence", "https://blog.edx.org", "learning", "education", True, 4),
-            ("Udacity AI Blog", "https://blog.udacity.com/tag/artificial-intelligence", "https://blog.udacity.com", "learning", "education", True, 4),
+        #    ("Coursera AI Blog", "https://blog.coursera.org/tag/artificial-intelligence/", "https://blog.coursera.org", "learning", "education", True, 4),
+        #    ("edX AI News", "https://blog.edx.org/tag/artificial-intelligence", "https://blog.edx.org", "learning", "education", True, 4),
+        #    ("Udacity AI Blog", "https://blog.udacity.com/tag/artificial-intelligence", "https://blog.udacity.com", "learning", "education", True, 4),
             
             # Demonstrations & Tools
-            ("Hugging Face Blog", "https://huggingface.co/blog", "https://huggingface.co", "demos", "platform", True, 2),
-            ("OpenAI Platform", "https://platform.openai.com/docs", "https://platform.openai.com", "demos", "platform", True, 2),
-            ("Papers with Code", "https://paperswithcode.com/", "https://paperswithcode.com", "demos", "research", True, 3),
+        #    ("Hugging Face Blog", "https://huggingface.co/blog", "https://huggingface.co", "demos", "platform", True, 2),
+        #    ("OpenAI Platform", "https://platform.openai.com/docs", "https://platform.openai.com", "demos", "platform", True, 2),
+        #    ("Papers with Code", "https://paperswithcode.com/", "https://paperswithcode.com", "demos", "research", True, 3),
             
             # Events & Conferences
-            ("NeurIPS", "https://neurips.cc/", "https://neurips.cc", "events", "research", True, 3),
-            ("ICML", "https://icml.cc/", "https://icml.cc", "events", "research", True, 3),
-            ("ICLR", "https://iclr.cc/", "https://iclr.cc", "events", "research", True, 3)
-        ]
+        #    ("NeurIPS", "https://neurips.cc/", "https://neurips.cc", "events", "research", True, 3),
+        #    ("ICML", "https://icml.cc/", "https://icml.cc", "events", "research", True, 3),
+        #    ("ICLR", "https://iclr.cc/", "https://iclr.cc", "events", "research", True, 3)
+        #]
         
-        for name, rss_url, website, content_type, category, enabled, priority in ai_sources:
-            cursor.execute("""
-                INSERT INTO ai_sources (name, rss_url, website, content_type, category, enabled, priority)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (name) DO NOTHING
-            """, (name, rss_url, website, content_type, category, enabled, priority))
+        #for name, rss_url, website, content_type, category, enabled, priority in ai_sources:
+        #    cursor.execute("""
+        #        INSERT INTO ai_sources (name, rss_url, website, content_type, category, enabled, priority)
+        #        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        #        ON CONFLICT (name) DO NOTHING
+        #    """, (name, rss_url, website, content_type, category, enabled, priority))
         
         logger.info("✅ AI sources populated successfully")
     
@@ -552,7 +505,7 @@ class PostgreSQLService:
         """Get all AI sources for scraping"""
         try:
             query = """
-                SELECT id, name, rss_url, website, COALESCE(c.name, 'general')
+                SELECT s.id, s.name, s.rss_url, s.website, COALESCE(c.name, 'general') as category, s.priority, s.enabled  
                 FROM ai_sources s LEFT JOIN ai_topics t ON s.ai_topic_id = t.id LEFT JOIN ai_categories_master c ON t.category_id = c.id WHERE s.enabled = TRUE 
                 ORDER BY priority DESC, s.name
             """
@@ -588,8 +541,8 @@ class PostgreSQLService:
             # Insert new article
             insert_query = """
                 INSERT INTO articles (
-                    id, title, description, content_summary, url, source, 
-                    category, content_type, significance_score, published_date, 
+                    id, title, description, content, url, source, 
+                    content_type_id, ai_topics_id,significance_score, published_date, 
                     scraped_date, llm_processed, is_current_day
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
@@ -600,16 +553,16 @@ class PostgreSQLService:
                 article_data.get('id'),
                 article_data.get('title'),
                 article_data.get('description'),
-                article_data.get('content_summary'),
+                article_data.get('content'),
                 article_data.get('url'),
                 article_data.get('source'),
-                article_data.get('category', 'ai_news'),
-                article_data.get('content_type', 'article'),
-                article_data.get('significance_score', 5.0),
+                article_data.get('content_type_id'),
+                article_data.get('ai_topics_id'),
+                article_data.get('significance_score'),
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),
-                article_data.get('llm_processed', False),
-                True  # is_current_day
+                article_data.get('llm_processed')),
+                True  # is_current_
             )
             
             self.execute_query(insert_query, values, fetch_all=False)

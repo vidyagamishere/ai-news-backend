@@ -20,6 +20,31 @@ email-validator>=2.0.0
 # PostgreSQL database support (required)
 psycopg2-binary>=2.9.7
 
-# Scraping dependencies for Crawl4AI and Mistral integration
+# Enhanced Crawl4AI scraping dependencies
+crawl4ai>=0.3.0
+playwright>=1.40.0
 aiohttp>=3.9.0
 pandas>=2.0.0
+
+# Additional scraping and content processing dependencies
+selenium>=4.15.0
+webdriver-manager>=4.0.0
+fake-useragent>=1.4.0
+html2text>=2020.1.16
+readability-lxml>=0.8.1
+newspaper3k>=0.2.8
+markdownify>=0.11.6
+
+# Data processing and analysis
+numpy>=1.24.0
+textstat>=0.7.3
+langdetect>=1.0.9
+
+# HTTP and network utilities
+httpx>=0.25.0
+urllib3>=2.0.0
+certifi>=2023.0.0
+
+# Async utilities
+asyncio-throttle>=1.0.2
+tenacity>=8.2.0
