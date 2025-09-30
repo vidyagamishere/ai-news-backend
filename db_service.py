@@ -69,17 +69,42 @@ class PostgreSQLService:
     
     def execute_query(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = True) -> Optional[Any]:
         """Execute a query with automatic connection management"""
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, params)
-                conn.commit()
-                
-                if fetch_one:
-                    return cursor.fetchone()
-                elif fetch_all:
-                    return cursor.fetchall()
-                else:
-                    return cursor.rowcount
+        import os
+        DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+        
+        if DEBUG:
+            logger.debug(f"🔍 Executing query: {query[:200]}{'...' if len(query) > 200 else ''}")
+            if params:
+                logger.debug(f"🔍 Query parameters: {params}")
+        
+        try:
+            with self.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    conn.commit()
+                    
+                    if fetch_one:
+                        result = cursor.fetchone()
+                        if DEBUG:
+                            logger.debug(f"🔍 Query returned one result: {result}")
+                        return result
+                    elif fetch_all:
+                        results = cursor.fetchall()
+                        if DEBUG:
+                            logger.debug(f"🔍 Query returned {len(results)} results")
+                        return results
+                    else:
+                        rowcount = cursor.rowcount
+                        if DEBUG:
+                            logger.debug(f"🔍 Query affected {rowcount} rows")
+                        return rowcount
+                        
+        except Exception as e:
+            logger.error(f"❌ Query execution failed: {str(e)}")
+            if DEBUG:
+                logger.debug(f"🔍 Failed query: {query}")
+                logger.debug(f"🔍 Failed params: {params}")
+            raise e
     
     def initialize_database(self):
         """Initialize PostgreSQL database schema"""
@@ -132,7 +157,7 @@ class PostgreSQLService:
                             image_url TEXT,
                             keywords TEXT,
                             content_type_id INTEGER REFERENCES content_types(id),
-                            ai_topic_id VARCHAR(100) REFERENCES ai_topics(id),
+                            ai_topic_id INTEGER REFERENCES ai_topics(id),
                             processing_status VARCHAR(50) DEFAULT 'pending',
                             content_hash VARCHAR(64),
                             audio_url TEXT,
@@ -148,7 +173,7 @@ class PostgreSQLService:
                         CREATE TABLE IF NOT EXISTS article_topics (
                             id SERIAL PRIMARY KEY,
                             article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
-                            topic_id VARCHAR(100) REFERENCES ai_topics(id) ON DELETE CASCADE,
+                            topic_id INTEGER REFERENCES ai_topics(id) ON DELETE CASCADE,
                             relevance_score FLOAT DEFAULT 1.0,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             UNIQUE(article_id, topic_id)
@@ -195,7 +220,7 @@ class PostgreSQLService:
                         CREATE TABLE IF NOT EXISTS user_topic_preferences (
                             id SERIAL PRIMARY KEY,
                             user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
-                            topic_id VARCHAR(100) REFERENCES ai_topics(id) ON DELETE CASCADE,
+                            topic_id INTEGER REFERENCES ai_topics(id) ON DELETE CASCADE,
                             selected BOOLEAN DEFAULT TRUE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             UNIQUE(user_id, topic_id)
@@ -260,7 +285,7 @@ class PostgreSQLService:
                             category VARCHAR(100),
                             enabled BOOLEAN DEFAULT TRUE,
                             priority INTEGER DEFAULT 5,
-                            ai_topic_id VARCHAR(100),
+                            ai_topic_id INTEGER,
                             meta_tags TEXT,
                             description TEXT,
                             last_scraped TIMESTAMP,

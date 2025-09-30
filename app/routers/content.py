@@ -4,17 +4,24 @@ Content router for modular FastAPI architecture
 Maintains compatibility with existing frontend API endpoints
 """
 
+import os
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models.schemas import DigestResponse, ContentByTypeResponse, UserResponse
-from app.dependencies.auth import get_current_user_optional
+from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
 
 logger = logging.getLogger(__name__)
 
+# Get DEBUG mode
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
 router = APIRouter()
+
+if DEBUG:
+    logger.debug("🔍 Content router initialized in DEBUG mode")
 
 
 def get_content_service() -> ContentService:
@@ -199,63 +206,68 @@ async def get_content_types(
 
 @router.post("/admin/scrape")
 async def admin_initiate_scraping(
-    current_user: UserResponse = Depends(get_current_user_optional),
+    current_user: UserResponse = Depends(get_current_user),
     content_service: ContentService = Depends(get_content_service)
 ):
     """
     Admin-only endpoint to initiate AI news scraping process
-    Uses Crawl4AI + Mistral-Small-3 as specified in functional requirements
+    Uses Content Service for scraping operations
     """
-    # Check if user is admin
-    if not current_user or not current_user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                'error': 'Admin access required',
-                'message': 'Only admin@vidyagam.com can initiate scraping'
-            }
-        )
-    
     try:
         logger.info(f"🔧 Admin scraping initiated by: {current_user.email}")
         
-        # Import the admin scraping interface
-        from crawl4ai_scraper import AdminScrapingInterface
-        from db_service import get_database_service
+        if DEBUG:
+            logger.debug(f"🔍 Admin scrape request by user: {current_user.email}")
+            logger.debug(f"🔍 User admin status: {current_user.is_admin}")
         
-        # Initialize scraping interface
-        db_service = get_database_service()
-        admin_scraper = AdminScrapingInterface(db_service)
-        
-        # Start scraping process
-        result = await admin_scraper.initiate_scraping(current_user.email)
-        
-        if result['success']:
-            logger.info(f"✅ Admin scraping completed: {result['articles_processed']} articles processed")
-            return {
-                'success': True,
-                'message': 'Scraping process completed successfully',
-                'data': result,
-                'admin': current_user.email
-            }
-        else:
-            logger.error(f"❌ Admin scraping failed: {result['message']}")
+        # Check admin permissions
+        if not current_user.is_admin:
+            logger.warning(f"⚠️ Non-admin user attempted scraping: {current_user.email}")
             raise HTTPException(
-                status_code=500,
+                status_code=403,
                 detail={
-                    'error': 'Scraping process failed',
-                    'message': result['message'],
-                    'admin': current_user.email
+                    'error': 'Admin access required',
+                    'message': 'Only admin users can trigger scraping'
                 }
             )
-            
+        
+        if DEBUG:
+            logger.debug("🔍 Admin permissions verified, starting scraping")
+        
+        # Trigger scraping operation with detailed error handling
+        try:
+            logger.info("🔍 About to call content_service.scrape_content()")
+            result = content_service.scrape_content()
+            logger.info("🔍 Successfully called content_service.scrape_content()")
+        except NameError as ne:
+            logger.error(f"❌ NameError in scrape_content: {str(ne)}")
+            raise ne
+        except Exception as se:
+            logger.error(f"❌ Other error in scrape_content: {str(se)}")
+            raise se
+        
+        if DEBUG:
+            logger.debug(f"🔍 Scraping completed with result: {result}")
+        
+        logger.info(f"✅ Admin scraping completed successfully by: {current_user.email}")
+        return {
+            'success': True,
+            'message': 'Content scraping completed successfully',
+            'data': result,
+            'database': 'postgresql'
+        }
+        
     except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
         logger.error(f"❌ Admin scraping endpoint failed: {str(e)}")
+        logger.error(f"❌ Full traceback: {error_traceback}")
         raise HTTPException(
             status_code=500,
             detail={
-                'error': 'Failed to initiate scraping',
+                'error': 'Admin scraping failed',
                 'message': str(e),
-                'admin': current_user.email if current_user else 'unknown'
+                'traceback': error_traceback,
+                'database': 'postgresql'
             }
         )

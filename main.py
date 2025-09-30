@@ -12,19 +12,33 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+# Clear Python cache on startup to fix Railway caching issues
+if hasattr(sys, '_getframe'):
+    for module_name in list(sys.modules.keys()):
+        if module_name.startswith('app.'):
+            del sys.modules[module_name]
+
 # Add current directory to Python path for Railway
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper())
+# Configure logging with DEBUG support
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+log_level = logging.DEBUG if DEBUG else getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper())
+
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Log the debug mode status
+if DEBUG:
+    logger.debug("🐛 DEBUG mode enabled - verbose logging activated")
+else:
+    logger.info(f"📊 Log level set to: {logging.getLevelName(log_level)}")
 
 # Import modular components
 from app.routers import health, auth, content, admin
