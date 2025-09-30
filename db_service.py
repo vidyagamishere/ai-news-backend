@@ -398,13 +398,13 @@ class PostgreSQLService:
                 ct.name as content_type_name,
                 ct.display_name as content_type_display,
                 STRING_AGG(DISTINCT at2.name, ', ') as topic_names,
-                STRING_AGG(DISTINCT COALESCE(ac.name, at2.category, 'general'), ', ') as topic_categories,
+                STRING_AGG(DISTINCT COALESCE(ac.name, 'general'), ', ') as topic_categories,
                 COALESCE(
                     JSON_AGG(
                         DISTINCT jsonb_build_object(
                             'id', at2.id,
                             'name', at2.name,
-                            'category', COALESCE(ac.name, at2.category, 'general'),
+                            'category', COALESCE(ac.name, 'general'),
                             'category_id', at2.category_id
                         )
                     ) FILTER (WHERE at2.id IS NOT NULL),
