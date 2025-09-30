@@ -101,10 +101,14 @@ async def get_sources():
         db = get_database_service()
         
         sources_query = """
-            SELECT name, rss_url, website, content_type, category, priority, enabled
-            FROM ai_sources
-            WHERE enabled = TRUE
-            ORDER BY priority ASC, name ASC
+            SELECT s.name, s.rss_url, s.website, s.content_type, 
+                   COALESCE(c.name, 'general') as category, 
+                   s.priority, s.enabled
+            FROM ai_sources s
+            LEFT JOIN ai_topics t ON s.ai_topic_id = t.id 
+            LEFT JOIN ai_categories_master c ON t.category_id = c.id
+            WHERE s.enabled = TRUE
+            ORDER BY s.priority ASC, s.name ASC
         """
         
         sources = db.execute_query(sources_query)

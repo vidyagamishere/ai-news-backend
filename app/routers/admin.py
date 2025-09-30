@@ -50,12 +50,16 @@ async def get_admin_sources(
         
         db = get_database_service()
         
-        # Get all sources (including inactive ones for admin view)
+        # Get all sources with category via JOIN relationship (including inactive ones for admin view)
         sources_query = """
-            SELECT id, name, rss_url, website, content_type, category, priority, enabled, is_active,
-                   created_at, updated_at
-            FROM ai_sources
-            ORDER BY priority ASC, name ASC
+            SELECT s.id, s.name, s.rss_url, s.website, s.content_type, 
+                   COALESCE(c.name, 'general') as category, 
+                   s.priority, s.enabled, s.is_active,
+                   s.created_at, s.updated_at, s.ai_topic_id
+            FROM ai_sources s 
+            LEFT JOIN ai_topics t ON s.ai_topic_id = t.id 
+            LEFT JOIN ai_categories_master c ON t.category_id = c.id
+            ORDER BY s.priority ASC, s.name ASC
         """
         
         sources = db.execute_query(sources_query)
@@ -105,9 +109,9 @@ async def add_admin_source(
         
         db = get_database_service()
         
-        # Insert new source
+        # Insert new source using ai_topic_id relationship
         insert_query = """
-            INSERT INTO ai_sources (name, rss_url, website, content_type, category, priority, enabled, is_active)
+            INSERT INTO ai_sources (name, rss_url, website, content_type, ai_topic_id, priority, enabled, is_active)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
@@ -117,7 +121,7 @@ async def add_admin_source(
             source_data.get('rss_url'),
             source_data.get('website', ''),
             source_data.get('content_type', 'blogs'),
-            source_data.get('category', 'general'),
+            source_data.get('ai_topic_id'),
             source_data.get('priority', 1),
             source_data.get('enabled', True),
             source_data.get('is_active', True)
@@ -162,11 +166,11 @@ async def update_admin_source(
         if not source_id:
             raise HTTPException(status_code=400, detail="Source ID required")
         
-        # Update source
+        # Update source using ai_topic_id relationship
         update_query = """
             UPDATE ai_sources 
             SET name = %s, rss_url = %s, website = %s, content_type = %s, 
-                category = %s, priority = %s, enabled = %s, is_active = %s,
+                ai_topic_id = %s, priority = %s, enabled = %s, is_active = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """
@@ -176,7 +180,7 @@ async def update_admin_source(
             update_data.get('rss_url'),
             update_data.get('website', ''),
             update_data.get('content_type', 'blogs'),
-            update_data.get('category', 'general'),
+            update_data.get('ai_topic_id'),
             update_data.get('priority', 1),
             update_data.get('enabled', True),
             update_data.get('is_active', True),

@@ -77,7 +77,13 @@ class Crawl4AIScraper:
     async def _crawl4ai_full_scrape(self, url: str) -> Optional[Dict[str, Any]]:
         """Full Crawl4AI implementation with browser automation and advanced extraction"""
         try:
-            # Configure Crawl4AI with advanced options
+            # Set up writable directories for Railway deployment
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            os.environ['CRAWL4AI_CACHE_DIR'] = temp_dir
+            os.environ['PLAYWRIGHT_BROWSERS_PATH'] = temp_dir + '/browsers'
+            
+            # Configure Crawl4AI with advanced options and proper permissions
             crawler_strategy = AsyncPlaywrightCrawlerStrategy(
                 headless=True,
                 browser_type="chromium",
@@ -87,7 +93,9 @@ class Crawl4AIScraper:
                     "Accept-Language": "en-US,en;q=0.5",
                     "Accept-Encoding": "gzip, deflate",
                     "Connection": "keep-alive",
-                }
+                },
+                user_data_dir=temp_dir + '/user_data',  # Use temp directory for user data
+                downloads_path=temp_dir + '/downloads'   # Use temp directory for downloads
             )
             
             # Define extraction strategy for structured content
@@ -103,11 +111,13 @@ class Crawl4AIScraper:
                 }
             })
             
-            # Initialize the async crawler
+            # Initialize the async crawler with Railway-compatible settings
             async with AsyncWebCrawler(
                 crawler_strategy=crawler_strategy,
                 always_by_pass_cache=True,
-                verbose=True
+                verbose=False,  # Reduce logging for Railway
+                cache_mode="disabled",  # Disable caching to avoid permission issues
+                timeout=30  # Shorter timeout for Railway
             ) as crawler:
                 
                 # Perform the crawl with advanced options
@@ -192,7 +202,7 @@ class Crawl4AIScraper:
                 if isinstance(tags, str):
                     tags = [tags]
                 
-                return {
+                extracted_result = {
                     "title": title.strip(),
                     "description": description.strip(),
                     "content": content.strip(),
@@ -207,8 +217,23 @@ class Crawl4AIScraper:
                     "media": result.media[:5] if result.media else []  # Extract some media
                 }
                 
+                # Cleanup temp directory for Railway deployment
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass  # Ignore cleanup errors
+                
+                return extracted_result
+                
         except Exception as e:
             logger.error(f"❌ Full Crawl4AI scraping failed for {url}: {str(e)}")
+            # Cleanup temp directory on error
+            try:
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
             return await self._fallback_scrape(url)
     
     async def _fallback_scrape(self, url: str) -> Optional[Dict[str, Any]]:
