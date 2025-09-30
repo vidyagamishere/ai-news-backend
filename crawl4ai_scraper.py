@@ -5,6 +5,14 @@ Implements the exact scraping process: Crawl4AI -> Mistral-Small-3 -> Structured
 """
 
 import os
+import tempfile
+
+# Set up writable directories for Railway deployment BEFORE any Crawl4AI imports
+temp_base_dir = tempfile.mkdtemp(prefix='crawl4ai_')
+os.environ['CRAWL4AI_CACHE_DIR'] = temp_base_dir
+os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(temp_base_dir, 'browsers')
+os.environ['CRAWL4AI_BASE_DIRECTORY'] = temp_base_dir
+
 import json
 import logging
 import asyncio
@@ -15,18 +23,19 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import aiohttp
 
-# Crawl4AI imports
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Crawl4AI imports - after environment setup
 try:
     from crawl4ai import AsyncWebCrawler
     from crawl4ai.extraction_strategy import JsonCssExtractionStrategy, CosineStrategy
     from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
     CRAWL4AI_AVAILABLE = True
-except ImportError:
+    logger.info(f"✅ Crawl4AI available - using cache dir: {temp_base_dir}")
+except ImportError as e:
     CRAWL4AI_AVAILABLE = False
-    logger.warning("⚠️ Crawl4AI not installed - falling back to basic scraping")
-
-# Configure logging
-logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ Crawl4AI not installed - falling back to basic scraping: {e}")
 
 @dataclass
 class ScrapedArticle:
@@ -77,11 +86,12 @@ class Crawl4AIScraper:
     async def _crawl4ai_full_scrape(self, url: str) -> Optional[Dict[str, Any]]:
         """Full Crawl4AI implementation with browser automation and advanced extraction"""
         try:
-            # Set up writable directories for Railway deployment
-            import tempfile
-            temp_dir = tempfile.mkdtemp()
-            os.environ['CRAWL4AI_CACHE_DIR'] = temp_dir
-            os.environ['PLAYWRIGHT_BROWSERS_PATH'] = temp_dir + '/browsers'
+            # Use the module-level temp directory that was set before imports
+            global temp_base_dir
+            
+            # Create session-specific subdirectories
+            session_dir = os.path.join(temp_base_dir, f'session_{os.getpid()}_{asyncio.current_task().get_name() if asyncio.current_task() else "main"}')
+            os.makedirs(session_dir, exist_ok=True)
             
             # Configure Crawl4AI with advanced options and proper permissions
             crawler_strategy = AsyncPlaywrightCrawlerStrategy(
@@ -94,8 +104,8 @@ class Crawl4AIScraper:
                     "Accept-Encoding": "gzip, deflate",
                     "Connection": "keep-alive",
                 },
-                user_data_dir=temp_dir + '/user_data',  # Use temp directory for user data
-                downloads_path=temp_dir + '/downloads'   # Use temp directory for downloads
+                user_data_dir=os.path.join(session_dir, 'user_data'),  # Use session directory for user data
+                downloads_path=os.path.join(session_dir, 'downloads')   # Use session directory for downloads
             )
             
             # Define extraction strategy for structured content
@@ -217,10 +227,10 @@ class Crawl4AIScraper:
                     "media": result.media[:5] if result.media else []  # Extract some media
                 }
                 
-                # Cleanup temp directory for Railway deployment
+                # Cleanup session directory for Railway deployment
                 try:
                     import shutil
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(session_dir, ignore_errors=True)
                 except:
                     pass  # Ignore cleanup errors
                 
@@ -228,10 +238,10 @@ class Crawl4AIScraper:
                 
         except Exception as e:
             logger.error(f"❌ Full Crawl4AI scraping failed for {url}: {str(e)}")
-            # Cleanup temp directory on error
+            # Cleanup session directory on error
             try:
                 import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                shutil.rmtree(session_dir, ignore_errors=True)
             except:
                 pass
             return await self._fallback_scrape(url)
@@ -335,7 +345,7 @@ class Crawl4AIScraper:
         cleaned = re.sub(r'\s+', ' ', cleaned)
         
         return cleaned.strip()
-    
+
     async def process_with_mistral(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
         Feed the structured data from Crawl4AI to Mistral-Small-3 for processing.
@@ -585,6 +595,22 @@ async def main():
         print(f"⭐ Score: {article.significance_score}")
     else:
         print("❌ Scraping failed")
+
+# Cleanup function for module-level temp directory
+def cleanup_crawl4ai_temp():
+    """Cleanup the module-level temp directory"""
+    try:
+        import shutil
+        global temp_base_dir
+        if os.path.exists(temp_base_dir):
+            shutil.rmtree(temp_base_dir, ignore_errors=True)
+            logger.info(f"🧹 Cleaned up Crawl4AI temp directory: {temp_base_dir}")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to cleanup temp directory: {e}")
+
+# Register cleanup on module exit
+import atexit
+atexit.register(cleanup_crawl4ai_temp)
 
 if __name__ == "__main__":
     asyncio.run(main())
