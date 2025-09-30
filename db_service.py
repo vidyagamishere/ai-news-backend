@@ -561,8 +561,8 @@ class PostgreSQLService:
                 article_data.get('significance_score'),
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),
-                article_data.get('llm_processed')),
-                True  # is_current_
+                article_data.get('llm_processed'),
+                True  # is_current_day
             )
             
             self.execute_query(insert_query, values, fetch_all=False)
