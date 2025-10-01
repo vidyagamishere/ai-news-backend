@@ -6,6 +6,10 @@ Implements the exact scraping process: Crawl4AI -> Mistral-Small-3 -> Structured
 
 import os
 import tempfile
+import logging
+
+# Configure logging early to avoid import issues
+logging.basicConfig(level=logging.INFO)
 
 # Detect Railway deployment environment
 IS_RAILWAY_DEPLOYMENT = (
@@ -30,7 +34,6 @@ else:
     os.environ['CRAWL4AI_BASE_DIRECTORY'] = temp_base_dir
 
 import json
-import logging
 import asyncio
 import hashlib
 import requests
