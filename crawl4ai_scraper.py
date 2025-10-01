@@ -779,7 +779,7 @@ class AdminScrapingInterface:
             return {
                 "success": True,
                 "message": f"Scraping completed successfully",
-                "sources_scraped": len(source_urls),
+                "sources_scraped": len(sources),
                 "articles_found": len(articles),
                 "articles_processed": articles_inserted,
                 "initiated_by": admin_email,
