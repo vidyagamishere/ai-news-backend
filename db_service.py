@@ -163,47 +163,89 @@ class PostgreSQLService:
             return []
     
     def insert_article(self, article_data: Dict[str, Any]) -> bool:
-        """Insert scraped article into articles table"""
+        # Insert scraped article into articles table after mapping LLM labels to integer foreign keys (content_type_id, ai_topic_id).
+        # Define fallback IDs in case the LLM returns an invalid label
+        # These should correspond to 'Articles/Blogs' and 'AI News & Updates' in your master tables.
+        FALLBACK_CONTENT_TYPE_ID = 1  
+        FALLBACK_TOPIC_ID = 21       
+
         try:
-            # Check if article already exists
+            url = article_data.get('url')
+            if not url:
+                logger.error("❌ Article data missing URL.")
+                return False
+
+            # --- 1. Check if article already exists ---
             existing_query = "SELECT id FROM articles WHERE url = %s"
-            existing = self.execute_query(existing_query, (article_data['url'],), fetch_one=True)
-            
+            existing = self.execute_query(existing_query, (url,), fetch_one=True)
+
             if existing:
-                logger.info(f"📄Mentioned Article already exists: {article_data.get('title', 'Unknown')}")
+                logger.info(f"📄 Article already exists: {article_data.get('title', 'Unknown')}")
                 return False
             
-            # Insert new article
+            # --- 2. Get Content Type ID (Label-to-ID Mapping) ---
+            final_content_type_id = FALLBACK_CONTENT_TYPE_ID
+            content_type_label = article_data.get('content_type_label')
+            
+            if content_type_label:
+                # NOTE: Assuming 'display_name' is the correct column for the human-readable label
+                content_type_query = "SELECT id FROM content_types WHERE display_name = %s"
+                content_type_result = self.execute_query(content_type_query, (content_type_label,), fetch_one=True)
+                
+                if content_type_result:
+                    # Safely extract the ID from the result set (which could be a dict or a tuple)
+                    final_content_type_id = content_type_result['id'] if isinstance(content_type_result, dict) else content_type_result[0]
+                else:
+                    logger.warning(f"⚠️ Content type '{content_type_label}' not found, using default ID: {FALLBACK_CONTENT_TYPE_ID}")
+
+            # --- 3. Get Topic ID (Label-to-ID Mapping) ---
+            final_ai_topic_id = FALLBACK_TOPIC_ID
+            topic_category_label = article_data.get('topic_category_label')
+            
+            if topic_category_label:
+                # NOTE: Assuming 'name' is the correct column for the topic category label
+                topic_query = "SELECT id FROM ai_topics WHERE name = %s"
+                ai_topic_result = self.execute_query(topic_query, (topic_category_label,), fetch_one=True)
+                
+                if ai_topic_result:
+                    # Safely extract the ID from the result set
+                    final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
+                else:
+                    logger.warning(f"⚠️ Topic category '{topic_category_label}' not found, using default ID: {FALLBACK_TOPIC_ID}")
+
+            # --- 4. Insert New Article (Fixed Query) ---
             insert_query = """
                 INSERT INTO articles (
-                    content_hash, title, description, url, source, significance_score, published_date, scraped_date, llm_processed
+                    content_hash, title, description, url, source, significance_score, published_date, scraped_date, 
+                    llm_processed, content_type_id, ai_topic_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, 
+                    %s, %s, %s
                 )
-            """
+            """ # 11 columns, 11 placeholders (%s)
             
             values = (
                 article_data.get('content_hash'),
-                article_data.get('title'),
-                article_data.get('description'),
-                article_data.get('url'),
+                article_data.get('headline'),  # Using 'headline' from LLM output
+                article_data.get('summary'),   # Using 'summary' from LLM output
+                url,
                 article_data.get('source'),
                 article_data.get('significance_score'),
-                article_data.get('published_date'),
+                article_data.get('date'),     # Using 'date' from LLM output
                 article_data.get('scraped_date'),
-                article_data.get('llm_processed'),
-                
+                True,  # Assuming if we reached here, LLM processed is True
+                final_content_type_id,
+                final_ai_topic_id
             )
             
             self.execute_query(insert_query, values, fetch_all=False)
-            logger.info(f"✅ Article inserted: {article_data.get('title', 'Unknown')}")
+            logger.info(f"✅ Article inserted: {article_data.get('headline', url)}")
             return True
-            
+                
         except Exception as e:
             logger.error(f"❌ Failed to insert article: {e}")
-            logger.error(f"Article data: {article_data}")
-            return False
-    
+            logger.error(f"Article data (pre-insert): {article_data}")
+            return False    
     def save_user_preferences(self, user_id: str, preferences: Dict[str, Any]) -> bool:
         """Save user preferences according to functional requirements"""
         try:

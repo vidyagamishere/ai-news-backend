@@ -230,7 +230,7 @@ class Crawl4AIScraper:
                     content = markdown_content
                 
                 # Clean and limit content for LLM processing
-                content = self._clean_content(content)[:8000]
+                content = self._clean_content(content)[:4000]
                 
                 # Extract tags/topics
                 tags = extracted_data.get("tags", [])
@@ -452,13 +452,13 @@ class Crawl4AIScraper:
                 
                 content = content_elem.get_text()
                 if len(content.strip()) > 100:  # Ensure meaningful content
-                    return self._clean_content(content)[:8000]
+                    return self._clean_content(content)[:4000]
         
         # Fallback to body content
         body = soup.find('body')
         if body:
             content = body.get_text()
-            return self._clean_content(content)[:5000]
+            return self._clean_content(content)[:4000]
         
         return ""
     
@@ -513,7 +513,7 @@ class Crawl4AIScraper:
             tags_info = scraped_data.get('tags', [])
             
             prompt = f"""
-You are an AI news analyst. Analyze the following scraped content and extract key information in JSON format.
+You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
 
 Content Title: {scraped_data.get('title', '')}
 Content Description: {scraped_data.get('description', '')}
@@ -527,12 +527,12 @@ Please analyze this content and return ONLY a valid JSON object with the followi
 {{
     "headline": "Clear, concise headline for the article (use original title if good)",
     "author": "Author name if found, or null",
-    "summary": "2-3 sentence summary of the key points and significance",
+    "summary": "4-5 sentence summary of the key points and significance",
     "date": "Publication date if found, or null",
-    "content_type": "article",
+    "content_type_label": "Classify the content into one of the content types: Blog Posts & Articles,Videos,Podcasts & Audio, Research Papers, Events & Conferences, Demos & Tools, Newsletters & Email Updates",
     "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
-    "key_topics": ["list", "of", "key", "AI", "tech", "topics", "covered"],
-    "category": "One of: AI/ML, Robotics, Startups, Research, Industry, Policy, Hardware, Software"
+    "key_topics": ["list of key AI tech topics covered"],
+    "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 22 categories: AI Tools & Platforms, AI Startups & Funding, Robotics & Automation, AI Research Papers, AI Policy & Regulation, Natural Language Processing, AI News & Updates, Machine Learning, AI Learning & Education, AI International, AI in Healthcare, AI Hardware & Computing, AI in Gaming, AI in Finance, AI Events & Conferences, AI Ethics & Safety, Deep Learning, AI in Creative Arts, Computer Vision, AI Cloud Services, AI in Automotive, AI in Business"
 }}
 
 Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
@@ -549,7 +549,7 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     }
                 ],
                 "temperature": 0.1,
-                "max_tokens": 1000
+                "max_tokens": 600
             }
             
             if not self.mistral_api_key:
@@ -564,6 +564,9 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0
+                    content_type_label="Articles & Blog Posts",
+                    keytopics=scraped_data.get('tags', []),
+                    topic_category_label="AI News & Updates"
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -603,11 +606,13 @@ If this is not AI/tech related content, set significance_score to 1-3.
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
-                            content=scraped_data.get('content', ''),
+                            content_type_label=parsed_data.get(scraped_data.get('content_type_label', '')),
                             date=parsed_data.get('date') or scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0))
+                            keytopics=parsed_data.get('key_topics', []),
+                            topic_category_label=parsed_data.get('topic_category_label', 'AI News & Updates')
                         )
                         
                     except json.JSONDecodeError as e:
