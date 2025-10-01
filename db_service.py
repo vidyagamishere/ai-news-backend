@@ -306,12 +306,27 @@ class PostgreSQLService:
                     
                     # Ensure enabled column exists (in case of partial table creation)
                     try:
+                        # Check if column exists first to avoid transaction errors
                         cursor.execute("""
-                            ALTER TABLE ai_sources 
-                            ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+                            SELECT COUNT(*) 
+                            FROM information_schema.columns 
+                            WHERE table_name = 'ai_sources' AND column_name = 'enabled'
                         """)
+                        column_exists = cursor.fetchone()[0] > 0
+                        
+                        if not column_exists:
+                            cursor.execute("""
+                                ALTER TABLE ai_sources 
+                                ADD COLUMN enabled BOOLEAN DEFAULT TRUE;
+                            """)
+                            logger.info("✅ Added enabled column to ai_sources table")
+                        else:
+                            logger.info("✅ Column enabled already exists in ai_sources table")
                     except Exception as col_error:
-                        logger.warning(f"⚠️ Column enabled already exists: {col_error}")
+                        logger.warning(f"⚠️ Column enabled check/creation failed: {col_error}")
+                        # Rollback this transaction and continue with a fresh one
+                        conn.rollback()
+                        conn.commit()  # Start fresh transaction
                     
                     # Create indexes for performance with error handling
                     index_queries = [
@@ -334,11 +349,23 @@ class PostgreSQLService:
                             logger.info(f"✅ Index {index_name} created successfully")
                         except Exception as idx_error:
                             logger.warning(f"⚠️ Index {index_name} creation failed: {idx_error}")
-                            # Continue with other indexes
+                            # Rollback and continue with fresh transaction
+                            try:
+                                conn.rollback()
+                            except:
+                                pass
                   
                     
-                    # Create optimized database views
-                    self.create_database_views(cursor)
+                    # Create optimized database views with error handling
+                    try:
+                        self.create_database_views(cursor)
+                    except Exception as view_error:
+                        logger.warning(f"⚠️ Database view creation failed: {view_error}")
+                        # Rollback and continue
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
                     
                     # Populate master data
                     self.populate_content_types(cursor)
@@ -358,7 +385,8 @@ class PostgreSQLService:
         logger.info("📊 Creating optimized database views...")
         
         # Enhanced articles view with topic information
-        cursor.execute("""
+        try:
+            cursor.execute("""
             CREATE OR REPLACE VIEW personalized_article_feed AS
                 SELECT 
                     a.id AS article_id,
@@ -388,10 +416,14 @@ class PostgreSQLService:
                     user_preferences_category upc ON m.id = upc.category_id 
                 JOIN
                     users u ON upc.user_id = u.id;
-        """)
+            """)
+            logger.info("✅ personalized_article_feed view created successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ personalized_article_feed view creation failed: {e}")
         
         # Enhanced articles view with topic information  
-        cursor.execute("""
+        try:
+            cursor.execute("""
             CREATE OR REPLACE VIEW articles_with_topics AS
             SELECT 
                 a.*,
@@ -417,10 +449,14 @@ class PostgreSQLService:
             LEFT JOIN ai_topics at2 ON att.topic_id = at2.id
             LEFT JOIN ai_categories_master ac ON at2.category_id = ac.id
             GROUP BY a.id, ct.name, ct.display_name;
-        """)
+            """)
+            logger.info("✅ articles_with_topics view created successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ articles_with_topics view creation failed: {e}")
         
         # Optimized digest view
-        cursor.execute("""
+        try:
+            cursor.execute("""
             CREATE OR REPLACE VIEW digest_articles AS
             SELECT 
                 awt.*,
@@ -432,9 +468,12 @@ class PostgreSQLService:
             FROM articles_with_topics awt
             WHERE awt.significance_score >= 6
             ORDER BY awt.published_at DESC, awt.significance_score DESC;
-        """)
+            """)
+            logger.info("✅ digest_articles view created successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ digest_articles view creation failed: {e}")
         
-        logger.info("✅ Database views created successfully")
+        logger.info("✅ Database views creation process completed")
     
     def populate_content_types(self, cursor):
         """Populate content_types table with master data"""
