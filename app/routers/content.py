@@ -237,7 +237,7 @@ async def admin_initiate_scraping(
         # Trigger scraping operation with detailed error handling
         try:
             logger.info("🔍 About to call content_service.scrape_content()")
-            result = content_service.scrape_content()
+            result = await content_service.scrape_content()
             logger.info("🔍 Successfully called content_service.scrape_content()")
         except NameError as ne:
             logger.error(f"❌ NameError in scrape_content: {str(ne)}")

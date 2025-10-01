@@ -324,7 +324,7 @@ class ContentService:
                 }
             ]
     
-    def scrape_content(self) -> Dict[str, Any]:
+    async def scrape_content(self) -> Dict[str, Any]:
         """Trigger content scraping operation using Crawl4AI + Mistral-Small-3"""
         try:
             logger.info("🕷️ Starting content scraping operation with Crawl4AI + Mistral-Small-3")
@@ -343,21 +343,11 @@ class ContentService:
             
             # Run the async scraping process
             try:
-                # Create new event loop if none exists or use existing one
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        raise RuntimeError("Event loop is closed")
-                except RuntimeError:
-                    # No event loop or it's closed, create a new one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                
                 if self.DEBUG:
                     logger.debug("🔍 Running async scraping process")
                 
-                # Run the scraping process
-                result = loop.run_until_complete(admin_scraper.initiate_scraping())
+                # Use await instead of run_until_complete since we're already in async context
+                result = await admin_scraper.initiate_scraping()
                 
                 if self.DEBUG:
                     logger.debug(f"🔍 Scraping result: {result}")
