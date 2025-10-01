@@ -710,7 +710,8 @@ class AdminScrapingInterface:
         4. Store structured output in articles table
         5. Repeat for all sources
         """
-        logger.info(f"🔧 Admin {admin_email} initiated scraping process")
+        logger.info(f"🔧 Admin {admin_email} initiated scraping process with RSS feed parsing")
+        logger.info("📰 RSS Feed Parsing Mode: Extracting individual article URLs from RSS feeds")
         
         try:
             # Step 1: Select AI sources from ai_sources table
@@ -734,13 +735,16 @@ class AdminScrapingInterface:
                 
                 if rss_url:
                     # Parse RSS feed to get individual article URLs
-                    logger.info(f"📰 Processing RSS feed for {source_name}: {rss_url}")
+                    logger.info(f"📰 RSS FEED MODE for {source_name}: {rss_url}")
                     article_urls = await self.scraper.parse_rss_feed(rss_url, max_articles=3)
+                    logger.info(f"✅ Extracted {len(article_urls)} articles from RSS feed for {source_name}")
                     all_article_urls.extend(article_urls)
                 elif website:
                     # Fallback to website homepage if no RSS feed
-                    logger.info(f"🌐 Using website URL for {source_name}: {website}")
+                    logger.info(f"🌐 WEBSITE FALLBACK for {source_name}: {website}")
                     all_article_urls.append(website)
+                else:
+                    logger.warning(f"⚠️ No RSS or website URL for {source_name}")
                 
             logger.info(f"📡 Total article URLs collected: {len(all_article_urls)}")
             
