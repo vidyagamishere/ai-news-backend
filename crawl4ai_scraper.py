@@ -229,9 +229,27 @@ class Crawl4AIScraper:
                 else:
                     content = markdown_content
                 
-                # Clean and limit content for LLM processing
-                content = self._clean_content(content)[:4000]
+                  # --- NEW STEP 1: Full Cleaning ---
+                # Clean the entire extracted content before calculating word count.
+                full_clean_content = self._clean_content(content)
+
+                # --- NEW STEP 2: Calculate Reading Time (on FULL content) ---
+                # A standard average reading speed is 225 words per minute.
+                # Use a regex to count words robustly.
+                word_count = len(re.findall(r'\b\w+\b', full_clean_content))
                 
+                # Calculate reading time in minutes, rounded up to the nearest whole minute
+                # Adding 0.5 before converting to int simulates ceiling
+                reading_time_minutes = int((word_count / 225) + 0.5) if word_count > 0 else 1
+                
+                # Ensure a minimum reading time of 1 minute
+                if reading_time_minutes == 0:
+                    reading_time_minutes = 1
+                
+                # --- NEW STEP 3: Limit Content (for LLM prompt) ---
+                # Now, truncate the content to 4000 characters for the LLM processing step.
+                content = full_clean_content[:4000] 
+ 
                 # Extract tags/topics
                 tags = extracted_data.get("tags", [])
                 if isinstance(tags, str):
@@ -245,6 +263,7 @@ class Crawl4AIScraper:
                     "date": pub_date,
                     "tags": tags,
                     "url": url,
+                    "reading_time": reading_time_minutes,
                     "markdown": markdown_content[:3000],  # Keep some markdown for reference
                     "extracted_at": datetime.now(timezone.utc).isoformat(),
                     "extraction_method": "crawl4ai_full",
@@ -314,8 +333,20 @@ class Crawl4AIScraper:
                     # Extract publication date
                     pub_date = self._extract_date(soup)
                     
-                    # Extract main content with priority selectors
+                     # --- ADDED: Reading Time Calculation ---
+                     # Extract main content with priority selectors
                     content = self._extract_content(soup)
+                    # 1. Clean the full content
+                    full_clean_content = self._clean_content(content)
+                    
+                    # 2. Calculate word count and reading time (225 WPM)
+                    word_count = len(re.findall(r'\b\w+\b', full_clean_content))
+                    reading_time_minutes = int((word_count / 225) + 0.5) if word_count > 0 else 1
+                    
+                    if reading_time_minutes == 0:
+                        reading_time_minutes = 1
+                    # --------------------------------------
+
                     
                     # Extract tags/keywords
                     tags = self._extract_tags(soup)
@@ -323,7 +354,7 @@ class Crawl4AIScraper:
                     return {
                         "title": title.strip(),
                         "description": description.strip(),
-                        "content": content.strip(),
+                        "content": full_clean_content.strip()[:4000],
                         "author": author,
                         "date": pub_date,
                         "tags": tags,
@@ -356,7 +387,7 @@ class Crawl4AIScraper:
             for suffix in [' | ', ' - ', ' :: ']:
                 if suffix in title:
                     title = title.split(suffix)[0]
-                    break
+                    break   
             return title
         
         return "No title found"
