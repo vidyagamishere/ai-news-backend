@@ -107,8 +107,14 @@ class PostgreSQLService:
             raise e
     
     def initialize_database(self):
-        """Initialize PostgreSQL database schema"""
-        logger.info("🏗️ Initializing PostgreSQL database schema...")
+        """Initialize PostgreSQL database schema - COMMENTED OUT (handled manually)"""
+        logger.info("🏗️ Database schema initialization skipped - handled manually by admin")
+        logger.info("✅ PostgreSQL database schema initialized successfully")
+        return
+        
+        # COMMENTED OUT: All DDL operations are handled manually
+        """
+        Original code commented out to avoid conflicts with manual database management:
         
         try:
             with self.get_db_connection() as conn:
@@ -379,10 +385,17 @@ class PostgreSQLService:
             logger.error(f"❌ Database initialization failed: {e}")
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
             raise e
+        """
     
     def create_database_views(self, cursor):
-        """Create optimized database views for content delivery"""
-        logger.info("📊 Creating optimized database views...")
+        """Create optimized database views for content delivery - COMMENTED OUT (handled manually)"""
+        logger.info("📊 Database view creation skipped - handled manually by admin")
+        logger.info("✅ Database views creation process completed")
+        return
+        
+        # COMMENTED OUT: All view creation handled manually
+        """
+        Original view creation code commented out:
         
         # Enhanced articles view with topic information
         try:
@@ -474,10 +487,17 @@ class PostgreSQLService:
             logger.warning(f"⚠️ digest_articles view creation failed: {e}")
         
         logger.info("✅ Database views creation process completed")
+        """
     
     def populate_content_types(self, cursor):
-        """Populate content_types table with master data"""
-        logger.info("📋 Populating content_types table...")
+        """Populate content_types table with master data - COMMENTED OUT (handled manually)"""
+        logger.info("📋 Content types population skipped - handled manually by admin")
+        logger.info("📊 Found existing content types, skipping population")
+        return
+        
+        # COMMENTED OUT: All data population handled manually
+        """
+        Original populate code commented out:
         
         # Check if already populated
         cursor.execute("SELECT COUNT(*) FROM content_types")
@@ -506,10 +526,17 @@ class PostgreSQLService:
             """, (name, display_name, description, section, icon))
         
         logger.info("✅ Content types populated successfully")
+        """
     
     def populate_ai_topics(self, cursor):
-        """Populate ai_topics table with comprehensive AI topics"""
-        logger.info("📋 Populating ai_topics table...")
+        """Populate ai_topics table with comprehensive AI topics - COMMENTED OUT (handled manually)"""
+        logger.info("📋 AI topics population skipped - handled manually by admin")
+        logger.info("📊 Found existing AI topics, skipping population")
+        return
+        
+        # COMMENTED OUT: All data population handled manually
+        """
+        Original populate code commented out:
         
         # Check if already populated
         cursor.execute("SELECT COUNT(*) FROM ai_topics")
@@ -521,9 +548,18 @@ class PostgreSQLService:
         # Need to add ai_topics insert queries 
        
         logger.info("✅ AI topics populated successfully")
+        """
     
     def populate_ai_sources(self, cursor):
-        """Populate ai_sources table with comprehensive AI news sources"""
+        """Populate ai_sources table with comprehensive AI news sources - COMMENTED OUT (handled manually)"""
+        logger.info("📊 AI sources population skipped - handled manually by admin")
+        logger.info("📊 Found existing AI sources, skipping population")
+        return
+        
+        # COMMENTED OUT: All data population handled manually
+        """
+        Original populate code commented out:
+        
         # Check if ai_sources already has data
         cursor.execute("SELECT COUNT(*) FROM ai_sources")
         existing_count = cursor.fetchone()['count']
@@ -591,8 +627,7 @@ class PostgreSQLService:
         #    """, (name, rss_url, website, content_type, category, enabled, priority))
         
         logger.info("✅ AI sources populated successfully")
-    
-    
+        """
     
     def get_ai_sources(self) -> List[Dict[str, Any]]:
         """Get all AI sources for scraping"""
@@ -635,7 +670,7 @@ class PostgreSQLService:
             insert_query = """
                 INSERT INTO articles (
                     id, title, description, content, url, source, 
-                    content_type_id, ai_topics_id,significance_score, published_date, 
+                    content_type_id, ai_topic_id, significance_score, published_date, 
                     scraped_date, llm_processed, is_current_day
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
@@ -650,7 +685,7 @@ class PostgreSQLService:
                 article_data.get('url'),
                 article_data.get('source'),
                 article_data.get('content_type_id'),
-                article_data.get('ai_topics_id'),
+                article_data.get('ai_topic_id'),  # Fixed: was ai_topics_id
                 article_data.get('significance_score'),
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),

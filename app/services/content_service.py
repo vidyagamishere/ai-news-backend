@@ -45,7 +45,7 @@ class DatabaseAdapter:
                 'url': article_data.get('url'),
                 'source': article_data.get('source', 'Unknown'),
                 'content_type_id': article_data.get('content_type_id', 1),  # Default to blogs
-                'ai_topics_id': article_data.get('ai_topics_id'),  # Can be None
+                'ai_topic_id': article_data.get('ai_topic_id'),  # Can be None
                 'significance_score': article_data.get('significance_score', 5),
                 'published_date': article_data.get('published_date'),
                 'scraped_date': article_data.get('scraped_date'),
