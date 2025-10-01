@@ -170,7 +170,7 @@ class PostgreSQLService:
             existing = self.execute_query(existing_query, (article_data['url'],), fetch_one=True)
             
             if existing:
-                logger.info(f"📄 Article already exists: {article_data.get('title', 'Unknown')}")
+                logger.info(f"📄Mentioned Article already exists: {article_data.get('title', 'Unknown')}")
                 return False
             
             # Insert new article
