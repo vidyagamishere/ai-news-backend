@@ -176,9 +176,9 @@ class PostgreSQLService:
             # Insert new article
             insert_query = """
                 INSERT INTO articles (
-                    content_hash, title, description, content, url, source, significance_score, published_date, scraped_date, llm_processed
+                    content_hash, title, description, url, source, significance_score, published_date, scraped_date, llm_processed
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
             """
             
@@ -186,7 +186,6 @@ class PostgreSQLService:
                 article_data.get('content_hash'),
                 article_data.get('title'),
                 article_data.get('description'),
-                article_data.get('content'),
                 article_data.get('url'),
                 article_data.get('source'),
                 article_data.get('significance_score'),

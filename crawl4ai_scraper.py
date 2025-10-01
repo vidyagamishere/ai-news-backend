@@ -759,7 +759,6 @@ class AdminScrapingInterface:
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.headline,
                         'description': article.summary,
-                        'content': article.summary,
                         'url': article.url,
                         'source': article.source,
                         'significance_score': article.significance_score,
