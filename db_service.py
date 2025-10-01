@@ -178,9 +178,9 @@ class PostgreSQLService:
                 INSERT INTO articles (
                     id, title, description, content, url, source, 
                     content_type_id, ai_topic_id, significance_score, published_date, 
-                    scraped_date, llm_processed, is_current_day
+                    scraped_date, llm_processed
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
             """
             
@@ -197,7 +197,7 @@ class PostgreSQLService:
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),
                 article_data.get('llm_processed'),
-                True  # is_current_day
+                
             )
             
             self.execute_query(insert_query, values, fetch_all=False)
