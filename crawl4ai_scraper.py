@@ -756,7 +756,7 @@ class AdminScrapingInterface:
             for article in articles:
                 try:
                     article_data = {
-                        'id': hashlib.md5(article.url.encode()).hexdigest(),
+                        'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.headline,
                         'description': article.summary,
                         'content': article.summary,
