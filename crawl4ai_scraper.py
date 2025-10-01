@@ -7,6 +7,7 @@ Implements the exact scraping process: Crawl4AI -> Mistral-Small-3 -> Structured
 import os
 import tempfile
 import logging
+import feedparser
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
@@ -582,8 +583,21 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     content = result.get('choices', [{}])[0].get('message', {}).get('content', '{}')
                     
                     try:
+                        # Clean up the response to extract JSON
+                        content_clean = content.strip()
+                        
+                        # Remove markdown code blocks if present
+                        if content_clean.startswith('```json'):
+                            content_clean = content_clean[7:]  # Remove ```json
+                        if content_clean.startswith('```'):
+                            content_clean = content_clean[3:]   # Remove ```
+                        if content_clean.endswith('```'):
+                            content_clean = content_clean[:-3]  # Remove trailing ```
+                        
+                        content_clean = content_clean.strip()
+                        
                         # Parse JSON response from LLM
-                        parsed_data = json.loads(content)
+                        parsed_data = json.loads(content_clean)
                         
                         return ScrapedArticle(
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
@@ -612,6 +626,32 @@ If this is not AI/tech related content, set significance_score to 1-3.
             return urlparse(url).netloc
         except:
             return "Unknown Source"
+    
+    async def parse_rss_feed(self, rss_url: str, max_articles: int = 5) -> List[str]:
+        """Parse RSS feed and extract article URLs"""
+        try:
+            logger.info(f"📰 Parsing RSS feed: {rss_url}")
+            
+            # Parse the RSS feed
+            feed = feedparser.parse(rss_url)
+            
+            if not feed.entries:
+                logger.warning(f"⚠️ No entries found in RSS feed: {rss_url}")
+                return []
+            
+            # Extract article URLs from feed entries
+            article_urls = []
+            for entry in feed.entries[:max_articles]:  # Limit number of articles per feed
+                if hasattr(entry, 'link') and entry.link:
+                    article_urls.append(entry.link)
+                    logger.debug(f"📄 Found article: {entry.get('title', 'No title')} - {entry.link}")
+            
+            logger.info(f"✅ Extracted {len(article_urls)} article URLs from RSS feed: {rss_url}")
+            return article_urls
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to parse RSS feed {rss_url}: {str(e)}")
+            return []
     
     async def scrape_article(self, url: str) -> Optional[ScrapedArticle]:
         """
@@ -684,9 +724,28 @@ class AdminScrapingInterface:
             
             logger.info(f"📡 Found {len(sources)} AI sources to scrape")
             
-            # Step 2-4: Scrape all sources with Crawl4AI + Mistral-Small-3
-            source_urls = [source.get('rss_url') or source.get('website') for source in sources if source.get('rss_url') or source.get('website')]
-            articles = await self.scraper.scrape_multiple_sources(source_urls)
+            # Step 2: Parse RSS feeds and extract article URLs
+            all_article_urls = []
+            
+            for source in sources:
+                rss_url = source.get('rss_url')
+                website = source.get('website')
+                source_name = source.get('name', 'Unknown')
+                
+                if rss_url:
+                    # Parse RSS feed to get individual article URLs
+                    logger.info(f"📰 Processing RSS feed for {source_name}: {rss_url}")
+                    article_urls = await self.scraper.parse_rss_feed(rss_url, max_articles=3)
+                    all_article_urls.extend(article_urls)
+                elif website:
+                    # Fallback to website homepage if no RSS feed
+                    logger.info(f"🌐 Using website URL for {source_name}: {website}")
+                    all_article_urls.append(website)
+                
+            logger.info(f"📡 Total article URLs collected: {len(all_article_urls)}")
+            
+            # Step 3-4: Scrape individual articles with Crawl4AI + Mistral-Small-3
+            articles = await self.scraper.scrape_multiple_sources(all_article_urls)
             
             # Step 5: Insert results into articles table
             articles_inserted = 0
