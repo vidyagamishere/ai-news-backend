@@ -8,6 +8,7 @@ import os
 import tempfile
 import logging
 import feedparser
+import re
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
