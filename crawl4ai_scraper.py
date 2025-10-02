@@ -574,7 +574,7 @@ If this is not AI/tech related content, set significance_score to 1-3."""
 
             # Call Claude API
             payload = {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": "claude-3-5-sonnet-20240620",
                 "max_tokens": 1000,
                 "temperature": 0.1,
                 "messages": [
