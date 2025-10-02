@@ -230,8 +230,9 @@ class PostgreSQLService:
                 article_data.get('summary'),   # Using 'summary' from LLM output
                 url,
                 article_data.get('source'),
+                
                 article_data.get('significance_score'),
-                article_data.get('date'),     # Using 'date' from LLM output
+                article_data.get('publisheddate'),     # Using 'date' from LLM output
                 article_data.get('scraped_date'),
                 True,  # Assuming if we reached here, LLM processed is True
                 final_content_type_id,

@@ -549,28 +549,28 @@ class Crawl4AIScraper:
             
             prompt = f"""You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
 
-Content Title: {scraped_data.get('title', '')}
-Content Description: {scraped_data.get('description', '')}
-Author: {author_info}
-Existing Tags: {tags_info}
-Content Text: {scraped_data.get('content', '')[:4000]}
-Source URL: {scraped_data.get('url', '')}
-Extraction Method: {extraction_method}
+            Content Title: {scraped_data.get('title', '')}
+            Content Description: {scraped_data.get('description', '')}
+            Author: {author_info}
+            Existing Tags: {tags_info}
+            Content Text: {scraped_data.get('content', '')[:4000]}
+            Source URL: {scraped_data.get('url', '')}
+            Extraction Method: {extraction_method}
 
-Please analyze this content and return ONLY a valid JSON object with the following structure:
-{{
-    "headline": "Clear, concise headline for the article (use original title if good)",
-    "author": "Author name if found, or null",
-    "summary": "4-5 sentence summary of the key points and significance",
-    "date": "Publication date if found, or null",
-    "content_type_label": "Classify the content into one of the content types: Blog Posts & Articles,Videos,Podcasts & Audio, Research Papers, Events & Conferences, Demos & Tools, Newsletters & Email Updates",
-    "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
-    "key_topics": ["list of key AI tech topics covered"],
-    "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 22 categories: AI Tools & Platforms, AI Startups & Funding, Robotics & Automation, AI Research Papers, AI Policy & Regulation, Natural Language Processing, AI News & Updates, Machine Learning, AI Learning & Education, AI International, AI in Healthcare, AI Hardware & Computing, AI in Gaming, AI in Finance, AI Events & Conferences, AI Ethics & Safety, Deep Learning, AI in Creative Arts, Computer Vision, AI Cloud Services, AI in Automotive, AI in Business"
-}}
+            Please analyze this content and return ONLY a valid JSON object with the following structure:
+            {{
+                "headline": "Clear, concise headline for the article (use original title if good)",
+                "author": "Author name if found, or null",
+                "summary": "4-5 sentence summary of the key points and significance",
+                "date": "Publication date if found, or null",
+                "content_type_label": "Classify the content into one of the content types: Blog Posts & Articles,Videos,Podcasts & Audio, Research Papers, Events & Conferences, Demos & Tools, Newsletters & Email Updates",
+                "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
+                "key_topics": ["list of key AI tech topics covered"],
+                "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 22 categories: AI Tools & Platforms, AI Startups & Funding, Robotics & Automation, AI Research Papers, AI Policy & Regulation, Natural Language Processing, AI News & Updates, Machine Learning, AI Learning & Education, AI International, AI in Healthcare, AI Hardware & Computing, AI in Gaming, AI in Finance, AI Events & Conferences, AI Ethics & Safety, Deep Learning, AI in Creative Arts, Computer Vision, AI Cloud Services, AI in Automotive, AI in Business"
+            }}
 
-Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
-If this is not AI/tech related content, set significance_score to 1-3."""
+            Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
+            If this is not AI/tech related content, set significance_score to 1-3."""
 
             # Call Claude API - using Claude 3 Haiku (only available model with current API key)
             payload = {
@@ -641,13 +641,14 @@ If this is not AI/tech related content, set significance_score to 1-3."""
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
-                            content=scraped_data.get('content', '')[:1000],
-                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            published_date=parsed_data.get('published_date'), 
+                            scraped_date=scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
-                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
-                            reading_time=scraped_data.get('reading_time', 1)
+                            content_type_label=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
+                            reading_time=scraped_data.get('reading_time', 1),
+                            topic_category_label=parsed_data.get('topic_category_label', 'AI News and Updates'),
                         )
                         
                     except json.JSONDecodeError as e:
