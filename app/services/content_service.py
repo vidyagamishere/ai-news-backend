@@ -325,9 +325,9 @@ class ContentService:
             ]
     
     async def scrape_content(self) -> Dict[str, Any]:
-        """Trigger content scraping operation using Crawl4AI + Mistral-Small-3"""
+        """Trigger content scraping operation using Crawl4AI + Claude"""
         try:
-            logger.info("🕷️ Starting content scraping operation with Crawl4AI + Mistral-Small-3")
+            logger.info("🕷️ Starting content scraping operation with Crawl4AI + Claude")
             
             if self.DEBUG:
                 logger.debug("🔍 Scrape content method called")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-AI News Scraper using Crawl4AI and Mistral-Small-3 as specified in functional requirements.
-Implements the exact scraping process: Crawl4AI -> Mistral-Small-3 -> Structured Output
+AI News Scraper using Crawl4AI and Claude as specified in functional requirements.
+Implements the exact scraping process: Crawl4AI -> Claude -> Structured Output
 """
 
 import os
@@ -77,18 +77,19 @@ class ScrapedArticle:
     significance_score: float = 5.0
 
 class Crawl4AIScraper:
-    """AI News Scraper using Crawl4AI and Mistral-Small-3 LLM"""
+    """AI News Scraper using Crawl4AI and Claude LLM"""
     
     def __init__(self):
-        self.mistral_api_key = os.getenv('MISTRAL_API_KEY', '')
-        self.mistral_api_url = "https://api.mistral.ai/v1/chat/completions"
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '')
+        self.claude_api_url = "https://api.anthropic.com/v1/messages"
         self.headers = {
-            "Authorization": f"Bearer {self.mistral_api_key}",
-            "Content-Type": "application/json"
+            "x-api-key": self.anthropic_api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
         }
         
-        if not self.mistral_api_key:
-            logger.warning("⚠️ MISTRAL_API_KEY not set - scraper will not work properly")
+        if not self.anthropic_api_key:
+            logger.warning("⚠️ ANTHROPIC_API_KEY not set - scraper will not work properly")
             
     async def scrape_with_crawl4ai(self, url: str) -> Optional[Dict[str, Any]]:
         """
@@ -360,6 +361,7 @@ class Crawl4AIScraper:
                         "date": pub_date,
                         "tags": tags,
                         "url": url,
+                        "reading_time": reading_time_minutes,
                         "extracted_at": datetime.now(timezone.utc).isoformat(),
                         "extraction_method": "enhanced_fallback"
                     }
@@ -531,21 +533,20 @@ class Crawl4AIScraper:
         
         return cleaned.strip()
 
-    async def process_with_mistral(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+    async def process_with_claude(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
-        Feed the structured data from Crawl4AI to Mistral-Small-3 for processing.
+        Feed the structured data from Crawl4AI to Claude for processing.
         Use specific prompt to get structured output with key details.
         """
         try:
-            logger.info(f"🧠 Processing with Mistral-Small-3: {scraped_data.get('title', 'Unknown')}")
+            logger.info(f"🧠 Processing with Claude: {scraped_data.get('title', 'Unknown')}")
             
             # Create specific prompt for structured output with enhanced data
             extraction_method = scraped_data.get('extraction_method', 'unknown')
             author_info = scraped_data.get('author', 'Not specified')
             tags_info = scraped_data.get('tags', [])
             
-            prompt = f"""
-You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
+            prompt = f"""You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
 
 Content Title: {scraped_data.get('title', '')}
 Content Description: {scraped_data.get('description', '')}
@@ -568,25 +569,24 @@ Please analyze this content and return ONLY a valid JSON object with the followi
 }}
 
 Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
-If this is not AI/tech related content, set significance_score to 1-3.
-"""
+If this is not AI/tech related content, set significance_score to 1-3."""
 
-            # Call Mistral-Small-3 API
+            # Call Claude API
             payload = {
-                "model": "mistral-small-latest",
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1000,
+                "temperature": 0.1,
                 "messages": [
                     {
                         "role": "user",
                         "content": prompt
                     }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 600
+                ]
             }
             
-            if not self.mistral_api_key:
+            if not self.anthropic_api_key:
                 # Enhanced fallback for demo purposes
-                logger.warning("⚠️ Using fallback processing (no Mistral API key)")
+                logger.warning("⚠️ Using fallback processing (no Anthropic API key)")
                 return ScrapedArticle(
                     headline=scraped_data.get('title', 'AI News Article'),
                     author=scraped_data.get('author'),
@@ -596,27 +596,26 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
-                    content_type_label="Articles & Blog Posts",
-                    keytopics=scraped_data.get('tags', []),
-                    topic_category_label="AI News & Updates",
-                    reading_time=scraped_data.get('reading_time', 1)
+                    content_type="Articles & Blog Posts"
                 )
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self.mistral_api_url,
+                    self.claude_api_url,
                     headers=self.headers,
                     json=payload,
                     timeout=60
                 ) as response:
                     if response.status != 200:
-                        logger.error(f"❌ Mistral API error: HTTP {response.status}")
+                        logger.error(f"❌ Claude API error: HTTP {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"❌ Claude API error response: {response_text}")
                         return None
                     
                     result = await response.json()
                     
                     # Extract and parse the LLM response
-                    content = result.get('choices', [{}])[0].get('message', {}).get('content', '{}')
+                    content = result.get('content', [{}])[0].get('text', '{}')
                     
                     try:
                         # Clean up the response to extract JSON
@@ -639,22 +638,21 @@ If this is not AI/tech related content, set significance_score to 1-3.
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
-                            content_type_label=parsed_data.get(scraped_data.get('content_type_label', '')),
+                            content=scraped_data.get('content', '')[:1000],
                             date=parsed_data.get('date') or scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
-                            keytopics=parsed_data.get('key_topics', []),
-                            topic_category_label=parsed_data.get('topic_category_label', 'AI News & Updates')
+                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles')
                         )
                         
                     except json.JSONDecodeError as e:
-                        logger.error(f"❌ Failed to parse Mistral response as JSON: {e}")
+                        logger.error(f"❌ Failed to parse Claude response as JSON: {e}")
                         logger.error(f"Raw response: {content}")
                         return None
                         
         except Exception as e:
-            logger.error(f"❌ Mistral processing failed: {str(e)}")
+            logger.error(f"❌ Claude processing failed: {str(e)}")
             return None
     
     def _extract_domain(self, url: str) -> str:
@@ -695,7 +693,7 @@ If this is not AI/tech related content, set significance_score to 1-3.
         """
         Complete scraping process:
         1. Scrape URL with Crawl4AI
-        2. Process with Mistral-Small-3
+        2. Process with Claude
         3. Return structured article data
         """
         logger.info(f"🚀 Starting complete scraping process for: {url}")
@@ -705,8 +703,8 @@ If this is not AI/tech related content, set significance_score to 1-3.
         if not scraped_data:
             return None
         
-        # Step 2: Process with Mistral-Small-3
-        article = await self.process_with_mistral(scraped_data)
+        # Step 2: Process with Claude
+        article = await self.process_with_claude(scraped_data)
         if not article:
             return None
             
@@ -744,7 +742,7 @@ class AdminScrapingInterface:
         Admin-initiated scraping process as specified:
         1. Select AI sources from ai_sources table
         2. Use Crawl4AI to scrape and extract content
-        3. Process with Mistral-Small-3 LLM
+        3. Process with Claude LLM
         4. Store structured output in articles table
         5. Repeat for all sources
         """
@@ -786,7 +784,7 @@ class AdminScrapingInterface:
                 
             logger.info(f"📡 Total article URLs collected: {len(all_article_urls)}")
             
-            # Step 3-4: Scrape individual articles with Crawl4AI + Mistral-Small-3
+            # Step 3-4: Scrape individual articles with Crawl4AI + Claude
             articles = await self.scraper.scrape_multiple_sources(all_article_urls)
             
             # Step 5: Insert results into articles table
@@ -797,8 +795,10 @@ class AdminScrapingInterface:
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.headline,
                         'description': article.summary,
+                        'content': article.content,
                         'url': article.url,
                         'source': article.source,
+                        'content_type': article.content_type,
                         'significance_score': article.significance_score,
                         'published_date': article.date,
                         'scraped_date': datetime.now(timezone.utc).isoformat(),
