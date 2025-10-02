@@ -594,7 +594,7 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     date=scraped_data.get('date') or scraped_data.get('extracted_at'),
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
-                    significance_score=6.0
+                    significance_score=6.0,
                     content_type_label="Articles & Blog Posts",
                     keytopics=scraped_data.get('tags', []),
                     topic_category_label="AI News & Updates"
