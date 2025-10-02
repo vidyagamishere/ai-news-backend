@@ -76,6 +76,10 @@ class ScrapedArticle:
     content_type: str = "article"
     significance_score: float = 5.0
     reading_time: int = 1
+    published_date: Optional[str] = None
+    scraped_date: Optional[str] = None
+    content_type_label: str = "Blog Posts & Articles"
+    topic_category_label: str = "AI News & Updates"
 
 class Crawl4AIScraper:
     """AI News Scraper using Crawl4AI and Claude LLM"""
@@ -598,7 +602,11 @@ class Crawl4AIScraper:
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
                     content_type="Articles & Blog Posts",
-                    reading_time=scraped_data.get('reading_time', 1)
+                    reading_time=scraped_data.get('reading_time', 1),
+                    published_date=scraped_data.get('date'),
+                    scraped_date=scraped_data.get('extracted_at'),
+                    content_type_label="Blog Posts & Articles",
+                    topic_category_label="AI News & Updates"
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -641,14 +649,17 @@ class Crawl4AIScraper:
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
-                            published_date=parsed_data.get('published_date'), 
-                            scraped_date=scraped_data.get('date'),
+                            content=scraped_data.get('content', '')[:1000],
+                            date=parsed_data.get('date') or scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
-                            content_type_label=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
+                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
                             reading_time=scraped_data.get('reading_time', 1),
-                            topic_category_label=parsed_data.get('topic_category_label', 'AI News and Updates'),
+                            published_date=parsed_data.get('date'),
+                            scraped_date=scraped_data.get('extracted_at'),
+                            content_type_label=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
+                            topic_category_label=parsed_data.get('topic_category_label', 'AI News & Updates')
                         )
                         
                     except json.JSONDecodeError as e:
