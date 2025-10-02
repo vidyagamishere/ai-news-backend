@@ -741,6 +741,48 @@ class AdminScrapingInterface:
         self.db_service = db_service
         self.scraper = Crawl4AIScraper()
         
+    def map_content_type_to_id(self, content_type_str):
+        """Map content type string to database ID"""
+        content_type_mapping = {
+            'Blog Posts & Articles': 1,
+            'Articles & Blog Posts': 1,
+            'Videos': 2,
+            'Podcasts & Audio': 3,
+            'Research Papers': 4,
+            'Events & Conferences': 5,
+            'Demos & Tools': 6,
+            'Newsletters & Email Updates': 7,
+        }
+        return content_type_mapping.get(content_type_str, 1)  # Default to blogs/articles
+    
+    def map_ai_topic_to_id(self, content_type_str, content_text=""):
+        """Map content to AI topic ID based on content analysis"""
+        # Simple keyword-based mapping - can be enhanced later
+        content_lower = content_text.lower()
+        
+        if any(word in content_lower for word in ['robot', 'automation', 'robotic']):
+            return 1  # Robotics & Automation
+        elif any(word in content_lower for word in ['nlp', 'language', 'text', 'gpt', 'transformer']):
+            return 2  # Natural Language Processing  
+        elif any(word in content_lower for word in ['vision', 'image', 'computer vision', 'cv']):
+            return 3  # Computer Vision
+        elif any(word in content_lower for word in ['deep learning', 'neural network', 'cnn', 'rnn']):
+            return 4  # Deep Learning
+        elif any(word in content_lower for word in ['healthcare', 'medical', 'health', 'diagnosis']):
+            return 5  # AI in Healthcare
+        elif any(word in content_lower for word in ['finance', 'financial', 'trading', 'fintech']):
+            return 6  # AI in Finance
+        elif any(word in content_lower for word in ['startup', 'funding', 'investment', 'venture']):
+            return 7  # AI Startups & Funding
+        elif any(word in content_lower for word in ['policy', 'regulation', 'governance', 'ethics']):
+            return 8  # AI Policy & Regulation
+        elif any(word in content_lower for word in ['hardware', 'chip', 'gpu', 'computing']):
+            return 9  # AI Hardware & Computing
+        elif any(word in content_lower for word in ['tool', 'platform', 'framework', 'api']):
+            return 10  # AI Tools & Platforms
+        else:
+            return 21  # Default: AI News & Updates
+        
     async def initiate_scraping(self, admin_email: str = "admin@vidyagam.com") -> Dict[str, Any]:
         """
         Admin-initiated scraping process as specified:
@@ -796,6 +838,10 @@ class AdminScrapingInterface:
             articles_inserted = 0
             for article in articles:
                 try:
+                    # Map content type and AI topic dynamically
+                    content_type_id = self.map_content_type_to_id(article.content_type)
+                    ai_topic_id = self.map_ai_topic_to_id(article.content_type, article.summary + " " + article.content)
+                    
                     article_data = {
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.headline,
@@ -807,13 +853,15 @@ class AdminScrapingInterface:
                         'significance_score': article.significance_score or 6,
                         'published_date': article.date,
                         'reading_time': article.reading_time,
-                        'content_type_id': 1,  # Default to blogs/articles
-                        'ai_topic_id': 21,     # Default AI topic ID
+                        'content_type_id': content_type_id,
+                        'ai_topic_id': ai_topic_id,
                         'scraped_date': datetime.now(timezone.utc).isoformat(),
                         'created_date': datetime.now(timezone.utc).isoformat(),
                         'updated_date': datetime.now(timezone.utc).isoformat(),
                         'llm_processed': True
                     }
+                    
+                    logger.info(f"📋 MAPPING: {article.headline[:40]}... → Type:{content_type_id} Topic:{ai_topic_id}")
                     
                     # Insert into database
                     self.db_service.insert_article(article_data)

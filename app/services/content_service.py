@@ -56,6 +56,13 @@ class DatabaseAdapter:
                 'llm_processed': article_data.get('llm_processed', True)
             }
             
+            # Debug logging for critical fields
+            logger.info(f"🔍 DATABASE INSERT DEBUG:")
+            logger.info(f"   Title: '{mapped_data.get('title', 'MISSING')}'")
+            logger.info(f"   Description: '{mapped_data.get('description', 'MISSING')[:50]}...'")
+            logger.info(f"   Content Type ID: {mapped_data.get('content_type_id', 'MISSING')}")
+            logger.info(f"   AI Topic ID: {mapped_data.get('ai_topic_id', 'MISSING')}")
+            
             return self.db_service.insert_article(mapped_data)
             
         except Exception as e:
