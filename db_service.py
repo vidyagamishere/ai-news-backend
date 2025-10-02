@@ -217,10 +217,10 @@ class PostgreSQLService:
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, description, url, source, significance_score, published_date, scraped_date, 
-                    llm_processed, content_type_id, ai_topic_id
+                    llm_processed, content_type_id, ai_topic_id, reading_time
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, 
-                    %s, %s, %s
+                    %s, %s, %s, %s
                 )
             """ # 11 columns, 11 placeholders (%s)
             
@@ -235,7 +235,8 @@ class PostgreSQLService:
                 article_data.get('scraped_date'),
                 True,  # Assuming if we reached here, LLM processed is True
                 final_content_type_id,
-                final_ai_topic_id
+                final_ai_topic_id,
+                article_data.get('reading_time', 1)
             )
             
             self.execute_query(insert_query, values, fetch_all=False)

@@ -597,7 +597,8 @@ If this is not AI/tech related content, set significance_score to 1-3.
                     significance_score=6.0,
                     content_type_label="Articles & Blog Posts",
                     keytopics=scraped_data.get('tags', []),
-                    topic_category_label="AI News & Updates"
+                    topic_category_label="AI News & Updates",
+                    reading_time=scraped_data.get('reading_time', 1)
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -641,7 +642,7 @@ If this is not AI/tech related content, set significance_score to 1-3.
                             date=parsed_data.get('date') or scraped_data.get('date'),
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
-                            significance_score=float(parsed_data.get('significance_score', 5.0))
+                            significance_score=float(parsed_data.get('significance_score', 5.0)),
                             keytopics=parsed_data.get('key_topics', []),
                             topic_category_label=parsed_data.get('topic_category_label', 'AI News & Updates')
                         )
