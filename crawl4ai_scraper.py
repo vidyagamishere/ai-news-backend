@@ -572,9 +572,9 @@ Please analyze this content and return ONLY a valid JSON object with the followi
 Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
 If this is not AI/tech related content, set significance_score to 1-3."""
 
-            # Call Claude API
+            # Call Claude API - using Claude 3 Haiku (only available model with current API key)
             payload = {
-                "model": "claude-3-5-sonnet-20240620",
+                "model": "claude-3-haiku-20240307",
                 "max_tokens": 1000,
                 "temperature": 0.1,
                 "messages": [
