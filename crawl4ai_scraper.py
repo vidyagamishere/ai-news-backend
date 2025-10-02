@@ -75,6 +75,7 @@ class ScrapedArticle:
     source: str
     content_type: str = "article"
     significance_score: float = 5.0
+    reading_time: int = 1
 
 class Crawl4AIScraper:
     """AI News Scraper using Crawl4AI and Claude LLM"""
@@ -97,7 +98,7 @@ class Crawl4AIScraper:
         automatically converting it into clean Markdown or JSON.
         """
         try:
-            logger.info(f"🕷️ Scraping URL with Crawl4AI: {url}")
+            # logger.info(f"🕷️ Scraping URL with Crawl4AI: {url}")
             
             if CRAWL4AI_AVAILABLE:
                 # Use full Crawl4AI implementation with browser automation
@@ -295,7 +296,7 @@ class Crawl4AIScraper:
     async def _fallback_scrape(self, url: str) -> Optional[Dict[str, Any]]:
         """Enhanced fallback scraping for Railway deployment"""
         try:
-            logger.info(f"🔄 Using enhanced fallback scraping for: {url}")
+            # logger.info(f"🔄 Using enhanced fallback scraping for: {url}")
             
             # Enhanced headers to avoid blocking
             headers = {
@@ -539,7 +540,7 @@ class Crawl4AIScraper:
         Use specific prompt to get structured output with key details.
         """
         try:
-            logger.info(f"🧠 Processing with Claude: {scraped_data.get('title', 'Unknown')}")
+            logger.info(f"🤖 CLAUDE PROCESSING: {scraped_data.get('title', 'Unknown')[:60]}...")
             
             # Create specific prompt for structured output with enhanced data
             extraction_method = scraped_data.get('extraction_method', 'unknown')
@@ -596,7 +597,8 @@ If this is not AI/tech related content, set significance_score to 1-3."""
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
-                    content_type="Articles & Blog Posts"
+                    content_type="Articles & Blog Posts",
+                    reading_time=scraped_data.get('reading_time', 1)
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -607,9 +609,9 @@ If this is not AI/tech related content, set significance_score to 1-3."""
                     timeout=60
                 ) as response:
                     if response.status != 200:
-                        logger.error(f"❌ Claude API error: HTTP {response.status}")
+                        logger.error(f"❌ CLAUDE API ERROR: HTTP {response.status}")
                         response_text = await response.text()
-                        logger.error(f"❌ Claude API error response: {response_text}")
+                        logger.error(f"❌ Claude error response: {response_text}")
                         return None
                     
                     result = await response.json()
@@ -633,6 +635,7 @@ If this is not AI/tech related content, set significance_score to 1-3."""
                         
                         # Parse JSON response from LLM
                         parsed_data = json.loads(content_clean)
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed {parsed_data.get('headline', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
                         
                         return ScrapedArticle(
                             headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
@@ -643,16 +646,17 @@ If this is not AI/tech related content, set significance_score to 1-3."""
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
-                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles')
+                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
+                            reading_time=scraped_data.get('reading_time', 1)
                         )
                         
                     except json.JSONDecodeError as e:
-                        logger.error(f"❌ Failed to parse Claude response as JSON: {e}")
-                        logger.error(f"Raw response: {content}")
+                        logger.error(f"❌ CLAUDE JSON ERROR: Failed to parse response: {e}")
+                        logger.error(f"Claude raw response: {content[:200]}...")
                         return None
                         
         except Exception as e:
-            logger.error(f"❌ Claude processing failed: {str(e)}")
+            logger.error(f"❌ CLAUDE PROCESSING FAILED: {str(e)}")
             return None
     
     def _extract_domain(self, url: str) -> str:
@@ -696,7 +700,7 @@ If this is not AI/tech related content, set significance_score to 1-3."""
         2. Process with Claude
         3. Return structured article data
         """
-        logger.info(f"🚀 Starting complete scraping process for: {url}")
+        # logger.info(f"🚀 Starting complete scraping process for: {url}")
         
         # Step 1: Scrape with Crawl4AI
         scraped_data = await self.scrape_with_crawl4ai(url)
@@ -708,14 +712,14 @@ If this is not AI/tech related content, set significance_score to 1-3."""
         if not article:
             return None
             
-        logger.info(f"✅ Successfully processed article: {article.headline}")
+        logger.info(f"✅ ARTICLE COMPLETE: {article.headline[:60]}... (Score: {article.significance_score})")
         return article
     
     async def scrape_multiple_sources(self, source_urls: List[str]) -> List[ScrapedArticle]:
         """
         Scrape multiple sources concurrently
         """
-        logger.info(f"🔄 Scraping {len(source_urls)} sources...")
+        logger.info(f"🔄 Scraping {len(source_urls)} sources with Claude processing...")
         
         tasks = [self.scrape_article(url) for url in source_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -727,7 +731,7 @@ If this is not AI/tech related content, set significance_score to 1-3."""
             elif isinstance(result, Exception):
                 logger.error(f"❌ Scraping error: {result}")
         
-        logger.info(f"✅ Successfully scraped {len(articles)} articles from {len(source_urls)} sources")
+        logger.info(f"🎉 CLAUDE PROCESSING COMPLETE: {len(articles)} articles processed from {len(source_urls)} sources")
         return articles
 
 class AdminScrapingInterface:
@@ -785,6 +789,7 @@ class AdminScrapingInterface:
             logger.info(f"📡 Total article URLs collected: {len(all_article_urls)}")
             
             # Step 3-4: Scrape individual articles with Crawl4AI + Claude
+            logger.info(f"🤖 Starting Claude AI processing for {len(all_article_urls)} articles...")
             articles = await self.scraper.scrape_multiple_sources(all_article_urls)
             
             # Step 5: Insert results into articles table
@@ -799,20 +804,26 @@ class AdminScrapingInterface:
                         'url': article.url,
                         'source': article.source,
                         'content_type': article.content_type,
-                        'significance_score': article.significance_score,
+                        'significance_score': article.significance_score or 6,
                         'published_date': article.date,
+                        'reading_time': article.reading_time,
+                        'content_type_id': 1,  # Default to blogs/articles
+                        'ai_topic_id': 21,     # Default AI topic ID
                         'scraped_date': datetime.now(timezone.utc).isoformat(),
+                        'created_date': datetime.now(timezone.utc).isoformat(),
+                        'updated_date': datetime.now(timezone.utc).isoformat(),
                         'llm_processed': True
                     }
                     
                     # Insert into database
                     self.db_service.insert_article(article_data)
                     articles_inserted += 1
+                    logger.info(f"💾 DATABASE INSERT: {article.headline[:50]}... (#{articles_inserted})")
                     
                 except Exception as e:
                     logger.error(f"❌ Failed to insert article {article.headline}: {e}")
             
-            logger.info(f"✅ Scraping completed: {articles_inserted} articles processed and stored")
+            logger.info(f"🎉 SCRAPING COMPLETE: {articles_inserted} articles processed by Claude and stored in database")
             
             return {
                 "success": True,

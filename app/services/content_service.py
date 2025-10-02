@@ -42,13 +42,17 @@ class DatabaseAdapter:
                 'title': article_data.get('title'),
                 'description': article_data.get('description', ''),
                 'content': article_data.get('content', article_data.get('description', '')),
+                'content_hash': article_data.get('content_hash'),
                 'url': article_data.get('url'),
                 'source': article_data.get('source', 'Unknown'),
                 'content_type_id': article_data.get('content_type_id', 1),  # Default to blogs
-                'ai_topic_id': article_data.get('ai_topic_id'),  # Can be None
-                'significance_score': article_data.get('significance_score', 5),
+                'ai_topic_id': article_data.get('ai_topic_id', 21),  # Default AI topic ID
+                'significance_score': article_data.get('significance_score', 6),
+                'reading_time': article_data.get('reading_time', 1),
                 'published_date': article_data.get('published_date'),
                 'scraped_date': article_data.get('scraped_date'),
+                'created_date': article_data.get('created_date'),
+                'updated_date': article_data.get('updated_date'),
                 'llm_processed': article_data.get('llm_processed', True)
             }
             
