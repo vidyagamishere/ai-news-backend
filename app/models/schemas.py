@@ -35,6 +35,7 @@ class UserResponse(UserBase):
 
 
 class UserPreferences(BaseModel):
+    # Legacy fields (for compatibility)
     topics: Optional[List[str]] = []
     user_roles: Optional[List[str]] = []
     role_type: Optional[str] = None
@@ -45,6 +46,30 @@ class UserPreferences(BaseModel):
     breaking_news_alerts: Optional[bool] = False
     newsletter_subscribed: Optional[bool] = True
     onboarding_completed: Optional[bool] = False
+    
+    # Enhanced user profile fields
+    name: Optional[str] = None
+    role: Optional[str] = None
+    ai_exposure: Optional[str] = "Intermediate"  # Beginner, Intermediate, Expert
+    interests: Optional[List[str]] = []  # Technical interests like 'Generative AI', 'Cloud Computing'
+    selected_content_types: Optional[List[str]] = ["ARTICLE", "VIDEO", "AUDIO"]
+    selected_publishers: Optional[List[str]] = []
+    time_filter: Optional[str] = "Last Week"
+    current_search_query: Optional[str] = ""
+
+
+class PasswordAuthRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+    auth_mode: str = "signin"  # signin or signup
+
+
+class UserSignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    confirm_password: str
 
 
 # =============================================================================
@@ -112,6 +137,34 @@ class Article(BaseModel):
     ai_topic_label: Optional[str] = None
 
     
+
+class ContentFilterRequest(BaseModel):
+    """Request model for filtering content"""
+    interests: Optional[List[str]] = []
+    content_types: Optional[List[str]] = []
+    publishers: Optional[List[str]] = []
+    time_filter: Optional[str] = "Last Week"
+    search_query: Optional[str] = ""
+    limit: Optional[int] = 50
+
+
+class GroupedContentResponse(BaseModel):
+    """Response model for grouped content by category"""
+    category: str
+    items: List[Article]
+    count: int
+
+
+class PersonalizedFeedResponse(BaseModel):
+    """Enhanced personalized feed response"""
+    welcome_message: str
+    user_profile: Dict[str, Any]
+    grouped_content: List[GroupedContentResponse]
+    search_active: bool = False
+    search_query: Optional[str] = None
+    total_items: int
+    filters_applied: Dict[str, Any]
+
 
 class DigestResponse(BaseModel):
     topStories: List[Article]

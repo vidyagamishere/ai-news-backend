@@ -41,7 +41,8 @@ else:
     logger.info(f"📊 Log level set to: {logging.getLevelName(log_level)}")
 
 # Import modular components
-from app.routers import health, auth, content, admin
+from app.routers import health, auth, content, admin, personalized_feed
+from app.routers import enhanced_auth
 from db_service import initialize_database, close_database_service
 
 
@@ -102,9 +103,11 @@ app.add_middleware(
 
 # Include routers with exact same endpoints as before for frontend compatibility
 app.include_router(health.router, tags=["health"])
-app.include_router(auth.router, tags=["authentication"])
+app.include_router(auth.router, tags=["authentication"])  # Legacy auth endpoints
+app.include_router(enhanced_auth.router, prefix="/api/v2", tags=["enhanced-auth"])  # New auth endpoints
 app.include_router(content.router, tags=["content"])
 app.include_router(admin.router, tags=["admin"])
+app.include_router(personalized_feed.router, prefix="/api/v1", tags=["personalized-feed"])
 
 # Additional endpoints for compatibility
 @app.get("/sources")
