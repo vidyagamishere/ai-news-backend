@@ -96,8 +96,8 @@ class ContentService:
                     SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
-                    WHERE a.published_at > NOW() - INTERVAL '7 days'
-                    ORDER BY a.published_at DESC, a.significance_score DESC
+                    WHERE a.published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY a.published_date DESC, a.significance_score DESC
                     LIMIT 100
                 """
                 articles = db.execute_query(articles_query)
@@ -111,7 +111,7 @@ class ContentService:
                 article_dict = dict(article)
                 
                 # Convert timestamps to ISO format
-                for field in ['published_at', 'scraped_at']:
+                for field in ['published_date', 'scraped_date']:
                     if article_dict.get(field):
                         article_dict[field] = article_dict[field].isoformat() if hasattr(article_dict[field], 'isoformat') else str(article_dict[field])
                 
@@ -208,7 +208,7 @@ class ContentService:
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
                     WHERE ct.name = %s
-                    ORDER BY a.published_at DESC
+                    ORDER BY a.published_date DESC
                     LIMIT %s
                 """
                 articles = db.execute_query(query, (content_type, limit))
@@ -221,7 +221,7 @@ class ContentService:
                 article_dict = dict(article)
                 
                 # Convert timestamps
-                for field in ['published_at', 'scraped_at']:
+                for field in ['published_date', 'scraped_date']:
                     if article_dict.get(field):
                         article_dict[field] = article_dict[field].isoformat() if hasattr(article_dict[field], 'isoformat') else str(article_dict[field])
                 
