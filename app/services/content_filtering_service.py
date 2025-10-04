@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-from db_service import DatabaseService
+from db_service import get_database_service
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +65,12 @@ class ContentFilteringService:
                    a.reading_time, a.image_url, a.keywords, a.content_hash,
                    ct.name as content_type_label,
                    ct.display_name as content_type_display,
-                   at.name as ai_topic_label,
+                   c.name as category_label,
                    s.name as source_name,
                    s.website as source_website
             FROM articles a
             LEFT JOIN content_types ct ON a.content_type_id = ct.id
-            LEFT JOIN ai_topics at ON a.ai_topic_id = at.id
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
             LEFT JOIN ai_sources s ON a.source = s.name
             WHERE 1=1
         """
@@ -179,9 +179,10 @@ class ContentFilteringService:
         
         return terms[:10]  # Limit to 10 terms for performance
     
-    def get_filtered_content(self, db: DatabaseService, criteria: FilterCriteria) -> List[Dict[str, Any]]:
+    def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
         """Get filtered content based on criteria"""
         try:
+            db = get_database_service()
             query, params = self.build_search_query(criteria)
             
             logger.info(f"🔍 Content filtering - Query length: {len(query)}, Params: {len(params)}")
@@ -208,7 +209,7 @@ class ContentFilteringService:
                     'content_hash': row.get('content_hash'),
                     'content_type_label': row.get('content_type_label'),
                     'content_type_display': row.get('content_type_display'),
-                    'ai_topic_label': row.get('ai_topic_label'),
+                    'category_label': row.get('category_label'),
                     'source_website': row.get('source_website')
                 }
                 articles.append(article)
@@ -229,7 +230,7 @@ class ContentFilteringService:
         for interest in user_interests:
             interest_articles = [
                 article for article in articles 
-                if article.get('ai_topic_label') == interest
+                if article.get('category_label') == interest
             ]
             if interest_articles:
                 grouped[interest] = interest_articles
@@ -238,14 +239,14 @@ class ContentFilteringService:
         if include_uncategorized:
             uncategorized = [
                 article for article in articles 
-                if not article.get('ai_topic_label') or article.get('ai_topic_label') not in user_interests
+                if not article.get('category_label') or article.get('category_label') not in user_interests
             ]
             if uncategorized:
                 grouped['Other Relevant Results'] = uncategorized
         
         return grouped
     
-    def get_content_recommendations(self, db: DatabaseService, user_id: str, limit: int = 10) -> List[Dict]:
+    def get_content_recommendations(self, user_id: str, limit: int = 10) -> List[Dict]:
         """Get personalized content recommendations based on user behavior"""
         try:
             # This would typically use ML algorithms, but for now we'll use simple heuristics
@@ -277,21 +278,22 @@ class ContentFilteringService:
             logger.error(f"❌ Failed to get recommendations: {str(e)}")
             return []
     
-    def get_trending_topics(self, db: DatabaseService, time_filter: str = "Last Week") -> List[Dict]:
+    def get_trending_topics(self, time_filter: str = "Last Week") -> List[Dict]:
         """Get trending topics based on content volume and significance"""
         try:
+            db = get_database_service()
             time_threshold = self.parse_time_filter(time_filter)
             
             query = """
                 SELECT 
-                    at.name as topic,
+                    c.name as topic,
                     COUNT(*) as article_count,
                     AVG(a.significance_score) as avg_significance,
                     MAX(a.published_date) as latest_article
                 FROM articles a
-                JOIN ai_topics at ON a.ai_topic_id = at.id
+                JOIN ai_categories_master c ON a.category_id = c.id
                 WHERE a.published_date >= %s
-                GROUP BY at.name
+                GROUP BY c.name
                 HAVING COUNT(*) >= 3
                 ORDER BY article_count DESC, avg_significance DESC
                 LIMIT 20

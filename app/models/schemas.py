@@ -133,8 +133,8 @@ class Article(BaseModel):
     keywords: Optional[str] = None
     content_type_id: Optional[int] = None
     content_type_label: Optional[str] = None
-    ai_topic_id: Optional[int] = None
-    ai_topic_label: Optional[str] = None
+    category_id: Optional[int] = None
+    category_label: Optional[str] = None
 
     
 

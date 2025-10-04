@@ -52,11 +52,11 @@ def filter_content_by_criteria(
     base_query = """
         SELECT DISTINCT a.*,
                ct.name as content_type_label,
-               at.name as ai_topic_label,
+               c.name as category_label,
                s.name as source_name
         FROM articles a
         LEFT JOIN content_types ct ON a.content_type_id = ct.id
-        LEFT JOIN ai_topics at ON a.ai_topic_id = at.id
+        LEFT JOIN ai_categories_master c ON a.category_id = c.id
         LEFT JOIN ai_sources s ON a.source = s.name
         WHERE 1=1
     """
@@ -129,8 +129,8 @@ def filter_content_by_criteria(
                 keywords=row.get('keywords'),
                 content_type_id=row.get('content_type_id'),
                 content_type_label=row.get('content_type_label'),
-                ai_topic_id=row.get('ai_topic_id'),
-                ai_topic_label=row.get('ai_topic_label')
+                category_id=row.get('category_id'),
+                category_label=row.get('category_label')
             )
             articles.append(article)
         
@@ -235,8 +235,8 @@ async def get_personalized_feed(
                     keywords=item.get('keywords'),
                     content_type_id=item.get('content_type_id'),
                     content_type_label=item.get('content_type_label'),
-                    ai_topic_id=item.get('ai_topic_id'),
-                    ai_topic_label=item.get('ai_topic_label')
+                    category_id=item.get('category_id'),
+                    category_label=item.get('category_label')
                 )
                 article_objects.append(article)
             
@@ -473,7 +473,7 @@ async def get_content_stats(
         stats_query = """
             SELECT 
                 COUNT(*) as total_articles,
-                COUNT(DISTINCT ai_topic_id) as unique_topics,
+                COUNT(DISTINCT category_id) as unique_categories,
                 COUNT(DISTINCT source) as unique_sources,
                 AVG(significance_score) as avg_significance,
                 MAX(published_date) as latest_article

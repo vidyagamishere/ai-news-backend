@@ -46,7 +46,7 @@ class DatabaseAdapter:
                 'url': article_data.get('url'),
                 'source': article_data.get('source', 'Unknown'),
                 'content_type_id': article_data.get('content_type_id', 1),  # Default to blogs
-                'ai_topic_id': article_data.get('ai_topic_id', 21),  # Default AI topic ID
+                'category_id': article_data.get('category_id', 1),  # Default category ID
                 'significance_score': article_data.get('significance_score', 6),
                 'reading_time': article_data.get('reading_time', 1),
                 'published_date': article_data.get('published_date'),
@@ -61,7 +61,7 @@ class DatabaseAdapter:
             logger.info(f"   Title: '{mapped_data.get('title', 'MISSING')}'")
             logger.info(f"   Description: '{mapped_data.get('description', 'MISSING')[:50]}...'")
             logger.info(f"   Content Type ID: {mapped_data.get('content_type_id', 'MISSING')}")
-            logger.info(f"   AI Topic ID: {mapped_data.get('ai_topic_id', 'MISSING')}")
+            logger.info(f"   Category ID: {mapped_data.get('category_id', 'MISSING')}")
             
             return self.db_service.insert_article(mapped_data)
             
@@ -239,29 +239,29 @@ class ContentService:
             logger.error(f"❌ Failed to get content by type: {str(e)}")
             return []
     
-    def get_ai_topics(self) -> List[Dict[str, Any]]:
-        """Get all AI topics from PostgreSQL"""
+    def get_ai_categories(self) -> List[Dict[str, Any]]:
+        """Get all AI categories from PostgreSQL"""
         try:
             db = get_database_service()
             
             query = """
-                SELECT id, name, description, category, is_active
-                FROM ai_topics
+                SELECT id, name, description, is_active
+                FROM ai_categories_master
                 WHERE is_active = TRUE
                 ORDER BY name
             """
             
-            topics = db.execute_query(query)
+            categories = db.execute_query(query)
             
-            processed_topics = []
-            for topic in topics:
-                processed_topics.append(dict(topic))
+            processed_categories = []
+            for category in categories:
+                processed_categories.append(dict(category))
             
-            logger.info(f"✅ Retrieved {len(processed_topics)} AI topics")
-            return processed_topics
+            logger.info(f"✅ Retrieved {len(processed_categories)} AI categories")
+            return processed_categories
             
         except Exception as e:
-            logger.error(f"❌ Failed to get AI topics: {str(e)}")
+            logger.error(f"❌ Failed to get AI categories: {str(e)}")
             return []
     
     def get_content_types(self) -> List[Dict[str, Any]]:
@@ -396,8 +396,7 @@ class ContentService:
                 s.id, s.name, s.rss_url, s.website, s.content_type, s.priority,
                 COALESCE(c.name, 'general') as category
             FROM ai_sources s
-            LEFT JOIN ai_topics t ON s.ai_topic_id = t.id
-            LEFT JOIN ai_categories_master c ON t.category_id = c.id
+            LEFT JOIN ai_categories_master c ON s.category_id = c.id
             WHERE s.enabled = TRUE
             ORDER BY s.priority ASC
         """

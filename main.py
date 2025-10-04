@@ -122,8 +122,7 @@ async def get_sources():
                    COALESCE(c.name, 'general') as category, 
                    s.priority, s.enabled
             FROM ai_sources s
-            LEFT JOIN ai_topics t ON s.ai_topic_id = t.id 
-            LEFT JOIN ai_categories_master c ON t.category_id = c.id
+            LEFT JOIN ai_categories_master c ON s.category_id = c.id
             WHERE s.enabled = TRUE
             ORDER BY s.priority ASC, s.name ASC
         """
