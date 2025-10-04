@@ -52,7 +52,7 @@ async def get_admin_sources(
         
         # Get all sources with category via JOIN relationship (including inactive ones for admin view)
         sources_query = """
-            SELECT s.id, s.name, s.rss_url, s.website, s.content_type, 
+            SELECT s.id, s.name, s.rss_url, s.website, 
                    COALESCE(c.name, 'general') as category, 
                    s.priority, s.enabled, s.is_active,
                    s.created_at, s.updated_at, s.category_id
@@ -110,8 +110,8 @@ async def add_admin_source(
         
         # Insert new source using category_id relationship
         insert_query = """
-            INSERT INTO ai_sources (name, rss_url, website, content_type, category_id, priority, enabled, is_active)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO ai_sources (name, rss_url, website, category_id, priority, enabled, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
         
@@ -119,7 +119,6 @@ async def add_admin_source(
             source_data.get('name'),
             source_data.get('rss_url'),
             source_data.get('website', ''),
-            source_data.get('content_type', 'blogs'),
             source_data.get('category_id'),
             source_data.get('priority', 1),
             source_data.get('enabled', True),
@@ -168,7 +167,7 @@ async def update_admin_source(
         # Update source using category_id relationship
         update_query = """
             UPDATE ai_sources 
-            SET name = %s, rss_url = %s, website = %s, content_type = %s, 
+            SET name = %s, rss_url = %s, website = %s, 
                 category_id = %s, priority = %s, enabled = %s, is_active = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
@@ -178,7 +177,6 @@ async def update_admin_source(
             update_data.get('name'),
             update_data.get('rss_url'),
             update_data.get('website', ''),
-            update_data.get('content_type', 'blogs'),
             update_data.get('category_id'),
             update_data.get('priority', 1),
             update_data.get('enabled', True),
