@@ -400,3 +400,6 @@ def close_database_service():
     if db_service:
         db_service.close_connections()
         db_service = None
+
+# Backward compatibility alias
+DatabaseService = PostgreSQLService
