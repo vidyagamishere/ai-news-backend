@@ -224,12 +224,12 @@ async def get_breaking_news_alerts(
         
         # Use the existing breaking_news_alerts view and filter for Generative AI
         query = """
-            SELECT title, description as summary, url, source, significance_score, 
-                   published_at as published_date, content_type_name
+            SELECT title, summary, url, source, significance_score, 
+                   published_date, name as content_type_name
             FROM breaking_news_alerts
-            WHERE (title ILIKE '%AI%' OR title ILIKE '%GPT%' OR title ILIKE '%ChatGPT%' 
-                   OR title ILIKE '%OpenAI%' OR title ILIKE '%generative%' OR title ILIKE '%Claude%')
-            ORDER BY significance_score DESC, published_at DESC
+            JOIN ai_categories_master ON breaking_news_alerts.category_id = ai_categories_master.priority
+            WHERE name = 'Generative AI'
+            ORDER BY significance_score DESC, published_date DESC
             LIMIT %s
         """
         
@@ -290,16 +290,7 @@ async def get_generative_ai_stories(
                    a.published_date, a.author, c.name as category
             FROM articles a
             LEFT JOIN ai_categories_master c ON a.category_id = c.priority
-            WHERE (c.name = 'Generative AI' 
-                   OR a.title ILIKE '%OpenAI%' 
-                   OR a.title ILIKE '%ChatGPT%' 
-                   OR a.title ILIKE '%GPT%'
-                   OR a.title ILIKE '%Claude%'
-                   OR a.title ILIKE '%Gemini%'
-                   OR a.title ILIKE '%generative%'
-                   OR a.source ILIKE '%openai%'
-                   OR a.source ILIKE '%anthropic%')
-            AND a.significance_score >= 7.0
+            WHERE (c.name = 'Generative AI')
             ORDER BY a.significance_score DESC, a.scraped_date DESC
             LIMIT %s
         """
