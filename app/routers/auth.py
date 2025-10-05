@@ -430,13 +430,14 @@ async def update_preferences(
         logger.info(f"🔍 Preferences data: {preferences.dict()}")
         
         # Insert or update user preferences in user_preferences table (matching exact table schema)
+        # Cast arrays to JSONB explicitly for PostgreSQL compatibility
         upsert_query = """
             INSERT INTO user_preferences (
                 user_id, experience_level, professional_roles, 
                 categories_selected, content_types_selected, publishers_selected,
                 newsletter_frequency, email_notifications, breaking_news_alerts,
                 onboarding_completed, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (user_id) 
             DO UPDATE SET
                 experience_level = EXCLUDED.experience_level,
@@ -452,17 +453,17 @@ async def update_preferences(
             RETURNING *
         """
         
-        # Pass lists directly for JSONB columns (PostgreSQL handles conversion automatically)
+        # Convert Python lists to JSON strings for JSONB casting
         # Ensure onboarding_completed is always True when preferences are updated
         result = db.execute_query(
             upsert_query,
             (
                 current_user.id,
                 preferences.experience_level,
-                preferences.professional_roles,  # JSONB handles list directly
-                preferences.categories_selected,  # JSONB handles list directly
-                preferences.content_types_selected,  # JSONB handles list directly
-                preferences.publishers_selected,  # JSONB handles list directly
+                json.dumps(preferences.professional_roles),  # Convert to JSON string for ::jsonb cast
+                json.dumps(preferences.categories_selected),  # Convert to JSON string for ::jsonb cast
+                json.dumps(preferences.content_types_selected),  # Convert to JSON string for ::jsonb cast
+                json.dumps(preferences.publishers_selected),  # Convert to JSON string for ::jsonb cast
                 preferences.newsletter_frequency,
                 preferences.email_notifications,
                 preferences.breaking_news_alerts,
