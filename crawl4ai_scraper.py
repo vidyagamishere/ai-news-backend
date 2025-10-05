@@ -610,7 +610,6 @@ class Crawl4AIScraper:
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
-                    content_type="Blogs",
                     complexity_level="Medium",
                     reading_time=scraped_data.get('reading_time', 1),
                     scraped_date=scraped_data.get('extracted_date'),
@@ -864,8 +863,8 @@ class AdminScrapingInterface:
             for article in articles:
                 try:
                     # Map content type and AI topic dynamically
-                    content_type_id = self.map_content_type_to_id(article.content_type)
-                    ai_topic_id = self.map_ai_topic_to_id(article.content_type, article.summary + " " + article.content)
+                    #content_type_id = self.map_content_type_to_id(article.content_type_label)
+                    #ai_topic_id = self.map_ai_topic_to_id(article.content_type, article.summary + " " + article.content)
                     
                     article_data = {
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
@@ -874,27 +873,28 @@ class AdminScrapingInterface:
                         'content': article.content,
                         'url': article.url,
                         'source': article.source,
-                        'content_type': article.content_type,
+                        'author': article.author,
                         'significance_score': article.significance_score or 6,
+                        'complexity_level': article.complexity_level or "Medium",
                         'published_date': article.date,
-                        'reading_time': article.reading_time,
-                        'content_type_id': content_type_id,
-                        'ai_topic_id': ai_topic_id,
+                        'reading_time': article.reading_time or 1,
+                        'content_type_label': article.content_type_label,
+                        'topic_category_label': article.topic_category_label,
                         'scraped_date': datetime.now(timezone.utc).isoformat(),
                         'created_date': datetime.now(timezone.utc).isoformat(),
                         'updated_date': datetime.now(timezone.utc).isoformat(),
                         'llm_processed': True
                     }
                     
-                    logger.info(f"📋 MAPPING: {article.headline[:40]}... → Type:{content_type_id} Topic:{ai_topic_id}")
+                    #logger.info(f"📋 MAPPING: {article.title}... → Type:{content_type_id} Topic:{ai_topic_id}")
                     
                     # Insert into database
                     self.db_service.insert_article(article_data)
                     articles_inserted += 1
-                    logger.info(f"💾 DATABASE INSERT: {article.headline[:50]}... (#{articles_inserted})")
+                    logger.info(f"💾 DATABASE INSERT: {article.title[:50]}... (#{articles_inserted})")
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to insert article {article.headline}: {e}")
+                    logger.error(f"❌ Failed to insert article {article.title}: {e}")
             
             logger.info(f"🎉 SCRAPING COMPLETE: {articles_inserted} articles processed by Claude and stored in database")
             
@@ -926,7 +926,7 @@ async def main():
     article = await scraper.scrape_article(test_url)
     
     if article:
-        print(f"✅ Scraped: {article.headline}")
+        print(f"✅ Scraped: {article.title}")
         print(f"📝 Summary: {article.summary}")
         print(f"⭐ Score: {article.significance_score}")
     else:

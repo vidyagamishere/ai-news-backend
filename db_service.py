@@ -220,9 +220,9 @@ class PostgreSQLService:
                     llm_processed, content_type_id, category_id, reading_time, author, complexity_level
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, 
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s
                 )
-            """ # 11 columns, 11 placeholders (%s)
+            """ # 14 columns, 14 placeholders (%s)
             
             values = (
                 article_data.get('content_hash'),
