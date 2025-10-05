@@ -271,7 +271,7 @@ class AuthService:
                 UPDATE users 
                 SET preferences = %s
                 WHERE id = %s
-                RETURNING id, email, name, profile_image, subscription_tier, preferences, verified_email, is_admin
+                RETURNING id, email, first_name, last_name, profile_image, subscription_tier, preferences, verified_email, is_admin
             """
             
             result = db.execute_query(

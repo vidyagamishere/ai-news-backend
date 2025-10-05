@@ -114,7 +114,7 @@ async def get_current_user(
         
         # Get user from database
         user_query = """
-            SELECT id, email, name, profile_image, verified_email, is_admin, 
+            SELECT id, email, first_name, last_name, profile_image, verified_email, is_admin, 
                    subscription_tier, created_at, preferences
             FROM users WHERE id = %s
         """
