@@ -656,7 +656,7 @@ class Crawl4AIScraper:
                         logger.info(f"✅ CLAUDE SUCCESS: Processed Title: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
                         logger.info(f"✅ CLAUDE SUCCESS: Processed Author: {parsed_data.get('author', 'Unknown')[:50]}... (Complexity Level: {parsed_data.get('complexity_level', 'N/A')})")
                         logger.info(f"✅ CLAUDE SUCCESS: Processed Summary: {parsed_data.get('summary', 'Unknown')[:150]}... (Content: {parsed_data.get('content', 'N/A')})")
-                        logger.info(f"✅ CLAUDE SUCCESS: Processed Published Date: {parsed_data.get('published date', 'Unknown')[:50]}... (Complexity Level: {parsed_data.get('complexity_level', 'N/A')})")
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed Published Date: {parsed_data.get('date')}... (Content Type Label: {parsed_data.get('content_type_label', 'N/A')})")
 
 
                         return ScrapedArticle(
@@ -869,7 +869,7 @@ class AdminScrapingInterface:
                     article_data = {
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': article.title,
-                        'description': article.summary,
+                        'summary': article.summary,
                         'content': article.content,
                         'url': article.url,
                         'source': article.source,

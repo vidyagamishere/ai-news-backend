@@ -204,6 +204,131 @@ async def get_content_types(
         )
 
 
+@router.get("/breaking-news")
+async def get_breaking_news(
+    limit: int = Query(5, ge=1, le=10)
+):
+    """
+    Get breaking news for landing page - high significance score articles
+    Endpoint: GET /breaking-news
+    """
+    try:
+        logger.info(f"🚨 Breaking news requested - Limit: {limit}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        # Use the existing breaking_news_alerts view and filter for Generative AI
+        query = """
+            SELECT title, description as summary, url, source, significance_score, 
+                   published_at as published_date, content_type_name
+            FROM breaking_news_alerts
+            WHERE (title ILIKE '%AI%' OR title ILIKE '%GPT%' OR title ILIKE '%ChatGPT%' 
+                   OR title ILIKE '%OpenAI%' OR title ILIKE '%generative%' OR title ILIKE '%Claude%')
+            ORDER BY significance_score DESC, published_at DESC
+            LIMIT %s
+        """
+        
+        articles = db.execute_query(query, (limit,), fetch_all=True)
+        
+        result = []
+        for article in articles:
+            result.append({
+                'title': article['title'],
+                'summary': article['summary'] or '',
+                'url': article['url'],
+                'source': article['source'],
+                'significanceScore': float(article['significance_score']) if article['significance_score'] else 8.5,
+                'published_date': article['published_date'].isoformat() if article['published_date'] else None,
+                'content_type': article['content_type_name'],
+                'category': 'Generative AI'
+            })
+        
+        logger.info(f"✅ Breaking news retrieved: {len(result)} articles")
+        return {
+            'articles': result,
+            'count': len(result),
+            'type': 'breaking_news'
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Breaking news endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get breaking news',
+                'message': str(e)
+            }
+        )
+
+
+@router.get("/generative-ai-content")
+async def get_generative_ai_content(
+    limit: int = Query(6, ge=1, le=20)
+):
+    """
+    Get Generative AI focused content for landing page
+    Endpoint: GET /generative-ai-content
+    """
+    try:
+        logger.info(f"🤖 Generative AI content requested - Limit: {limit}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        # Get articles focused on Generative AI, OpenAI, etc.
+        query = """
+            SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
+                   a.published_date, a.author, c.name as category
+            FROM articles a
+            LEFT JOIN ai_categories_master c ON a.category_id = c.priority
+            WHERE (c.name = 'Generative AI' 
+                   OR a.title ILIKE '%OpenAI%' 
+                   OR a.title ILIKE '%ChatGPT%' 
+                   OR a.title ILIKE '%GPT%'
+                   OR a.title ILIKE '%Claude%'
+                   OR a.title ILIKE '%Gemini%'
+                   OR a.title ILIKE '%generative%'
+                   OR a.source ILIKE '%openai%'
+                   OR a.source ILIKE '%anthropic%')
+            AND a.significance_score >= 7.0
+            ORDER BY a.significance_score DESC, a.scraped_date DESC
+            LIMIT %s
+        """
+        
+        articles = db.execute_query(query, (limit,), fetch_all=True)
+        
+        result = []
+        for article in articles:
+            result.append({
+                'title': article['title'],
+                'summary': article['summary'] or '',
+                'url': article['url'],
+                'source': article['source'],
+                'significanceScore': float(article['significance_score']) if article['significance_score'] else 7.0,
+                'published_date': article['published_date'].isoformat() if article['published_date'] else None,
+                'author': article['author'],
+                'category': article['category'] or 'Generative AI'
+            })
+        
+        logger.info(f"✅ Generative AI content retrieved: {len(result)} articles")
+        return {
+            'articles': result,
+            'count': len(result),
+            'type': 'generative_ai'
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Generative AI content endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get Generative AI content',
+                'message': str(e)
+            }
+        )
+
+
 @router.post("/admin/scrape")
 async def admin_initiate_scraping(
     request: Request,
