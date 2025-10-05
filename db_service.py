@@ -141,8 +141,8 @@ class PostgreSQLService:
         try:
             query = """
                 SELECT s.id, s.name, s.rss_url, s.website, COALESCE(c.name, 'general') as category, s.priority, s.enabled  
-                FROM ai_sources s LEFT JOIN ai_topics t ON s.ai_topic_id = t.id LEFT JOIN ai_categories_master c ON t.category_id = c.id WHERE s.enabled = TRUE 
-                ORDER BY priority DESC, s.name
+                FROM ai_sources s LEFT JOIN ai_categories_master c ON s.category_id = c.priority WHERE s.enabled = TRUE 
+                ORDER BY s.priority DESC, s.name
             """
             sources = self.execute_query(query, fetch_all=True)
             
@@ -198,26 +198,26 @@ class PostgreSQLService:
                 else:
                     logger.warning(f"⚠️ Content type '{content_type_label}' not found, using default ID: {FALLBACK_CONTENT_TYPE_ID}")
 
-            # --- 3. Get Topic ID (Label-to-ID Mapping) ---
-            final_ai_topic_id = FALLBACK_TOPIC_ID
+            
             topic_category_label = article_data.get('topic_category_label')
             
+            final_ai_topic_id = FALLBACK_TOPIC_ID
             if topic_category_label:
                 # NOTE: Assuming 'name' is the correct column for the topic category label
-                topic_query = "SELECT id FROM ai_topics WHERE name = %s"
+                topic_query = "SELECT priority FROM ai_categories_master WHERE name = %s"
                 ai_topic_result = self.execute_query(topic_query, (topic_category_label,), fetch_one=True)
                 
                 if ai_topic_result:
                     # Safely extract the ID from the result set
-                    final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
+                    final_ai_topic_id = ai_topic_result['priority'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
                 else:
                     logger.warning(f"⚠️ Topic category '{topic_category_label}' not found, using default ID: {FALLBACK_TOPIC_ID}")
 
             # --- 4. Insert New Article (Fixed Query) ---
             insert_query = """
                 INSERT INTO articles (
-                    content_hash, title, description, url, source, significance_score, published_date, scraped_date, 
-                    llm_processed, content_type_id, ai_topic_id, reading_time
+                    content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
+                    llm_processed, content_type_id, category_id, reading_time, author, complexity_level
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, 
                     %s, %s, %s, %s
@@ -226,18 +226,19 @@ class PostgreSQLService:
             
             values = (
                 article_data.get('content_hash'),
-                article_data.get('headline'),  # Using 'headline' from LLM output
+                article_data.get('title'),  # Using 'title' from LLM output
                 article_data.get('summary'),   # Using 'summary' from LLM output
                 url,
                 article_data.get('source'),
-                
                 article_data.get('significance_score'),
-                article_data.get('publisheddate'),     # Using 'date' from LLM output
+                article_data.get('published_date'),     # Using 'published_date' from LLM output
                 article_data.get('scraped_date'),
                 True,  # Assuming if we reached here, LLM processed is True
                 final_content_type_id,
                 final_ai_topic_id,
-                article_data.get('reading_time', 1)
+                article_data.get('reading_time', 1),
+                article_data.get('author', 'Unknown'),
+                article_data.get('complexity_level', 'Medium')
             )
             
             self.execute_query(insert_query, values, fetch_all=False)

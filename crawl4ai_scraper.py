@@ -66,20 +66,20 @@ else:
 @dataclass
 class ScrapedArticle:
     """Structured article data from scraping"""
-    headline: str
+    title: str
     author: Optional[str]
     summary: str
     content: str
     date: Optional[str]
     url: str
     source: str
-    content_type: str = "article"
     significance_score: float = 5.0
+    complexity_level: str = "Medium"
     reading_time: int = 1
     published_date: Optional[str] = None
     scraped_date: Optional[str] = None
-    content_type_label: str = "Blog Posts & Articles"
-    topic_category_label: str = "AI News & Updates"
+    content_type_label: str = "article"
+    topic_category_label: str = "Generative AI"
 
 class Crawl4AIScraper:
     """AI News Scraper using Crawl4AI and Claude LLM"""
@@ -262,6 +262,9 @@ class Crawl4AIScraper:
                 if isinstance(tags, str):
                     tags = [tags]
                 
+                logger.info(f"🔄 Crawl4  full scrapre result for URL : {url}")
+
+
                 extracted_result = {
                     "title": title.strip(),
                     "description": description.strip(),
@@ -272,11 +275,14 @@ class Crawl4AIScraper:
                     "url": url,
                     "reading_time": reading_time_minutes,
                     "markdown": markdown_content[:3000],  # Keep some markdown for reference
-                    "extracted_at": datetime.now(timezone.utc).isoformat(),
+                    "extracted_time": datetime.now(timezone.utc).isoformat(),
                     "extraction_method": "crawl4ai_full",
                     "links": result.links[:10] if result.links else [],  # Extract some links
                     "media": result.media[:5] if result.media else []  # Extract some media
                 }
+
+                logger.info(f"🔄 Crawl4  full scrapre result for title : {extracted_result.get('title', 'Unknown')[:50]}... description: {extracted_result.get('description', 'Unknown')[:50]}...")
+                
                 
                 # Cleanup session directory for Railway deployment
                 try:
@@ -550,7 +556,10 @@ class Crawl4AIScraper:
             extraction_method = scraped_data.get('extraction_method', 'unknown')
             author_info = scraped_data.get('author', 'Not specified')
             tags_info = scraped_data.get('tags', [])
-            
+            logger.info(f"🤖  URL : {scraped_data.get('url', '')}, Extraction Method: {extraction_method}, Author: {author_info}, Tags : {tags_info}...")
+            logger.info(f"🤖  Content Txt: {scraped_data.get('content', '')[:100]}...")
+
+
             prompt = f"""You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
 
             Content Title: {scraped_data.get('title', '')}
@@ -563,16 +572,16 @@ class Crawl4AIScraper:
 
             Please analyze this content and return ONLY a valid JSON object with the following structure:
             {{
-                "headline": "Clear, concise headline for the article (use original title if good)",
+                "title": "Clear, concise headline for the article (use original title if good)",
                 "author": "Author name if found, or null",
                 "summary": "4-5 sentence summary of the key points and significance",
                 "date": "Publication date if found, or null",
-                "content_type_label": "Classify the content into one of the content types: Blog Posts & Articles,Videos,Podcasts & Audio, Research Papers, Events & Conferences, Demos & Tools, Newsletters & Email Updates",
+                "content_type_label": "Classify the content into one of the content types: Blogs, Videos or Podcasts",
                 "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
+                "complexity_level": "Classify the complexity into one of the following levels: Low, Medium, High depending on technical depth of content",
                 "key_topics": ["list of key AI tech topics covered"],
-                "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 22 categories: AI Tools & Platforms, AI Startups & Funding, Robotics & Automation, AI Research Papers, AI Policy & Regulation, Natural Language Processing, AI News & Updates, Machine Learning, AI Learning & Education, AI International, AI in Healthcare, AI Hardware & Computing, AI in Gaming, AI in Finance, AI Events & Conferences, AI Ethics & Safety, Deep Learning, AI in Creative Arts, Computer Vision, AI Cloud Services, AI in Automotive, AI in Business"
+                "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 10 categories: Generative AI,AI Applications,AI Start Ups,AI Infrastructure,Cloud Computing,Machine Learning,AI Safety and Governance,Robotics,Internet Of Things (IoT),Quantum AI & Future Technology"
             }}
-
             Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
             If this is not AI/tech related content, set significance_score to 1-3."""
 
@@ -593,19 +602,19 @@ class Crawl4AIScraper:
                 # Enhanced fallback for demo purposes
                 logger.warning("⚠️ Using fallback processing (no Anthropic API key)")
                 return ScrapedArticle(
-                    headline=scraped_data.get('title', 'AI News Article'),
+                    title=scraped_data.get('title', 'AI News Article'),
                     author=scraped_data.get('author'),
                     summary=scraped_data.get('description', 'AI news and developments'),
                     content=scraped_data.get('content', '')[:1000],
-                    date=scraped_data.get('date') or scraped_data.get('extracted_at'),
+                    date=scraped_data.get('date') or scraped_data.get('extracted_date'),
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
-                    content_type="Articles & Blog Posts",
+                    content_type="Blogs",
+                    complexity_level="Medium",
                     reading_time=scraped_data.get('reading_time', 1),
-                    published_date=scraped_data.get('date'),
                     scraped_date=scraped_data.get('extracted_at'),
-                    content_type_label="Blog Posts & Articles",
+                    content_type_label="Blogs",
                     topic_category_label="AI News & Updates"
                 )
             
@@ -643,10 +652,16 @@ class Crawl4AIScraper:
                         
                         # Parse JSON response from LLM
                         parsed_data = json.loads(content_clean)
-                        logger.info(f"✅ CLAUDE SUCCESS: Processed {parsed_data.get('headline', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
-                        
+
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed URL: {parsed_data.get('url', 'Unknown')[:50]}...")
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed Title: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed Author: {parsed_data.get('author', 'Unknown')[:50]}... (Complexity Level: {parsed_data.get('complexity_level', 'N/A')})")
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed Summary: {parsed_data.get('summary', 'Unknown')[:150]}... (Content: {parsed_data.get('content', 'N/A')})")
+                        logger.info(f"✅ CLAUDE SUCCESS: Processed Published Date: {parsed_data.get('published date', 'Unknown')[:50]}... (Complexity Level: {parsed_data.get('complexity_level', 'N/A')})")
+
+
                         return ScrapedArticle(
-                            headline=parsed_data.get('headline', scraped_data.get('title', 'Unknown')),
+                            title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
@@ -654,13 +669,14 @@ class Crawl4AIScraper:
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
-                            content_type=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
+                            complexity_level=parsed_data.get('complexity_level', 'Medium'),
                             reading_time=scraped_data.get('reading_time', 1),
                             published_date=parsed_data.get('date'),
-                            scraped_date=scraped_data.get('extracted_at'),
-                            content_type_label=parsed_data.get('content_type_label', 'Blog Posts & Articles'),
-                            topic_category_label=parsed_data.get('topic_category_label', 'AI News & Updates')
+                            scraped_date=scraped_data.get('extracted_date'),
+                            content_type_label=parsed_data.get('content_type_label','Blogs'),
+                            topic_category_label=parsed_data.get('topic_category_label', 'Generative AI')
                         )
+
                         
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ CLAUDE JSON ERROR: Failed to parse response: {e}")
@@ -714,17 +730,19 @@ class Crawl4AIScraper:
         """
         # logger.info(f"🚀 Starting complete scraping process for: {url}")
         
+        logger.info(f"🚀 Starting complete scraping process for: {url}")
         # Step 1: Scrape with Crawl4AI
         scraped_data = await self.scrape_with_crawl4ai(url)
         if not scraped_data:
             return None
+        logger.info(f"🚀 Scraped data: {scraped_data}")
         
         # Step 2: Process with Claude
         article = await self.process_with_claude(scraped_data)
         if not article:
             return None
             
-        logger.info(f"✅ ARTICLE COMPLETE: {article.headline[:60]}... (Score: {article.significance_score})")
+        logger.info(f"✅ ARTICLE COMPLETE: {article.[:60]}... (Score: {article.significance_score})")
         return article
     
     async def scrape_multiple_sources(self, source_urls: List[str]) -> List[ScrapedArticle]:
@@ -756,14 +774,9 @@ class AdminScrapingInterface:
     def map_content_type_to_id(self, content_type_str):
         """Map content type string to database ID"""
         content_type_mapping = {
-            'Blog Posts & Articles': 1,
-            'Articles & Blog Posts': 1,
+            'Blogs': 1,
             'Videos': 2,
-            'Podcasts & Audio': 3,
-            'Research Papers': 4,
-            'Events & Conferences': 5,
-            'Demos & Tools': 6,
-            'Newsletters & Email Updates': 7,
+            'Podcasts': 3,
         }
         return content_type_mapping.get(content_type_str, 1)  # Default to blogs/articles
     

@@ -7,7 +7,7 @@ Maintains compatibility with existing frontend API endpoints
 import os
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.models.schemas import DigestResponse, ContentByTypeResponse, UserResponse
 from app.dependencies.auth import get_current_user_optional, get_current_user
@@ -206,7 +206,7 @@ async def get_content_types(
 
 @router.post("/admin/scrape")
 async def admin_initiate_scraping(
-    current_user: UserResponse = Depends(get_current_user),
+    request: Request,
     content_service: ContentService = Depends(get_content_service)
 ):
     """
@@ -214,25 +214,26 @@ async def admin_initiate_scraping(
     Uses Content Service for scraping operations
     """
     try:
-        logger.info(f"🔧 Admin scraping initiated by: {current_user.email}")
+        # Check for admin API key authentication
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('VITE_ADMIN_API_KEY', 'admin-api-key-2024')
         
-        if DEBUG:
-            logger.debug(f"🔍 Admin scrape request by user: {current_user.email}")
-            logger.debug(f"🔍 User admin status: {current_user.is_admin}")
-        
-        # Check admin permissions
-        if not current_user.is_admin:
-            logger.warning(f"⚠️ Non-admin user attempted scraping: {current_user.email}")
+        if not admin_api_key or admin_api_key != expected_api_key:
+            logger.warning(f"⚠️ Unauthorized admin scraping attempt")
             raise HTTPException(
                 status_code=403,
                 detail={
                     'error': 'Admin access required',
-                    'message': 'Only admin users can trigger scraping'
+                    'message': 'Valid admin API key required for scraping'
                 }
             )
         
+        logger.info(f"🔧 Admin scraping initiated with API key authentication")
+        
         if DEBUG:
-            logger.debug("🔍 Admin permissions verified, starting scraping")
+            logger.debug(f"🔍 Admin scrape request with valid API key")
+            logger.debug(f"🔍 Admin permissions verified")
+        
         
         # Trigger scraping operation with detailed error handling
         try:
@@ -249,7 +250,7 @@ async def admin_initiate_scraping(
         if DEBUG:
             logger.debug(f"🔍 Scraping completed with result: {result}")
         
-        logger.info(f"✅ Admin scraping completed successfully by: {current_user.email}")
+        logger.info(f"✅ Admin scraping completed successfully with API key authentication")
         return {
             'success': True,
             'message': 'Content scraping completed successfully',

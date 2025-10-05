@@ -39,17 +39,19 @@ class DatabaseAdapter:
             # Map and validate article data with required defaults
             mapped_data = {
                 'id': article_data.get('id'),
-                'title': article_data.get('title'),
-                'description': article_data.get('description', ''),
-                'content': article_data.get('content', article_data.get('description', '')),
+                'title': article_data.get('title', 'Untitled Article'),
+                'summary': article_data.get('summary', ''),
+                'content': article_data.get('content', article_data.get('summary', '')),
                 'content_hash': article_data.get('content_hash'),
+                'author': article_data.get('author', 'Unknown'),
                 'url': article_data.get('url'),
                 'source': article_data.get('source', 'Unknown'),
-                'content_type_id': article_data.get('content_type_id', 1),  # Default to blogs
-                'category_id': article_data.get('category_id', 1),  # Default category ID
+                'content_type_label': article_data.get('content_type_label', 'Blogs'),  # Default to blogs
+                'topic_category_label': article_data.get('topic_category_label', 'Generative AI'),
                 'significance_score': article_data.get('significance_score', 6),
+                'complexity_level': article_data.get('complexity_level', 'Medium'),
                 'reading_time': article_data.get('reading_time', 1),
-                'published_date': article_data.get('published_date'),
+                'published_date': article_data.get('date'),
                 'scraped_date': article_data.get('scraped_date'),
                 'created_date': article_data.get('created_date'),
                 'updated_date': article_data.get('updated_date'),
@@ -58,10 +60,20 @@ class DatabaseAdapter:
             
             # Debug logging for critical fields
             logger.info(f"🔍 DATABASE INSERT DEBUG:")
-            logger.info(f"   Title: '{mapped_data.get('title', 'MISSING')}'")
+            logger.info(f"   Title: '{mapped_data.get('titl', 'MISSING')}'")
             logger.info(f"   Description: '{mapped_data.get('description', 'MISSING')[:50]}...'")
-            logger.info(f"   Content Type ID: {mapped_data.get('content_type_id', 'MISSING')}")
-            logger.info(f"   Category ID: {mapped_data.get('category_id', 'MISSING')}")
+            logger.info(f"   Content Type Label: {mapped_data.get('content_type_label', 'MISSING')}")
+            logger.info(f"   Topic Category Label: {mapped_data.get('topic_category_label', 'MISSING')}")
+            logger.info(f"   Complexity Level: {mapped_data.get('complexity_level', 'MISSING')}")
+            logger.info(f"   Content: {mapped_data.get('content', 'MISSING')}")
+            logger.info(f"   Reading Time: {mapped_data.get('reading_time', 'MISSING')}")
+            logger.info(f"   Published Date: {mapped_data.get('date', 'MISSING')}")
+            logger.info(f"   URL: {mapped_data.get('url', 'MISSING')}")
+            logger.info(f"   Scraped Date: {mapped_data.get('scraped_date', 'MISSING')}")
+            logger.info(f"   Significance Score: {mapped_data.get('significance_score', 'MISSING')}")
+            logger.info(f"   Content Hash: {mapped_data.get('content_hash', 'MISSING')}")
+
+            
             
             return self.db_service.insert_article(mapped_data)
             
@@ -98,6 +110,7 @@ class ContentService:
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
                     WHERE a.published_date > NOW() - INTERVAL '7 days'
                     ORDER BY a.published_date DESC, a.significance_score DESC
+
                     LIMIT 100
                 """
                 articles = db.execute_query(articles_query)
