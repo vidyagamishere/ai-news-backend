@@ -253,28 +253,41 @@ class ContentService:
             return []
     
     def get_ai_categories(self) -> List[Dict[str, Any]]:
-        """Get all AI categories from PostgreSQL"""
+        """Get all AI categories from ai_categories_master table only"""
         try:
             db = get_database_service()
             
+            # Check if ai_categories_master table exists and has data
+            try:
+                count_query = "SELECT COUNT(*) as count FROM ai_categories_master"
+                count_result = db.execute_query(count_query, fetch_one=True)
+                logger.info(f"🔍 ai_categories_master table count: {count_result.get('count', 0)}")
+            except Exception as table_error:
+                logger.error(f"❌ ai_categories_master table issue: {str(table_error)}")
+                return []
+            
             query = """
-                SELECT id, name, description, is_active
+                SELECT id, name, description, priority, category_label, is_active
                 FROM ai_categories_master
                 WHERE is_active = TRUE
-                ORDER BY name
+                ORDER BY priority, name
             """
             
             categories = db.execute_query(query)
+            logger.info(f"🔍 Raw categories query returned: {len(categories) if categories else 0} rows")
             
             processed_categories = []
             for category in categories:
-                processed_categories.append(dict(category))
+                category_dict = dict(category)
+                logger.info(f"🔍 Processing category: {category_dict}")
+                processed_categories.append(category_dict)
             
-            logger.info(f"✅ Retrieved {len(processed_categories)} AI categories")
+            logger.info(f"✅ Retrieved {len(processed_categories)} AI categories from ai_categories_master")
             return processed_categories
             
         except Exception as e:
             logger.error(f"❌ Failed to get AI categories: {str(e)}")
+            logger.error(f"❌ Full traceback: {traceback.format_exc()}")
             return []
     
     def get_content_types(self) -> List[Dict[str, Any]]:

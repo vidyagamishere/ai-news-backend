@@ -136,20 +136,31 @@ class AuthService:
         try:
             db = get_database_service()
             
-            # Try minimal query that should work with any users table
+            # Try comprehensive query first, then fall back to minimal
             try:
-                query = "SELECT id, email FROM users WHERE email = %s"
+                query = "SELECT id, email, first_name, last_name FROM users WHERE email = %s"
                 result = db.execute_query(query, (email,), fetch_one=True)
             except Exception as e:
-                logger.error(f"❌ Even minimal user query failed: {str(e)}")
-                result = None
+                logger.warning(f"⚠️ Comprehensive user query failed, trying minimal: {str(e)}")
+                try:
+                    query = "SELECT id, email FROM users WHERE email = %s"
+                    result = db.execute_query(query, (email,), fetch_one=True)
+                except Exception as e2:
+                    logger.error(f"❌ Even minimal user query failed: {str(e2)}")
+                    result = None
             
             if result:
                 user_dict = dict(result)
                 
                 # Set defaults for missing columns
-                user_dict['name'] = ''
-                user_dict['profile_image'] = ''
+                # Construct full name from first_name and last_name if available
+                if 'first_name' in user_dict and 'last_name' in user_dict:
+                    full_name = f"{user_dict.get('first_name', '')} {user_dict.get('last_name', '')}".strip()
+                    user_dict['name'] = full_name if full_name else ''
+                else:
+                    user_dict['name'] = user_dict.get('name', '')
+                    
+                user_dict['profile_image'] = user_dict.get('profile_image', '')
                 user_dict['subscription_tier'] = 'free'
                 user_dict['preferences'] = {}
                 user_dict['created_at'] = datetime.utcnow()
@@ -171,15 +182,7 @@ class AuthService:
         """Create or update user in PostgreSQL database"""
         try:
             db = get_database_service()
-            
-            # First, ensure is_admin column exists
-            try:
-                db.execute_query("""
-                    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE
-                """)
-                logger.info("✅ Ensured is_admin column exists")
-            except Exception as col_error:
-                logger.warning(f"⚠️ Could not ensure is_admin column: {str(col_error)}")
+            logger.info(f"🔐 Creating/updating user: {user_data.get('email', 'unknown')}") 
             
             # Check if user exists
             existing_user = self.get_user_by_email(user_data['email'])
@@ -193,17 +196,35 @@ class AuthService:
                 logger.info(f"✅ User updated: {user_data['email']} (Admin: {is_admin})")
                 
             else:
-                # Create new user with minimal data
+                # Create new user with name data from Google
                 user_id = user_data.get('sub', f"user_{int(datetime.utcnow().timestamp())}")
                 
+                # Extract first_name and last_name from Google's 'name' field
+                full_name = user_data.get('name', '')
+                name_parts = full_name.split(' ', 1) if full_name else ['', '']
+                first_name = name_parts[0] if len(name_parts) > 0 else 'User'
+                last_name = name_parts[1] if len(name_parts) > 1 else ''
+                
+                logger.info(f"📝 Creating user: {user_data['email']} - Name: '{first_name}' '{last_name}' (User id: {user_id})")
+                
                 try:
-                    # Try minimal insert that should work with any users table
-                    query = "INSERT INTO users (id, email) VALUES (%s, %s) RETURNING id, email"
-                    result = db.execute_query(query, (user_id, user_data['email']), fetch_one=True)
+                    # Try inserting with name fields required by schema
+                    query = """
+                        INSERT INTO users (id, email, first_name, last_name) 
+                        VALUES (%s, %s, %s, %s) 
+                        RETURNING id, email, first_name, last_name
+                    """
+                    result = db.execute_query(query, (user_id, user_data['email'], first_name, last_name), fetch_one=True)
                 except Exception as e:
-                    logger.error(f"❌ Could not create user with minimal schema: {str(e)}")
-                    # Return a mock result to continue with authentication
-                    result = {'id': user_id, 'email': user_data['email']}
+                    logger.error(f"❌ Could not create user with name fields: {str(e)}")
+                    try:
+                        # Fallback: try minimal insert that should work with any users table
+                        query = "INSERT INTO users (id, email) VALUES (%s, %s) RETURNING id, email"
+                        result = db.execute_query(query, (user_id, user_data['email']), fetch_one=True)
+                    except Exception as e2:
+                        logger.error(f"❌ Could not create user with minimal schema: {str(e2)}")
+                        # Return a mock result to continue with authentication
+                        result = {'id': user_id, 'email': user_data['email'], 'first_name': first_name, 'last_name': last_name}
                 
                 logger.info(f"✅ New user created: {user_data['email']} (Admin: {is_admin})")
             
@@ -220,7 +241,13 @@ class AuthService:
                 user_dict['is_admin'] = user_dict.get('is_admin', is_admin)
                 
                 # Ensure missing fields have default values
-                user_dict['name'] = user_dict.get('name', user_data.get('name', ''))
+                # Construct full name from first_name and last_name if available
+                if 'first_name' in user_dict and 'last_name' in user_dict:
+                    full_name = f"{user_dict.get('first_name', '')} {user_dict.get('last_name', '')}".strip()
+                    user_dict['name'] = full_name if full_name else user_data.get('name', '')
+                else:
+                    user_dict['name'] = user_dict.get('name', user_data.get('name', ''))
+                
                 user_dict['profile_image'] = user_dict.get('profile_image', user_data.get('picture', ''))
                 
                 if user_dict['is_admin']:

@@ -149,23 +149,23 @@ async def get_ai_topics(
     Endpoint: GET /ai-topics (new endpoint for frontend)
     """
     try:
-        logger.info("📑 AI topics requested")
-        
-        topics = content_service.get_ai_topics()
-        
-        logger.info(f"✅ AI topics retrieved successfully - {len(topics)} topics")
+        logger.info("📑 AI categories requested")
+
+        categories = content_service.get_ai_categories()
+
+        logger.info(f"✅ AI categories retrieved successfully - {len(categories)} categories")
         return {
-            'topics': topics,
-            'count': len(topics),
+            'categories': categories,
+            'count': len(categories),
             'database': 'postgresql'
         }
         
     except Exception as e:
-        logger.error(f"❌ AI topics endpoint failed: {str(e)}")
+        logger.error(f"❌ AI categories endpoint failed: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail={
-                'error': 'Failed to get AI topics',
+                'error': 'Failed to get AI categories',
                 'message': str(e),
                 'database': 'postgresql'
             }
