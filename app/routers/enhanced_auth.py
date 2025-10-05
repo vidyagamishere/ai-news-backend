@@ -349,7 +349,7 @@ async def update_preferences(
         logger.info(f"🔍 Updating preferences for user: {current_user['id']}")
         logger.info(f"🔍 Preferences data: {preferences.dict()}")
         
-        # Insert or update user preferences in user_preferences table
+        # Insert or update user preferences in user_preferences table (matching exact table schema)
         upsert_query = """
             INSERT INTO user_preferences (
                 user_id, experience_level, professional_roles, 
