@@ -145,17 +145,21 @@ async def get_ai_topics(
     content_service: ContentService = Depends(get_content_service)
 ):
     """
-    Get all AI topics
+    Get all AI topics and content types
     Endpoint: GET /ai-topics (new endpoint for frontend)
     """
     try:
-        logger.info("📑 AI categories requested")
+        logger.info("📑 AI categories and content types requested")
 
         categories = content_service.get_ai_categories()
+        content_types = content_service.get_content_types()
 
         logger.info(f"✅ AI categories retrieved successfully - {len(categories)} categories")
+        logger.info(f"✅ Content types retrieved successfully - {len(content_types)} types")
+        
         return {
             'categories': categories,
+            'content_types': content_types,
             'count': len(categories),
             'database': 'postgresql'
         }

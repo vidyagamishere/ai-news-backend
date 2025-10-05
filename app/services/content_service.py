@@ -267,7 +267,7 @@ class ContentService:
                 return []
             
             query = """
-                SELECT id, name, description, priority, category_label, is_active
+                SELECT id, name, description, priority, category_label
                 FROM ai_categories_master
                 WHERE is_active = TRUE
                 ORDER BY priority, name
@@ -276,9 +276,14 @@ class ContentService:
             categories = db.execute_query(query)
             logger.info(f"🔍 Raw categories query returned: {len(categories) if categories else 0} rows")
             
+            # Auto-select categories: Generative AI, AI Start Ups, AI Applications
+            auto_selected_categories = ["Generative AI", "AI Start Ups", "AI Applications"]
+            
             processed_categories = []
             for category in categories:
                 category_dict = dict(category)
+                # Auto-select specific categories
+                category_dict['selected'] = category_dict.get('name', '') in auto_selected_categories
                 logger.info(f"🔍 Processing category: {category_dict}")
                 processed_categories.append(category_dict)
             
@@ -291,42 +296,44 @@ class ContentService:
             return []
     
     def get_content_types(self) -> List[Dict[str, Any]]:
-        """Get all content types from PostgreSQL"""
+        """Get only 3 main content types with auto-selection"""
         try:
-            db = get_database_service()
+            # Return only 3 main content types with auto-selection
+            content_types = [
+                {
+                    'id': 1,
+                    'name': 'ARTICLE',
+                    'display_name': 'Articles',
+                    'description': 'News articles and blog posts',
+                    'frontend_section': 'blog',
+                    'icon': 'article',
+                    'is_active': True,
+                    'selected': True  # Auto-selected
+                },
+                {
+                    'id': 2,
+                    'name': 'VIDEO',
+                    'display_name': 'Videos',
+                    'description': 'Video content and tutorials',
+                    'frontend_section': 'video',
+                    'icon': 'video',
+                    'is_active': True,
+                    'selected': True  # Auto-selected
+                },
+                {
+                    'id': 3,
+                    'name': 'AUDIO',
+                    'display_name': 'Podcasts',
+                    'description': 'Podcast episodes and audio content',
+                    'frontend_section': 'audio',
+                    'icon': 'audio',
+                    'is_active': True,
+                    'selected': True  # Auto-selected
+                }
+            ]
             
-            # Try the full query first
-            try:
-                query = """
-                    SELECT id, name, display_name, description, frontend_section, icon, is_active
-                    FROM content_types
-                    WHERE is_active = TRUE
-                    ORDER BY name
-                """
-                content_types = db.execute_query(query)
-            except Exception as schema_error:
-                # If description column doesn't exist, try without it
-                logger.warning(f"⚠️ Full content_types query failed, trying fallback: {str(schema_error)}")
-                query = """
-                    SELECT id, name, display_name, 
-                           COALESCE(frontend_section, '') as frontend_section, 
-                           COALESCE(icon, '') as icon, 
-                           COALESCE(is_active, true) as is_active
-                    FROM content_types
-                    WHERE COALESCE(is_active, true) = TRUE
-                    ORDER BY name
-                """
-                content_types = db.execute_query(query)
-                # Add missing description field
-                for ct in content_types:
-                    ct['description'] = f"Content type: {ct.get('display_name', ct.get('name', ''))}"
-            
-            processed_types = []
-            for content_type in content_types:
-                processed_types.append(dict(content_type))
-            
-            logger.info(f"✅ Retrieved {len(processed_types)} content types")
-            return processed_types
+            logger.info(f"✅ Retrieved {len(content_types)} content types (hardcoded 3 main types)")
+            return content_types
             
         except Exception as e:
             logger.error(f"❌ Failed to get content types: {str(e)}")
