@@ -85,8 +85,9 @@ allowed_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://www.vidyagam.com",
-    "https://ai-news-react-theta.vercel.app",
-    "https://ai-news-react.vercel.app",
+    "https://ai-news-frontend.vercel.app",
+    "https://ai-news-frontend-git-main-vidyagamishere.vercel.app",
+    "https://ai-news-frontend-vidyagamishere.vercel.app",
     
 ]
 
