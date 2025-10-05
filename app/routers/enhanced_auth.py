@@ -372,17 +372,17 @@ async def update_preferences(
             RETURNING *
         """
         
-        # Convert lists to JSON strings for storage
+        # Pass lists directly for JSONB columns (PostgreSQL handles conversion automatically)
         # Ensure onboarding_completed is always True when preferences are updated
         result = db.execute_query(
             upsert_query,
             (
                 current_user['id'],
                 preferences.experience_level,
-                json.dumps(preferences.professional_roles),
-                json.dumps(preferences.categories_selected),
-                json.dumps(preferences.content_types_selected), 
-                json.dumps(preferences.publishers_selected),
+                preferences.professional_roles,  # JSONB handles list directly
+                preferences.categories_selected,  # JSONB handles list directly
+                preferences.content_types_selected,  # JSONB handles list directly
+                preferences.publishers_selected,  # JSONB handles list directly
                 preferences.newsletter_frequency,
                 preferences.email_notifications,
                 preferences.breaking_news_alerts,
