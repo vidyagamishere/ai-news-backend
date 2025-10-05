@@ -344,29 +344,62 @@ async def update_preferences(
     current_user: dict = Depends(get_current_user),
     db: DatabaseService = Depends(get_database_service)
 ):
-    """Update user preferences"""
+    """Update user preferences in user_preferences table"""
     try:
-        # Convert preferences to JSON
-        preferences_json = preferences.dict(exclude_unset=True)
+        logger.info(f"🔍 Updating preferences for user: {current_user['id']}")
+        logger.info(f"🔍 Preferences data: {preferences.dict()}")
         
-        # Update user preferences in database
-        update_query = """
-            UPDATE users SET 
-                preferences = %s,
-                name = COALESCE(%s, name)
-            WHERE id = %s
+        # Insert or update user preferences in user_preferences table
+        upsert_query = """
+            INSERT INTO user_preferences (
+                user_id, experience_level, professional_roles, 
+                categories_selected, content_types_selected, publishers_selected,
+                newsletter_frequency, email_notifications, breaking_news_alerts,
+                onboarding_completed, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET
+                experience_level = EXCLUDED.experience_level,
+                professional_roles = EXCLUDED.professional_roles,
+                categories_selected = EXCLUDED.categories_selected,
+                content_types_selected = EXCLUDED.content_types_selected,
+                publishers_selected = EXCLUDED.publishers_selected,
+                newsletter_frequency = EXCLUDED.newsletter_frequency,
+                email_notifications = EXCLUDED.email_notifications,
+                breaking_news_alerts = EXCLUDED.breaking_news_alerts,
+                onboarding_completed = EXCLUDED.onboarding_completed,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *
         """
-        db.execute_query(
-            update_query,
-            (json.dumps(preferences_json), preferences.name, current_user['id']),
-            fetch_all=False
+        
+        # Convert lists to JSON strings for storage
+        result = db.execute_query(
+            upsert_query,
+            (
+                current_user['id'],
+                preferences.experience_level,
+                json.dumps(preferences.professional_roles),
+                json.dumps(preferences.categories_selected),
+                json.dumps(preferences.content_types_selected), 
+                json.dumps(preferences.publishers_selected),
+                preferences.newsletter_frequency,
+                preferences.email_notifications,
+                preferences.breaking_news_alerts,
+                preferences.onboarding_completed
+            ),
+            fetch_one=True
         )
         
-        return {"message": "Preferences updated successfully", "preferences": preferences_json}
+        logger.info(f"✅ Preferences updated successfully for user: {current_user['id']}")
+        return {
+            "message": "Preferences updated successfully", 
+            "preferences": preferences.dict(),
+            "saved_to": "user_preferences_table"
+        }
     
     except Exception as e:
-        logger.error(f"Failed to update preferences: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update preferences")
+        logger.error(f"❌ Failed to update preferences: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update preferences: {str(e)}")
 
 
 @router.post("/auth/logout")

@@ -35,27 +35,18 @@ class UserResponse(UserBase):
 
 
 class UserPreferences(BaseModel):
-    # Legacy fields (for compatibility)
-    topics: Optional[List[str]] = []
-    user_roles: Optional[List[str]] = []
-    role_type: Optional[str] = None
-    experience_level: Optional[str] = None
-    content_types: Optional[List[str]] = []
+    # Core user_preferences table fields
+    experience_level: Optional[str] = "intermediate"  # beginner, intermediate, advanced, expert
+    professional_roles: Optional[List[str]] = []  # developer, researcher, student, etc.
+    categories_selected: Optional[List[str]] = []  # AI category names (not IDs)
+    content_types_selected: Optional[List[str]] = ["ARTICLE", "VIDEO", "AUDIO"]  # Content type names
+    publishers_selected: Optional[List[str]] = []  # Publisher names
+    
+    # Additional preference fields
     newsletter_frequency: Optional[str] = "weekly"
     email_notifications: Optional[bool] = True
     breaking_news_alerts: Optional[bool] = False
-    newsletter_subscribed: Optional[bool] = True
     onboarding_completed: Optional[bool] = False
-    
-    # Enhanced user profile fields
-    name: Optional[str] = None
-    role: Optional[str] = None
-    ai_exposure: Optional[str] = "Intermediate"  # Beginner, Intermediate, Expert
-    interests: Optional[List[str]] = []  # Technical interests like 'Generative AI', 'Cloud Computing'
-    selected_content_types: Optional[List[str]] = ["ARTICLE", "VIDEO", "AUDIO"]
-    selected_publishers: Optional[List[str]] = []
-    time_filter: Optional[str] = "Last Week"
-    current_search_query: Optional[str] = ""
 
 
 class PasswordAuthRequest(BaseModel):
