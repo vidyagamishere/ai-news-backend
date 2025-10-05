@@ -373,6 +373,7 @@ async def update_preferences(
         """
         
         # Convert lists to JSON strings for storage
+        # Ensure onboarding_completed is always True when preferences are updated
         result = db.execute_query(
             upsert_query,
             (
@@ -385,15 +386,17 @@ async def update_preferences(
                 preferences.newsletter_frequency,
                 preferences.email_notifications,
                 preferences.breaking_news_alerts,
-                preferences.onboarding_completed
+                True  # Always set onboarding_completed to True when preferences are saved
             ),
             fetch_one=True
         )
         
         logger.info(f"✅ Preferences updated successfully for user: {current_user['id']}")
+        logger.info(f"✅ Onboarding completed set to: True")
         return {
             "message": "Preferences updated successfully", 
             "preferences": preferences.dict(),
+            "onboarding_completed": True,
             "saved_to": "user_preferences_table"
         }
     
