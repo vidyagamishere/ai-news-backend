@@ -216,7 +216,7 @@ async def admin_initiate_scraping(
     try:
         # Check for admin API key authentication
         admin_api_key = request.headers.get('X-Admin-API-Key')
-        expected_api_key = os.getenv('VITE_ADMIN_API_KEY', 'admin-api-key-2024')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
         
         if not admin_api_key or admin_api_key != expected_api_key:
             logger.warning(f"⚠️ Unauthorized admin scraping attempt")

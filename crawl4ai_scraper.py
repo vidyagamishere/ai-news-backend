@@ -373,7 +373,7 @@ class Crawl4AIScraper:
                         "tags": tags,
                         "url": url,
                         "reading_time": reading_time_minutes,
-                        "extracted_at": datetime.now(timezone.utc).isoformat(),
+                        "extracted_date": datetime.now(timezone.utc).isoformat(),
                         "extraction_method": "enhanced_fallback"
                     }
                     
@@ -560,7 +560,7 @@ class Crawl4AIScraper:
             logger.info(f"🤖  Content Txt: {scraped_data.get('content', '')[:100]}...")
 
 
-            prompt = f"""You are an expert AI news analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
+            prompt = f"""You are an expert Artificial Intelligence technology expert analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
 
             Content Title: {scraped_data.get('title', '')}
             Content Description: {scraped_data.get('description', '')}
@@ -582,7 +582,7 @@ class Crawl4AIScraper:
                 "key_topics": ["list of key AI tech topics covered"],
                 "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 10 categories: Generative AI,AI Applications,AI Start Ups,AI Infrastructure,Cloud Computing,Machine Learning,AI Safety and Governance,Robotics,Internet Of Things (IoT),Quantum AI & Future Technology"
             }}
-            Focus on AI, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
+            Focus on Artificial Intelligence, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
             If this is not AI/tech related content, set significance_score to 1-3."""
 
             # Call Claude API - using Claude 3 Haiku (only available model with current API key)
@@ -613,7 +613,7 @@ class Crawl4AIScraper:
                     content_type="Blogs",
                     complexity_level="Medium",
                     reading_time=scraped_data.get('reading_time', 1),
-                    scraped_date=scraped_data.get('extracted_at'),
+                    scraped_date=scraped_data.get('extracted_date'),
                     content_type_label="Blogs",
                     topic_category_label="AI News & Updates"
                 )
@@ -742,7 +742,7 @@ class Crawl4AIScraper:
         if not article:
             return None
             
-        logger.info(f"✅ ARTICLE COMPLETE: {article.[:60]}... (Score: {article.significance_score})")
+        logger.info(f"✅ ARTICLE COMPLETE: {article.title[:60]}... (Score: {article.significance_score})")
         return article
     
     async def scrape_multiple_sources(self, source_urls: List[str]) -> List[ScrapedArticle]:
@@ -869,7 +869,7 @@ class AdminScrapingInterface:
                     
                     article_data = {
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
-                        'title': article.headline,
+                        'title': article.title,
                         'description': article.summary,
                         'content': article.content,
                         'url': article.url,

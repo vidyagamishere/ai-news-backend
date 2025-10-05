@@ -28,7 +28,7 @@ def require_admin_access(request: Request) -> bool:
     """Dependency to ensure admin access via API key or JWT token"""
     # Check for admin API key first
     admin_api_key = request.headers.get('X-Admin-API-Key')
-    expected_api_key = os.getenv('VITE_ADMIN_API_KEY', 'admin-api-key-2024')
+    expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
     
     if admin_api_key and admin_api_key == expected_api_key:
         return True
