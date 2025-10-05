@@ -205,12 +205,16 @@ async def get_content_types(
 
 
 @router.get("/breaking-news")
-async def get_breaking_news(
+async def get_breaking_news_alerts(
     limit: int = Query(5, ge=1, le=10)
 ):
     """
-    Get breaking news for landing page - high significance score articles
+    Get breaking news alerts for pre-login landing page
+    Returns high significance score Generative AI articles from last 24 hours
+    No authentication required - public endpoint for landing page
+    
     Endpoint: GET /breaking-news
+    Query params: limit (default: 5, max: 10)
     """
     try:
         logger.info(f"🚨 Breaking news requested - Limit: {limit}")
@@ -263,12 +267,16 @@ async def get_breaking_news(
 
 
 @router.get("/generative-ai-content")
-async def get_generative_ai_content(
+async def get_generative_ai_stories(
     limit: int = Query(6, ge=1, le=20)
 ):
     """
-    Get Generative AI focused content for landing page
-    Endpoint: GET /generative-ai-content
+    Get Generative AI category stories for pre-login landing page
+    Returns curated AI articles focused on OpenAI, ChatGPT, Claude, etc.
+    No authentication required - public endpoint for landing page
+    
+    Endpoint: GET /generative-ai-content  
+    Query params: limit (default: 6, max: 20)
     """
     try:
         logger.info(f"🤖 Generative AI content requested - Limit: {limit}")
