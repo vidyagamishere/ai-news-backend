@@ -18,7 +18,9 @@ from app.models.schemas import (
     OTPRequest, OTPVerifyRequest
 )
 from app.dependencies.auth import get_current_user
+from app.dependencies.database import get_database_service
 from app.services.auth_service import AuthService
+from db_service import DatabaseService
 
 logger = logging.getLogger(__name__)
 
@@ -412,41 +414,75 @@ async def get_profile(
         )
 
 
-@router.post("/auth/preferences", response_model=UserResponse)
-@router.put("/auth/preferences", response_model=UserResponse)
+@router.post("/auth/preferences")
+@router.put("/auth/preferences")
 async def update_preferences(
     preferences: UserPreferences,
     current_user: UserResponse = Depends(get_current_user),
-    auth_service: AuthService = Depends(get_auth_service)
+    db: DatabaseService = Depends(get_database_service)
 ):
     """
-    Update user preferences
+    Update user preferences in user_preferences table
     Endpoint: POST/PUT /auth/preferences (compatible with existing frontend)
     """
     try:
         logger.info(f"⚙️ Preferences update for: {current_user.email}")
+        logger.info(f"🔍 Preferences data: {preferences.dict()}")
         
-        # Convert preferences to dict
-        preferences_dict = preferences.dict(exclude_unset=True)
+        # Insert or update user preferences in user_preferences table (matching exact table schema)
+        upsert_query = """
+            INSERT INTO user_preferences (
+                user_id, experience_level, professional_roles, 
+                categories_selected, content_types_selected, publishers_selected,
+                newsletter_frequency, email_notifications, breaking_news_alerts,
+                onboarding_completed, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET
+                experience_level = EXCLUDED.experience_level,
+                professional_roles = EXCLUDED.professional_roles,
+                categories_selected = EXCLUDED.categories_selected,
+                content_types_selected = EXCLUDED.content_types_selected,
+                publishers_selected = EXCLUDED.publishers_selected,
+                newsletter_frequency = EXCLUDED.newsletter_frequency,
+                email_notifications = EXCLUDED.email_notifications,
+                breaking_news_alerts = EXCLUDED.breaking_news_alerts,
+                onboarding_completed = EXCLUDED.onboarding_completed,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *
+        """
         
-        # Update user preferences in database
-        updated_user = auth_service.update_user_preferences(
-            current_user.id,
-            preferences_dict
+        # Pass lists directly for JSONB columns (PostgreSQL handles conversion automatically)
+        # Ensure onboarding_completed is always True when preferences are updated
+        result = db.execute_query(
+            upsert_query,
+            (
+                current_user.id,
+                preferences.experience_level,
+                preferences.professional_roles,  # JSONB handles list directly
+                preferences.categories_selected,  # JSONB handles list directly
+                preferences.content_types_selected,  # JSONB handles list directly
+                preferences.publishers_selected,  # JSONB handles list directly
+                preferences.newsletter_frequency,
+                preferences.email_notifications,
+                preferences.breaking_news_alerts,
+                True  # Always set onboarding_completed to True when preferences are saved
+            ),
+            fetch_one=True
         )
         
-        response = UserResponse(**updated_user)
-        
-        logger.info(f"✅ Preferences updated for: {current_user.email}")
-        return response
+        logger.info(f"✅ Preferences updated successfully for user: {current_user.id}")
+        logger.info(f"✅ Onboarding completed set to: True")
+        return {
+            "message": "Preferences updated successfully", 
+            "preferences": preferences.dict(),
+            "onboarding_completed": True,
+            "saved_to": "user_preferences_table"
+        }
         
     except Exception as e:
         logger.error(f"❌ Preferences update failed: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail={
-                'error': 'Failed to update preferences',
-                'message': str(e),
-                'database': 'postgresql'
-            }
+            detail=f"Failed to update preferences: {str(e)}"
         )
