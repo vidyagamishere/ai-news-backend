@@ -674,3 +674,75 @@ async def admin_initiate_scraping(
                 'database': 'postgresql'
             }
         )
+
+
+# ✅ NEW: Manual Scheduler Trigger Endpoint
+@router.post("/admin/trigger-scheduler")
+async def admin_trigger_scheduler(
+    request: Request
+):
+    """
+    Admin-only endpoint to manually trigger the scheduled scraping job
+    This bypasses the 12-hour schedule and runs the job immediately
+    Useful for testing and on-demand content updates
+    
+    Returns:
+    - success: boolean
+    - message: status message
+    - llm_model: model that will be used (gemini)
+    """
+    try:
+        # Check for admin API key authentication
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+        
+        if not admin_api_key or admin_api_key != expected_api_key:
+            logger.warning(f"⚠️ Unauthorized scheduler trigger attempt")
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    'error': 'Admin access required',
+                    'message': 'Valid admin API key required for scheduler trigger'
+                }
+            )
+        
+        logger.info(f"🔧 Admin triggered manual scheduler execution")
+        
+        # Import scheduler service
+        from app.services.scheduler_service import scheduler_service
+        
+        # Trigger the scheduler manually
+        success = scheduler_service.trigger_now()
+        
+        if success:
+            logger.info(f"✅ Scheduler triggered successfully")
+            return {
+                'success': True,
+                'message': 'Scheduled scraping job triggered successfully. Job will run immediately.',
+                'llm_model_used': 'gemini',
+                'schedule': '12 hours interval',
+                'database': 'postgresql'
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    'error': 'Scheduler trigger failed',
+                    'message': 'Failed to trigger scheduler. Check server logs.'
+                }
+            )
+        
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"❌ Scheduler trigger endpoint failed: {str(e)}")
+        logger.error(f"❌ Full traceback: {error_traceback}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Scheduler trigger failed',
+                'message': str(e),
+                'traceback': error_traceback,
+                'database': 'postgresql'
+            }
+        )
