@@ -92,7 +92,9 @@ class Crawl4AIScraper:
         self.extraction_warnings = []  # Track extraction warnings for reporting
         self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '')
         self.google_api_key = os.getenv('GOOGLE_API_KEY', '')
+        self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')  # Add HuggingFace API key
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
+        self.huggingface_api_url = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3.1-8B-Instruct"  # Updated model
         self.headers = {
             "x-api-key": self.anthropic_api_key,
             "Content-Type": "application/json",
@@ -100,11 +102,14 @@ class Crawl4AIScraper:
         }
         
         if not self.anthropic_api_key:
-            logger.warning("⚠️ ANTHROPIC_API_KEY not set - scraper will not work properly")
+            logger.warning("⚠️ ANTHROPIC_API_KEY not set - Claude processing will not work")
         
         if not self.google_api_key:
-            logger.warning("⚠️ GOOGLE_API_KEY not set - Gemini processing will not be available.")
-    
+            logger.warning("⚠️ GOOGLE_API_KEY not set - Gemini processing will not be available")
+        
+        if not self.huggingface_api_key:
+            logger.warning("⚠️ HUGGINGFACE_API_KEY not set - HuggingFace processing will not be available")
+
     def _log_extraction_warning(self, field: str, url: str, error: str):
         """Log extraction warning and track for summary reporting"""
         warning_msg = f"⚠️ {field} extraction failed for {url}: {error}"
@@ -1421,7 +1426,7 @@ class Crawl4AIScraper:
                         
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
-                            author=parsed_data.get('author') or scraped_data.get('author'),
+                            author=parsed_data.get('author') or scraped_data.get('author',
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
                             date=parsed_data.get('date') or scraped_data.get('date'),
@@ -1464,7 +1469,8 @@ class Crawl4AIScraper:
         Feed the structured data to Google Gemini for processing.
         """
         try:
-            model_name = "gemini-1.5-flash-latest"
+            # Updated to Gemini 2.0 Flash (better performance)
+            model_name = "gemini-2.0-flash-exp"  # or "gemini-1.5-flash-latest"
             logger.info(f"🤖 GEMINI PROCESSING ({model_name}): {scraped_data.get('title', 'Unknown')[:60]}...")
 
             if not self.google_api_key:
@@ -1571,80 +1577,172 @@ class Crawl4AIScraper:
             logger.error(traceback.format_exc())
             return None
 
-    def _extract_domain(self, url: str) -> str:
-        """Extract domain name from URL"""
+    async def process_with_huggingface(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+        """
+        Feed the structured data to HuggingFace Llama 3.1 8B Instruct for processing.
+        This model is excellent for content classification, metadata extraction, and analysis.
+        """
         try:
-            from urllib.parse import urlparse
-            return urlparse(url).netloc
-        except:
-            return "Unknown Source"
-    
-    def _fix_json_formatting(self, content: str) -> Optional[str]:
-        """Attempt to fix common JSON formatting issues"""
-        try:
-            # Common issues seen in logs:
-            # 1. Missing quotes around field names
-            # 2. Trailing commas
-            # 3. Incomplete JSON structures
+            logger.info(f"🤖 HUGGINGFACE PROCESSING (Llama-3.1-8B-Instruct): {scraped_data.get('title', 'Unknown')[:60]}...")
+
+            if not self.huggingface_api_key:
+                logger.error("❌ HUGGINGFACE_API_KEY is not set. Cannot process with HuggingFace.")
+                return None
+
+            prompt = f"""You are an expert AI content analyst. Analyze this content and return ONLY a valid JSON object.
+
+Content Title: {scraped_data.get('title', '')}
+Content Description: {scraped_data.get('description', '')}
+Author: {scraped_data.get('author', 'Not specified')}
+Tags: {scraped_data.get('tags', [])}
+Content Text: {scraped_data.get('content', '')[:4000]}
+Source URL: {scraped_data.get('url', '')}
+
+CRITICAL INSTRUCTIONS:
+1. Detect content type from URL patterns:
+   - YouTube/Vimeo/video platforms → "Videos"
+   - Spotify/podcast platforms → "Podcasts"
+   - News/blog sites → "Blogs"
+2. Look for publication dates in text (e.g., "Published October 10, 2025", "Oct 10, 2025")
+3. Return ONLY valid JSON, no markdown, no explanation
+
+JSON Schema:
+{{
+    "title": "clear article headline",
+    "author": "author name or null",
+    "summary": "4-5 sentence summary of key points",
+    "date": "publication date in YYYY-MM-DD format or null",
+    "content_type_label": "Videos|Podcasts|Blogs",
+    "significance_score": 1-10,
+    "complexity_level": "Low|Medium|High",
+    "key_topics": ["topic1", "topic2", "topic3"],
+    "topic_category_label": "Generative AI|AI Applications|AI Start Ups|AI Infrastructure|Cloud Computing|Machine Learning|AI Safety and Governance|Robotics|Internet Of Things (IoT)|Quantum AI|Future Technology"
+}}
+
+Return ONLY the JSON object, nothing else."""
+
+            headers = {
+                "Authorization": f"Bearer {self.huggingface_api_key}",
+                "Content-Type": "application/json"
+            }
             
-            # If content doesn't start with {, try to find JSON start
-            if not content.strip().startswith('{'):
-                json_start = content.find('{')
-                if json_start != -1:
-                    content = content[json_start:]
-            
-            # If content doesn't end with }, try to find the last valid JSON brace
-            if not content.strip().endswith('}'):
-                json_end = content.rfind('}')
-                if json_end != -1:
-                    content = content[:json_end + 1]
-            
-            # Remove trailing commas before closing braces/brackets
-            content = re.sub(r',(\s*[}\]])', r'\1', content)
-            
-            # Try to complete incomplete JSON structures
-            if content.count('{') > content.count('}'):
-                content += '}' * (content.count('{') - content.count('}'))
-            
-            # Basic validation - try parsing
-            json.loads(content)
-            return content
-            
-        except:
-            logger.debug("Failed to fix JSON formatting")
-            return None
-    
-    async def parse_rss_feed(self, rss_url: str, max_articles: int = 5) -> List[str]:
-        """Parse RSS feed and extract article URLs"""
-        try:
-            logger.info(f"📰 Parsing RSS feed: {rss_url}")
-            
-            # Parse the RSS feed
-            feed = feedparser.parse(rss_url)
-            
-            if not feed.entries:
-                logger.warning(f"⚠️ No entries found in RSS feed: {rss_url}")
-                return []
-            
-            # Extract article URLs from feed entries
-            article_urls = []
-            for entry in feed.entries[:max_articles]:  # Limit number of articles per feed
-                if hasattr(entry, 'link') and entry.link:
-                    article_urls.append(entry.link)
-                    logger.debug(f"📄 Found article: {entry.get('title', 'No title')} - {entry.link}")
-            
-            logger.info(f"✅ Extracted {len(article_urls)} article URLs from RSS feed: {rss_url}")
-            return article_urls
-            
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": 1000,
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "return_full_text": False
+                }
+            }
+
+            async with aiohttp.ClientSession() as session:
+                # HuggingFace Inference API may need retry for model loading
+                for attempt in range(3):
+                    async with session.post(
+                        self.huggingface_api_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=90
+                    ) as response:
+                        if response.status == 503:
+                            # Model is loading, wait and retry
+                            logger.warning(f"⏳ HuggingFace model loading, attempt {attempt + 1}/3...")
+                            await asyncio.sleep(20)
+                            continue
+                        elif response.status != 200:
+                            response_text = await response.text()
+                            logger.error(f"❌ HUGGINGFACE API ERROR: HTTP {response.status} - {response_text}")
+                            return None
+
+                        result = await response.json()
+                        
+                        # Extract generated text
+                        if isinstance(result, list) and len(result) > 0:
+                            generated_text = result[0].get('generated_text', '')
+                        else:
+                            generated_text = result.get('generated_text', '')
+                        
+                        if not generated_text:
+                            logger.error(f"❌ HUGGINGFACE ERROR: No generated text in response")
+                            return None
+                        
+                        try:
+                            # Clean up response to extract JSON
+                            content_clean = generated_text.strip()
+                            
+                            # Remove markdown code blocks if present
+                            if '```json' in content_clean:
+                                content_clean = content_clean.split('```json')[1].split('```')[0]
+                            elif '```' in content_clean:
+                                content_clean = content_clean.split('```')[1].split('```')[0]
+                            
+                            # Find JSON object boundaries
+                            start_idx = content_clean.find('{')
+                            end_idx = content_clean.rfind('}')
+                            
+                            if start_idx != -1 and end_idx != -1:
+                                content_clean = content_clean[start_idx:end_idx + 1]
+                            
+                            parsed_data = json.loads(content_clean)
+                            
+                            logger.info(f"✅ HUGGINGFACE SUCCESS: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score')})")
+
+                            publisher_id_preserved = scraped_data.get('publisher_id')
+                            
+                            return ScrapedArticle(
+                                title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                                author=parsed_data.get('author') or scraped_data.get('author'),
+                                summary=parsed_data.get('summary', 'No summary available'),
+                                content=scraped_data.get('content', '')[:1000],
+                                date=parsed_data.get('date') or scraped_data.get('date'),
+                                url=scraped_data.get('url', ''),
+                                source=self._extract_domain(scraped_data.get('url', '')),
+                                significance_score=float(parsed_data.get('significance_score', 5.0)),
+                                complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                                reading_time=scraped_data.get('reading_time', 1),
+                                publisher_id=publisher_id_preserved,
+                                published_date=parsed_data.get('date') or scraped_data.get('date'),
+                                scraped_date=scraped_data.get('extracted_date'),
+                                content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                                topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                                keywords=scraped_data.get('tags', []),
+                                llm_processed='huggingface-llama-3.1-8b-instruct'
+                            )
+
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ HUGGINGFACE JSON ERROR: {e}")
+                            logger.error(f"Raw response: {generated_text[:300]}...")
+                            
+                            # Try to fix JSON formatting
+                            fixed_content = self._fix_json_formatting(content_clean)
+                            if fixed_content:
+                                try:
+                                    parsed_data = json.loads(fixed_content)
+                                    logger.info(f"✅ HUGGINGFACE SUCCESS (after JSON fix): {parsed_data.get('title', 'Unknown')[:50]}...")
+                                    # Return ScrapedArticle as above
+                                except json.JSONDecodeError:
+                                    logger.error("❌ JSON fix failed for HuggingFace")
+                                    return None
+                            return None
+                        
+                        break  # Success, exit retry loop
+                
+                # All retries exhausted
+                logger.error("❌ HUGGINGFACE: All retry attempts exhausted")
+                return None
+
         except Exception as e:
-            logger.error(f"❌ Failed to parse RSS feed {rss_url}: {str(e)}")
-            return []
-    
+            logger.error(f"❌ HUGGINGFACE PROCESSING FAILED: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
     async def scrape_article(self, url: str, llm_model: str = 'claude') -> Optional[ScrapedArticle]:
         """
         Complete scraping process:
         1. Scrape URL with Crawl4AI
-        2. Process with selected LLM
+        2. Process with selected LLM (claude/gemini/huggingface)
         3. Return structured article data
         """
         logger.info(f"🚀 Starting complete scraping process for: {url} using LLM: {llm_model}")
@@ -1658,12 +1756,13 @@ class Crawl4AIScraper:
         article = None
         if llm_model == 'gemini':
             article = await self.process_with_gemini(scraped_data)
+        elif llm_model == 'huggingface':
+            article = await self.process_with_huggingface(scraped_data)
         elif llm_model == 'claude':
             article = await self.process_with_claude(scraped_data)
         else:
-            logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude.")
-            article = await self.process_with_claude(scraped_data)
-
+            logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to HuggingFace.")
+            article = await self.process_with_huggingface(scraped_data)
 
         if not article:
             return None
@@ -1722,22 +1821,24 @@ class Crawl4AIScraper:
             if scraped_data:
                 # Add publisher_id and source_category to scraped_data before processing
                 scraped_data['publisher_id'] = publisher_id
-                scraped_data['source_category'] = source_category  # RSS source category for fallback
+                scraped_data['source_category'] = source_category
                 logger.info(f"📄 Added publisher_id {publisher_id} and source_category '{source_category}' to scraped data for {url}")
-                logger.debug(f"📎 Scraped data now contains publisher_id: {scraped_data.get('publisher_id')}, source_category: {scraped_data.get('source_category')}")
                 
                 if llm_model == 'gemini':
                     return await self.process_with_gemini(scraped_data)
+                elif llm_model == 'huggingface':
+                    return await self.process_with_huggingface(scraped_data)
                 elif llm_model == 'claude':
                     return await self.process_with_claude(scraped_data)
                 else:
-                    logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude for {url}.")
-                    return await self.process_with_claude(scraped_data)
+                    logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to HuggingFace for {url}.")
+                    return await self.process_with_huggingface(scraped_data)
             return None
         except Exception as e:
             logger.error(f"❌ Failed to scrape article {url}: {str(e)}")
             return None
 
+# Admin interface and example usage remain unchanged
 class AdminScrapingInterface:
     """Admin interface for initiating scraping process as specified in requirements"""
     
