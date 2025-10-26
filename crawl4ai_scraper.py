@@ -1426,7 +1426,7 @@ class Crawl4AIScraper:
                         
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
-                            author=parsed_data.get('author') or scraped_data.get('author',
+                            author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
                             date=parsed_data.get('date') or scraped_data.get('date'),
