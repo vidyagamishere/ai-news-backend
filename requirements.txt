@@ -20,6 +20,9 @@ email-validator>=2.0.0
 # PostgreSQL database support (required)
 psycopg2-binary>=2.9.7
 
+# Scheduler for automated RSS scraping
+APScheduler>=3.10.4
+
 # Enhanced Crawl4AI scraping dependencies
 crawl4ai>=0.3.0
 playwright>=1.40.0

@@ -72,10 +72,12 @@ python test_crawl4ai_features.py        # Test content scraping features
 - Admin role-based access control
 
 ### Content Aggregation
-- Multi-source RSS feed scraping
-- AI-powered content summarization using Claude
-- Topic categorization and significance scoring
-- Duplicate detection and content deduplication
+- **Automated RSS Scraping**: 8-hour scheduled scraping from AI news sources
+- **8-Hour Duplicate Prevention**: Prevents re-scraping URLs within 8 hours
+- **AI-powered Content Processing**: Claude AI for summarization and categorization
+- **Topic Classification**: Automatic categorization into 10 AI topic areas
+- **Significance Scoring**: 1-10 importance ranking for content prioritization
+- **Keywords Extraction**: Automatic keyword extraction and storage for search
 
 ### API Endpoints
 - `/health`: System health and database status
@@ -83,6 +85,8 @@ python test_crawl4ai_features.py        # Test content scraping features
 - `/content/{type}`: Content filtering by type
 - `/auth/*`: Authentication and user management
 - `/admin/*`: Administrative functions
+- `/admin/scheduler/status`: Auto-scraping scheduler status monitoring
+- `/content/admin/scrape`: Manual trigger for immediate RSS scraping (existing)
 
 ## Environment Configuration
 
@@ -98,6 +102,11 @@ python test_crawl4ai_features.py        # Test content scraping features
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `ALLOWED_ORIGINS`: Additional CORS origins
 - `SKIP_SCHEMA_INIT`: Skip database schema initialization (for existing databases)
+
+### Auto-Scraping Scheduler Configuration
+- `AUTO_SCRAPING_ENABLED`: Enable/disable automated RSS scraping (default: true)
+- `SCRAPING_INTERVAL_HOURS`: Scraping interval in hours (default: 8)
+- `RUN_INITIAL_SCRAPING`: Run scraping immediately on startup (default: false)
 
 ## Railway Deployment
 
@@ -123,10 +132,12 @@ python test_crawl4ai_features.py        # Test content scraping features
 - Database schema is initialized automatically on first startup
 
 ### Content Processing
-- Content scraping runs automatically via scheduled tasks
-- Use `crawl4ai_scraper.py` for new source integration
-- AI processing requires valid Anthropic API key for Claude
-- Significance scoring ranges from 1-10 for content ranking
+- **Automated Scraping**: Runs every 8 hours via APScheduler with RSS feed parsing
+- **8-Hour Duplicate Check**: Prevents re-processing URLs scraped within 8 hours
+- **AI Processing**: Requires valid Anthropic API key for Claude content analysis
+- **Significance Scoring**: 1-10 ranking system for content importance
+- **Keywords Support**: Automatic extraction and database storage for search functionality
+- **Manual Triggers**: Admin can trigger immediate scraping via `/admin/scheduler/trigger`
 
 ### API Development
 - Follow FastAPI router pattern in `app/routers/`

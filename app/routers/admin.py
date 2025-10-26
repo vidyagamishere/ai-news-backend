@@ -13,6 +13,7 @@ from app.models.schemas import UserResponse
 from app.dependencies.auth import get_current_user
 from app.services.content_service import ContentService
 from db_service import get_database_service
+from scheduler_service import get_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ async def get_admin_sources(
                    s.priority, s.enabled, s.is_active,
                    s.created_date, s.updated_date, s.category_id
             FROM ai_sources s 
-            LEFT JOIN ai_categories_master c ON s.category_id = c.priority
+            LEFT JOIN ai_categories_master c ON s.category_id = c.id
             ORDER BY s.priority ASC, s.name ASC
         """
         
@@ -377,3 +378,38 @@ async def validate_single_feed(
                 'message': str(e)
             }
         )
+
+
+@router.get("/scheduler/status")
+async def get_scheduler_status(
+    request: Request,
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get auto-scraping scheduler status
+    Endpoint: GET /admin/scheduler/status
+    """
+    try:
+        logger.info("🔧 Admin requesting scheduler status")
+        
+        scheduler = get_scheduler()
+        status = scheduler.get_scheduler_status()
+        
+        logger.info(f"✅ Scheduler status retrieved: {status.get('status', 'unknown')}")
+        return {
+            'success': True,
+            'scheduler_status': status,
+            'admin': 'api_key_authenticated'
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get scheduler status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get scheduler status',
+                'message': str(e)
+            }
+        )
+
+

@@ -18,9 +18,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FilterCriteria:
     """Data class for content filtering criteria"""
-    interests: List[str] = None
-    content_types: List[str] = None
-    publishers: List[str] = None
+    interests: List[str] = None  # Category names (for backward compatibility)
+    content_types: List[str] = None  # Content type names (for backward compatibility)
+    publishers: List[str] = None  # Publisher names (for backward compatibility)
+    
+    # New ID-based fields (preferred for accurate filtering)
+    category_ids: List[int] = None  # Category IDs from ai_categories_master
+    content_type_ids: List[int] = None  # Content type IDs from content_types
+    publisher_ids: List[int] = None  # Publisher IDs from publishers_master
+    
     time_filter: str = "Last Week"
     search_query: str = ""
     limit: int = 50
@@ -34,10 +40,71 @@ class ContentFilteringService:
     def __init__(self):
         self.search_weights = {
             'title': 3.0,
-            'description': 2.0,
+            'summary': 2.0,
             'keywords': 1.5,
             'source': 1.0
         }
+    
+    def get_category_ids_from_names(self, category_names: List[str]) -> List[int]:
+        """Convert category names to IDs for accurate filtering"""
+        if not category_names:
+            return []
+        
+        try:
+            db = get_database_service()
+            placeholders = ",".join(["%s"] * len(category_names))
+            query = f"""
+                SELECT id FROM ai_categories_master 
+                WHERE name IN ({placeholders})
+            """
+            results = db.execute_query(query, category_names)
+            return [row['id'] for row in results]
+        except Exception as e:
+            logger.error(f"❌ Failed to get category IDs: {str(e)}")
+            return []
+    
+    def get_content_type_ids_from_names(self, content_type_names: List[str]) -> List[int]:
+        """Convert content type names to IDs for accurate filtering"""
+        if not content_type_names:
+            return []
+        
+        try:
+            db = get_database_service()
+            placeholders = ",".join(["%s"] * len(content_type_names))
+            query = f"""
+                SELECT id FROM content_types 
+                WHERE LOWER(name) IN ({','.join(['LOWER(%s)'] * len(content_type_names))})
+                   OR UPPER(name) IN ({','.join(['UPPER(%s)'] * len(content_type_names))})
+            """
+            # Prepare parameters for both lower and upper case matching
+            params = content_type_names + content_type_names
+            results = db.execute_query(query, params)
+            return [row['id'] for row in results]
+        except Exception as e:
+            logger.error(f"❌ Failed to get content type IDs: {str(e)}")
+            return []
+    
+    def get_publisher_ids_from_names(self, publisher_names: List[str]) -> List[int]:
+        """Convert publisher names to IDs for accurate filtering"""
+        if not publisher_names:
+            return []
+        
+        try:
+            db = get_database_service()
+            placeholders = ",".join(["%s"] * len(publisher_names))
+            query = f"""
+                SELECT id FROM publishers_master 
+                WHERE LOWER(publisher_name) IN ({','.join(['LOWER(%s)'] * len(publisher_names))})
+                   OR UPPER(publisher_name) IN ({','.join(['UPPER(%s)'] * len(publisher_names))})
+                   AND is_active = TRUE
+            """
+            # Prepare parameters for both lower and upper case matching
+            params = publisher_names + publisher_names
+            results = db.execute_query(query, params)
+            return [row['id'] for row in results]
+        except Exception as e:
+            logger.error(f"❌ Failed to get publisher IDs: {str(e)}")
+            return []
     
     def parse_time_filter(self, time_filter: str) -> Optional[datetime]:
         """Convert time filter string to datetime"""
@@ -60,18 +127,21 @@ class ContentFilteringService:
         
         # Base query with joins for metadata
         base_query = """
-            SELECT DISTINCT a.id, a.title, a.description, a.url, a.source,
+            SELECT DISTINCT a.id, a.title, a.summary, a.url, a.source,
                    a.published_date, a.scraped_date, a.significance_score,
                    a.reading_time, a.image_url, a.keywords, a.content_hash,
                    ct.name as content_type_label,
                    ct.display_name as content_type_display,
                    c.name as category_label,
                    s.name as source_name,
-                   s.website as source_website
+                   s.website as source_website,
+                   p.publisher_name,
+                   p.id as publisher_id
             FROM articles a
             LEFT JOIN content_types ct ON a.content_type_id = ct.id
             LEFT JOIN ai_categories_master c ON a.category_id = c.id
             LEFT JOIN ai_sources s ON a.source = s.name
+            LEFT JOIN publishers_master p ON a.publisher_id = p.id
             WHERE 1=1
         """
         
@@ -83,23 +153,61 @@ class ContentFilteringService:
             base_query += " AND a.published_date >= %s"
             params.append(time_threshold)
         
-        # Content type filter
-        if criteria.content_types:
+        # Content type filter - prioritize ID-based filtering
+        if criteria.content_type_ids:
+            # Use ID-based filtering (preferred)
+            placeholders = ",".join(["%s"] * len(criteria.content_type_ids))
+            base_query += " AND ct.id IN (" + placeholders + ")"
+            params.extend(criteria.content_type_ids)
+        elif criteria.content_types:
+            # Fallback to name-based filtering (handle both uppercase and lowercase)
             placeholders = ",".join(["%s"] * len(criteria.content_types))
-            base_query += f" AND UPPER(ct.name) IN ({placeholders})"
+            base_query += " AND (UPPER(ct.name) IN (" + placeholders + ") OR LOWER(ct.name) IN (" + placeholders + "))"
+            # Add both uppercase and lowercase versions
             params.extend([ct.upper() for ct in criteria.content_types])
+            params.extend([ct.lower() for ct in criteria.content_types])
         
-        # Publisher/Source filter
-        if criteria.publishers:
-            placeholders = ",".join(["%s"] * len(criteria.publishers))
-            base_query += f" AND (s.name IN ({placeholders}) OR a.source IN ({placeholders}))"
-            params.extend(criteria.publishers * 2)
-        
-        # Interest/Topic filter
-        if criteria.interests:
+        # Category filter - prioritize ID-based filtering
+        if criteria.category_ids:
+            # Use ID-based filtering (preferred)
+            placeholders = ",".join(["%s"] * len(criteria.category_ids))
+            base_query += " AND c.id IN (" + placeholders + ")"
+            params.extend(criteria.category_ids)
+        elif criteria.interests:
+            # Fallback to name-based filtering
             placeholders = ",".join(["%s"] * len(criteria.interests))
-            base_query += f" AND at.name IN ({placeholders})"
+            base_query += " AND c.name IN (" + placeholders + ")"
             params.extend(criteria.interests)
+        
+        # Publisher filter - prioritize ID-based filtering
+        if criteria.publisher_ids:
+            # Use ID-based filtering (preferred) - direct match with articles.publisher_id
+            placeholders = ",".join(["%s"] * len(criteria.publisher_ids))
+            base_query += " AND a.publisher_id IN (" + placeholders + ")"
+            params.extend(criteria.publisher_ids)
+        elif criteria.publishers:
+            # Fallback to name-based filtering with smart domain matching
+            publisher_conditions = []
+            for publisher in criteria.publishers:
+                # Match exact publisher name in ai_sources table
+                publisher_conditions.append("LOWER(s.name) = LOWER(%s)")
+                params.append(publisher)
+                
+                # Match publisher in article source field (primary check)
+                # This handles cases like 'techcrunch' matching 'techcrunch.com' in article.source
+                publisher_conditions.append("LOWER(a.source) LIKE LOWER(%s)")
+                params.append(f"%{publisher}%")
+                
+                # Match publisher in source website field  
+                publisher_conditions.append("LOWER(s.website) LIKE LOWER(%s)")
+                params.append(f"%{publisher}%")
+                
+                # Additional check for exact domain matches (e.g., 'arxiv' -> 'arxiv.org')
+                publisher_conditions.append("LOWER(a.source) LIKE LOWER(%s)")
+                params.append(f"%{publisher}.%")  # Matches techcrunch.com, arxiv.org, etc.
+            
+            if publisher_conditions:
+                base_query += " AND (" + " OR ".join(publisher_conditions) + ")"
         
         # Significance threshold
         if criteria.significance_threshold > 1:
@@ -110,7 +218,7 @@ class ContentFilteringService:
         if criteria.search_query:
             search_conditions = self._build_search_conditions(criteria.search_query)
             if search_conditions:
-                base_query += f" AND ({search_conditions['query']})"
+                base_query += " AND (" + search_conditions['query'] + ")"
                 params.extend(search_conditions['params'])
         
         # Order by relevance and significance
@@ -118,12 +226,15 @@ class ContentFilteringService:
             base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
         else:
             base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
-        
+       
+        logger.debug(f"Constructed Query: {base_query} with params {params}")
+       
         # Limit results
         if criteria.limit:
             base_query += " LIMIT %s"
             params.append(criteria.limit)
-        
+
+        logger.debug(f"Constructed Query with LIMIT: {base_query} with params {params}")
         return base_query, params
     
     def _build_search_conditions(self, search_query: str) -> Dict[str, Any]:
@@ -145,10 +256,10 @@ class ContentFilteringService:
             # Search in multiple fields with weights
             field_conditions = [
                 "LOWER(a.title) LIKE %s",
-                "LOWER(a.description) LIKE %s",
+                "LOWER(a.summary) LIKE %s",
                 "LOWER(a.keywords) LIKE %s",
                 "LOWER(a.source) LIKE %s",
-                "LOWER(at.name) LIKE %s",
+                "LOWER(c.name) LIKE %s",
                 "LOWER(s.name) LIKE %s"
             ]
             
@@ -180,16 +291,43 @@ class ContentFilteringService:
         return terms[:10]  # Limit to 10 terms for performance
     
     def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
-        """Get filtered content based on criteria"""
+        """Get filtered content based on criteria with enhanced error handling"""
         try:
             db = get_database_service()
-            query, params = self.build_search_query(criteria)
+            
+            # Validate database connection
+            if not db or not hasattr(db, 'execute_query'):
+                raise RuntimeError("Database service is not available or improperly initialized")
+            
+            # Build query with validation
+            try:
+                query, params = self.build_search_query(criteria)
+            except Exception as query_error:
+                logger.error(f"❌ Failed to build search query: {str(query_error)}")
+                raise RuntimeError(f"Query construction failed: {str(query_error)}")
+            
+            # Validate query parameters
+            if not query or not isinstance(params, list):
+                raise ValueError("Invalid query or parameters generated")
             
             logger.info(f"🔍 Content filtering - Query length: {len(query)}, Params: {len(params)}")
             if criteria.search_query:
                 logger.info(f"🔍 Search query: '{criteria.search_query}'")
             
-            results = db.execute_query(query, params)
+            # Execute query with timeout protection
+            try:
+                results = db.execute_query(query, params)
+            except Exception as db_error:
+                logger.error(f"❌ Database query execution failed: {str(db_error)}")
+                # Try a simplified query as fallback
+                logger.info(f"🔄 Attempting simplified query fallback...")
+                simple_query = "SELECT DISTINCT a.* FROM articles a WHERE a.published_date >= NOW() - INTERVAL '7 days' ORDER BY a.published_date DESC LIMIT %s"
+                try:
+                    results = db.execute_query(simple_query, [min(criteria.limit or 50, 100)])
+                    logger.info(f"✅ Simplified query fallback successful")
+                except Exception as simple_error:
+                    logger.error(f"❌ Even simplified query failed: {str(simple_error)}")
+                    raise RuntimeError(f"All database queries failed: {str(simple_error)}")
             
             # Convert to standardized format
             articles = []
@@ -197,9 +335,9 @@ class ContentFilteringService:
                 article = {
                     'id': row['id'],
                     'title': row.get('title'),
-                    'description': row.get('description'),
+                    'summary': row.get('summary'),
                     'url': row.get('url'),
-                    'source': row.get('source') or row.get('source_name'),
+                    'source': row.get('source_name') or row.get('source'),
                     'published_date': row.get('published_date'),
                     'scraped_date': row.get('scraped_date'),
                     'significance_score': row.get('significance_score', 5),
@@ -210,15 +348,36 @@ class ContentFilteringService:
                     'content_type_label': row.get('content_type_label'),
                     'content_type_display': row.get('content_type_display'),
                     'category_label': row.get('category_label'),
-                    'source_website': row.get('source_website')
+                    'source_website': row.get('source_website'),
+                    'publisher_name': row.get('publisher_name'),
+                    'publisher_id': row.get('publisher_id')
                 }
                 articles.append(article)
             
             logger.info(f"✅ Found {len(articles)} articles matching criteria")
+            
+            # Final validation
+            if not articles:
+                logger.warning(f"⚠️ No articles found with current criteria - this may indicate data issues or overly restrictive filters")
+            
             return articles
             
         except Exception as e:
-            logger.error(f"❌ Content filtering failed: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"❌ Content filtering failed: {error_msg}")
+            
+            # Provide helpful error context
+            if "database" in error_msg.lower():
+                logger.error(f"📎 Database-related error - check connection and query syntax")
+            elif "query" in error_msg.lower():
+                logger.error(f"📎 Query-related error - check filter criteria and SQL syntax")
+            elif "timeout" in error_msg.lower():
+                logger.error(f"📎 Timeout error - query may be too complex or database overloaded")
+            else:
+                logger.error(f"📎 Unknown error type - check system resources and logs")
+            
+            # Return empty list but log the failure for monitoring
+            logger.info(f"📎 Returning empty result set due to filtering failure")
             return []
     
     def group_content_by_interests(self, articles: List[Dict], user_interests: List[str], include_uncategorized: bool = False) -> Dict[str, List[Dict]]:
@@ -251,28 +410,28 @@ class ContentFilteringService:
         try:
             # This would typically use ML algorithms, but for now we'll use simple heuristics
             
+            db = get_database_service()
+            
             # Get user's reading history and preferences
             user_query = """
-                SELECT preferences FROM users WHERE id = %s
+                SELECT * FROM user_preferences WHERE user_id = %s
             """
             user_result = db.execute_query(user_query, (user_id,), fetch_one=True)
             
-            if not user_result or not user_result.get('preferences'):
+            if not user_result:
                 return []
-            
-            preferences = user_result['preferences']
             
             # Build criteria from user preferences
             criteria = FilterCriteria(
-                interests=preferences.get('interests', []),
-                content_types=preferences.get('selected_content_types', ['ARTICLE', 'VIDEO', 'AUDIO']),
-                publishers=preferences.get('selected_publishers', []),
-                time_filter=preferences.get('time_filter', 'Last Week'),
+                interests=user_result.get('categories_selected', []),
+                content_types=user_result.get('content_types_selected', ['BLOGS', 'VIDEOS', 'PODCASTS']),
+                publishers=user_result.get('publishers_selected', []),
+                time_filter='Last Week',
                 significance_threshold=6,  # Higher significance for recommendations
                 limit=limit
             )
             
-            return self.get_filtered_content(db, criteria)
+            return self.get_filtered_content(criteria)
             
         except Exception as e:
             logger.error(f"❌ Failed to get recommendations: {str(e)}")

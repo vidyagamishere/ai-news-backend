@@ -41,9 +41,10 @@ else:
     logger.info(f"📊 Log level set to: {logging.getLevelName(log_level)}")
 
 # Import modular components
-from app.routers import health, auth, content, admin, personalized_feed
+from app.routers import health, content, admin, personalized_feed
 from app.routers import enhanced_auth
 from db_service import initialize_database, close_database_service
+from scheduler_service import start_auto_scheduler, stop_auto_scheduler, get_scheduler
 
 
 @asynccontextmanager
@@ -57,6 +58,15 @@ async def lifespan(app: FastAPI):
         # Initialize database and run SQLite migration if needed
         initialize_database()
         logger.info("✅ Database initialization completed")
+        
+        # Start the auto-scraping scheduler
+        try:
+            start_auto_scheduler()
+            logger.info("✅ Auto-scraping scheduler initialized")
+        except Exception as scheduler_error:
+            logger.error(f"⚠️ Scheduler initialization failed: {str(scheduler_error)}")
+            logger.info("📊 API will continue without auto-scraping")
+        
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {str(e)}")
         raise e
@@ -65,6 +75,13 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("🛑 Shutting down AI News Scraper API")
+    try:
+        # Stop the scheduler first
+        stop_auto_scheduler()
+        logger.info("✅ Auto-scraping scheduler stopped")
+    except Exception as e:
+        logger.error(f"⚠️ Scheduler shutdown error: {str(e)}")
+    
     try:
         close_database_service()
         logger.info("✅ Database connections closed")
@@ -84,6 +101,11 @@ app = FastAPI(
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:5174",  # Previous dev server port
+    "http://localhost:5175",  # Current dev server port
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
     "https://www.vidyagam.com",
     "https://ai-news-frontend.vercel.app",
     "https://ai-news-frontend-git-main-vidyagamishere.vercel.app",
@@ -106,8 +128,7 @@ app.add_middleware(
 
 # Include routers with exact same endpoints as before for frontend compatibility
 app.include_router(health.router, tags=["health"])
-app.include_router(auth.router, tags=["authentication"])  # Legacy auth endpoints
-app.include_router(enhanced_auth.router, prefix="/api/v2", tags=["enhanced-auth"])  # New auth endpoints
+app.include_router(enhanced_auth.router, prefix="/api/v2", tags=["enhanced-auth"])  # Enhanced auth endpoints with preferences
 app.include_router(content.router, tags=["content"])
 app.include_router(admin.router, tags=["admin"])
 app.include_router(personalized_feed.router, prefix="/api/v1", tags=["personalized-feed"])

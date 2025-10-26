@@ -8,7 +8,7 @@ import os
 import json
 import logging
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 from contextlib import contextmanager
 
@@ -140,8 +140,8 @@ class PostgreSQLService:
         """Get all AI sources for scraping"""
         try:
             query = """
-                SELECT s.id, s.name, s.rss_url, s.website, COALESCE(c.name, 'general') as category, s.priority, s.enabled  
-                FROM ai_sources s LEFT JOIN ai_categories_master c ON s.category_id = c.priority WHERE s.enabled = TRUE 
+                SELECT s.id, s.publisher_id, s.name, s.rss_url, s.website, COALESCE(c.name, 'general') as category, s.priority, s.enabled  
+                FROM ai_sources s LEFT JOIN ai_categories_master c ON s.category_id = c.id WHERE s.enabled = TRUE and s.is_active = TRUE
                 ORDER BY s.priority DESC, s.name
             """
             sources = self.execute_query(query, fetch_all=True)
@@ -150,10 +150,10 @@ class PostgreSQLService:
                 # Return default sources if none exist
                 logger.warning("⚠️ No AI sources found in database, using defaults")
                 return [
-                    {'id': 1, 'name': 'OpenAI Blog', 'url': 'https://openai.com/blog/', 'website': 'https://openai.com/blog/', 'category': 'company', 'priority': 10, 'is_active': True},
-                    {'id': 2, 'name': 'Google AI Blog', 'url': 'https://ai.googleblog.com/', 'website': 'https://ai.googleblog.com/', 'category': 'company', 'priority': 10, 'is_active': True},
-                    {'id': 3, 'name': 'Anthropic News', 'url': 'https://www.anthropic.com/news', 'website': 'https://www.anthropic.com/news', 'category': 'company', 'priority': 9, 'is_active': True},
-                    {'id': 4, 'name': 'DeepMind Blog', 'url': 'https://deepmind.google/discover/blog/', 'website': 'https://deepmind.google/discover/blog/', 'category': 'research', 'priority': 9, 'is_active': True},
+                    {'id': 1, 'publisher_id': 1, 'name': 'OpenAI Blog', 'url': 'https://openai.com/blog/', 'website': 'https://openai.com/blog/', 'category': 'company', 'priority': 10, 'is_active': True},
+                    {'id': 2, 'publisher_id': 2, 'name': 'Google AI Blog', 'url': 'https://ai.googleblog.com/', 'website': 'https://ai.googleblog.com/', 'category': 'company', 'priority': 10, 'is_active': True},
+                    {'id': 3, 'publisher_id': 3, 'name': 'Anthropic News', 'url': 'https://www.anthropic.com/news', 'website': 'https://www.anthropic.com/news', 'category': 'company', 'priority': 9, 'is_active': True},
+                    {'id': 4, 'publisher_id': 4, 'name': 'DeepMind Blog', 'url': 'https://deepmind.google/discover/blog/', 'website': 'https://deepmind.google/discover/blog/', 'category': 'research', 'priority': 9, 'is_active': True},
                 ]
             
             return [dict(source) for source in sources]
@@ -176,8 +176,9 @@ class PostgreSQLService:
                 return False
 
             # --- 1. Check if article already exists ---
-            existing_query = "SELECT id FROM articles WHERE url = %s"
-            existing = self.execute_query(existing_query, (url,), fetch_one=True)
+            existing_query = "SELECT id FROM articles WHERE url = %s AND scraped_date > %s"
+            eight_hours_ago = datetime.now(timezone.utc) - timedelta(hours=8)
+            existing = self.execute_query(existing_query, (url, eight_hours_ago), fetch_one=True)
 
             if existing:
                 logger.info(f"📄 Article already exists: {article_data.get('title', 'Unknown')}")
@@ -188,41 +189,91 @@ class PostgreSQLService:
             content_type_label = article_data.get('content_type_label')
             
             if content_type_label:
-                # NOTE: Assuming 'display_name' is the correct column for the human-readable label
-                content_type_query = "SELECT id FROM content_types WHERE display_name = %s"
-                content_type_result = self.execute_query(content_type_query, (content_type_label,), fetch_one=True)
+                # Try both display_name and name for flexible matching  
+                content_type_query = "SELECT id FROM content_types WHERE display_name = %s OR name = %s OR LOWER(display_name) = LOWER(%s)"
+                content_type_result = self.execute_query(content_type_query, (content_type_label, content_type_label.lower(), content_type_label), fetch_one=True)
                 
                 if content_type_result:
                     # Safely extract the ID from the result set (which could be a dict or a tuple)
                     final_content_type_id = content_type_result['id'] if isinstance(content_type_result, dict) else content_type_result[0]
+                    logger.debug(f"✅ Found content type '{content_type_label}' with ID: {final_content_type_id}")
                 else:
                     logger.warning(f"⚠️ Content type '{content_type_label}' not found, using default ID: {FALLBACK_CONTENT_TYPE_ID}")
 
             
-            topic_category_label = article_data.get('topic_category_label')
+            # --- 3. Get Category ID with Hybrid Fallback (Claude AI > RSS Source > Hardcoded) ---
+            topic_category_label = article_data.get('topic_category_label')  # Claude AI category
+            source_category = article_data.get('source_category')  # RSS source category
             
             final_ai_topic_id = FALLBACK_TOPIC_ID
+            category_source = "hardcoded_fallback"
+            
+            # Priority 1: Try Claude AI category first
             if topic_category_label:
-                # NOTE: Assuming 'name' is the correct column for the topic category label
-                topic_query = "SELECT priority FROM ai_categories_master WHERE name = %s"
+                topic_query = "SELECT id FROM ai_categories_master WHERE name = %s"
                 ai_topic_result = self.execute_query(topic_query, (topic_category_label,), fetch_one=True)
                 
                 if ai_topic_result:
-                    # Safely extract the ID from the result set
-                    final_ai_topic_id = ai_topic_result['priority'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
+                    final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
+                    category_source = f"claude_ai({topic_category_label})"
+                    logger.debug(f"✅ Found Claude AI category '{topic_category_label}' with ID: {final_ai_topic_id}")
                 else:
-                    logger.warning(f"⚠️ Topic category '{topic_category_label}' not found, using default ID: {FALLBACK_TOPIC_ID}")
+                    logger.warning(f"⚠️ Claude AI category '{topic_category_label}' not found, trying RSS source fallback...")
+            
+            # Priority 2: If Claude AI failed, try RSS source category
+            if category_source == "hardcoded_fallback" and source_category and source_category != 'general':
+                source_topic_query = "SELECT id FROM ai_categories_master WHERE name = %s OR LOWER(name) = LOWER(%s)"
+                source_topic_result = self.execute_query(source_topic_query, (source_category, source_category), fetch_one=True)
+                
+                if source_topic_result:
+                    final_ai_topic_id = source_topic_result['id'] if isinstance(source_topic_result, dict) else source_topic_result[0]
+                    category_source = f"rss_source({source_category})"
+                    logger.info(f"✅ Using RSS source category '{source_category}' with ID: {final_ai_topic_id}")
+                else:
+                    logger.warning(f"⚠️ RSS source category '{source_category}' not found, using hardcoded fallback ID: {FALLBACK_TOPIC_ID}")
+            
+            # Priority 3: Final fallback to hardcoded ID (already set above)
+            if category_source == "hardcoded_fallback":
+                logger.info(f"📋 Using hardcoded fallback category ID: {FALLBACK_TOPIC_ID}")
+            
+            logger.info(f"🏷️ Final category assignment: ID {final_ai_topic_id} from {category_source}")
 
+            #if the rss feed  already exists, keep the date as is
+            if article_data.get('published_date') is None:
+                article_data['published_date'] = datetime.now(timezone.utc) - timedelta(days=1)
+            if article_data.get('scraped_date') is None:
+                article_data['scraped_date'] = datetime.now(timezone.utc)
+            if article_data.get('created_date') is None:
+                article_data['created_date'] = datetime.now(timezone.utc)
+            
+            
             # --- 4. Insert New Article (Fixed Query) ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
-                    llm_processed, content_type_id, category_id, reading_time, author, complexity_level
+                    llm_processed, content_type_id, category_id, reading_time, author, complexity_level, updated_date, created_date, keywords, publisher_id
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, 
-                    %s, %s, %s, %s, %s, %s
-                )
-            """ # 14 columns, 14 placeholders (%s)
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                ) ON CONFLICT (url) DO UPDATE SET
+                    content_hash = EXCLUDED.content_hash,
+                    title = EXCLUDED.title,
+                    summary = EXCLUDED.summary,
+                    source = EXCLUDED.source,
+                    significance_score = EXCLUDED.significance_score,
+                    published_date = EXCLUDED.published_date,
+                    scraped_date = EXCLUDED.scraped_date,
+                    llm_processed = EXCLUDED.llm_processed,
+                    content_type_id = EXCLUDED.content_type_id,
+                    category_id = EXCLUDED.category_id,
+                    reading_time = EXCLUDED.reading_time,
+                    author = EXCLUDED.author,
+                    complexity_level = EXCLUDED.complexity_level,
+                    updated_date = EXCLUDED.updated_date,
+                    created_date = EXCLUDED.created_date,
+                    keywords = EXCLUDED.keywords,
+                    publisher_id = EXCLUDED.publisher_id
+            """ # 18 columns, 18 placeholders (%s)
             
             values = (
                 article_data.get('content_hash'),
@@ -238,11 +289,27 @@ class PostgreSQLService:
                 final_ai_topic_id,
                 article_data.get('reading_time', 1),
                 article_data.get('author', 'Unknown'),
-                article_data.get('complexity_level', 'Medium')
+                article_data.get('complexity_level', 'Medium'),
+                article_data.get('updated_date', datetime.now(timezone.utc)),
+                article_data.get('created_date', datetime.now(timezone.utc)),
+                article_data.get('keywords', ['generative AI']),
+                article_data.get('publisher_id')  # Include publisher_id from ai_sources mapping
             )
             
+            # Debug logging for publisher_id and category
+            publisher_id_val = article_data.get('publisher_id')
+            if publisher_id_val:
+                logger.info(f"📎 Including publisher_id {publisher_id_val} for article: {article_data.get('title', url)[:50]}...")
+            else:
+                logger.warning(f"⚠️ No publisher_id provided for article: {article_data.get('title', url)[:50]}...")
+            
+            logger.info(f"📂 Category assignment summary for {article_data.get('title', url)[:50]}:")
+            logger.info(f"   • Claude AI category: '{topic_category_label}' → {'✅ Found' if topic_category_label and category_source.startswith('claude_ai') else '❌ Not found/used'}")
+            logger.info(f"   • RSS source category: '{source_category}' → {'✅ Used as fallback' if category_source.startswith('rss_source') else '❌ Not used'}")
+            logger.info(f"   • Final category_id: {final_ai_topic_id} (from {category_source})")
+            
             self.execute_query(insert_query, values, fetch_all=False)
-            logger.info(f"✅ Article inserted: {article_data.get('headline', url)}")
+            logger.info(f"✅ Article inserted with publisher_id {publisher_id_val}: {article_data.get('title', url)[:50]}...")
             return True
                 
         except Exception as e:

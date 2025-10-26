@@ -46,30 +46,38 @@ class DatabaseAdapter:
                 'author': article_data.get('author', 'Unknown'),
                 'url': article_data.get('url'),
                 'source': article_data.get('source', 'Unknown'),
+                
+                # Content type mapping - use ID if provided, otherwise use label for db_service mapping
+                'content_type_id': article_data.get('content_type_id'),
                 'content_type_label': article_data.get('content_type_label', 'Blogs'),  # Default to blogs
+                
+                # Category mapping - use ID if provided, otherwise use label for db_service mapping  
+                'category_id': article_data.get('category_id'),
                 'topic_category_label': article_data.get('topic_category_label', 'Generative AI'),
+                'source_category': article_data.get('source_category'),  # RSS source category for hybrid fallback
+                
                 'significance_score': article_data.get('significance_score', 6),
                 'complexity_level': article_data.get('complexity_level', 'Medium'),
                 'reading_time': article_data.get('reading_time', 1),
-                'published_date': article_data.get('date'),
+                'published_date': article_data.get('published_date'),
+                'keywords': article_data.get('keywords', []),
                 'scraped_date': article_data.get('scraped_date'),
                 'created_date': article_data.get('created_date'),
                 'updated_date': article_data.get('updated_date'),
-                'llm_processed': article_data.get('llm_processed', True)
+                'llm_processed': article_data.get('llm_processed', True),
+                'publisher_id': article_data.get('publisher_id')  # Include publisher_id from ai_sources mapping
             }
             
             # Debug logging for critical fields
             logger.info(f"🔍 DATABASE INSERT DEBUG:")
-            logger.info(f"   Title: '{mapped_data.get('titl', 'MISSING')}'")
-            logger.info(f"   Description: '{mapped_data.get('description', 'MISSING')[:50]}...'")
-            logger.info(f"   Content Type Label: {mapped_data.get('content_type_label', 'MISSING')}")
-            logger.info(f"   Topic Category Label: {mapped_data.get('topic_category_label', 'MISSING')}")
-            logger.info(f"   Complexity Level: {mapped_data.get('complexity_level', 'MISSING')}")
-            logger.info(f"   Content: {mapped_data.get('content', 'MISSING')}")
-            logger.info(f"   Reading Time: {mapped_data.get('reading_time', 'MISSING')}")
-            logger.info(f"   Published Date: {mapped_data.get('date', 'MISSING')}")
+            logger.info(f"   Title: '{mapped_data.get('title', 'MISSING')}'")
             logger.info(f"   URL: {mapped_data.get('url', 'MISSING')}")
-            logger.info(f"   Scraped Date: {mapped_data.get('scraped_date', 'MISSING')}")
+            logger.info(f"   Publisher ID: {mapped_data.get('publisher_id', 'MISSING')}")
+            logger.info(f"   Content Type ID: {mapped_data.get('content_type_id', 'MISSING')}")
+            logger.info(f"   Content Type Label: {mapped_data.get('content_type_label', 'MISSING')}")
+            logger.info(f"   Category ID: {mapped_data.get('category_id', 'MISSING')}")
+            logger.info(f"   Topic Category Label: {mapped_data.get('topic_category_label', 'MISSING')}")
+            logger.info(f"   Source Category: {mapped_data.get('source_category', 'MISSING')}")
             logger.info(f"   Significance Score: {mapped_data.get('significance_score', 'MISSING')}")
             logger.info(f"   Content Hash: {mapped_data.get('content_hash', 'MISSING')}")
 
@@ -462,3 +470,147 @@ class ContentService:
             'sources': [{'name': s['name'], 'category': s['category']} for s in sources],
             'scraping_mode': 'fallback_mock'
         }
+    
+    def get_content_counts(self, category_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get content counts by category and content type
+        
+        Args:
+            category_id: Category ID/name, 'all' for all categories, or None for all
+            
+        Returns:
+            Dict with total counts and counts by category
+        """
+        try:
+            db = get_database_service()
+            
+            if self.DEBUG:
+                logger.debug(f"🔍 Getting content counts for category: {category_id}")
+            
+            # Base query for counting articles by content type and category
+            base_query = """
+                SELECT 
+                    c.name as category_name,
+                    c.id as category_id,
+                    ct.name as content_type,
+                    COUNT(a.id) as count
+                FROM ai_categories_master c
+                LEFT JOIN articles a ON a.category_id = c.id
+                LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            """
+            
+            # Add category filter if specified
+            if category_id and category_id != 'all':
+                # Try to match by name or ID
+                base_query += " WHERE (c.name ILIKE %s OR c.id::text = %s)"
+                params = [f"%{category_id}%", str(category_id)]
+            else:
+                params = []
+            
+            base_query += " GROUP BY c.id, c.name, ct.id, ct.name ORDER BY c.name, ct.name"
+            
+            results = db.execute_query(base_query, params)
+            
+            # Initialize totals
+            total_articles = 0
+            total_podcasts = 0 
+            total_videos = 0
+            by_category = {}
+            
+            # Process results
+            for row in results:
+                category_name = row['category_name']
+                content_type = row['content_type'] or 'article'  # Default to article if None
+                count = row['count'] or 0
+                
+                # Initialize category if not exists
+                if category_name not in by_category:
+                    by_category[category_name] = {
+                        'category_id': row['category_id'],
+                        'articles': 0,
+                        'podcasts': 0,
+                        'videos': 0,
+                        'total': 0
+                    }
+                
+                # Map content types and add to totals
+                if content_type.lower() in ['article', 'blog', 'news']:
+                    by_category[category_name]['articles'] += count
+                    total_articles += count
+                elif content_type.lower() in ['podcast', 'audio']:
+                    by_category[category_name]['podcasts'] += count
+                    total_podcasts += count
+                elif content_type.lower() in ['video', 'youtube']:
+                    by_category[category_name]['videos'] += count
+                    total_videos += count
+                else:
+                    # Default unknown types to articles
+                    by_category[category_name]['articles'] += count
+                    total_articles += count
+                
+                by_category[category_name]['total'] += count
+            
+            # Get overall totals if not category-specific
+            if not category_id or category_id == 'all':
+                total_query = """
+                    SELECT 
+                        ct.name as content_type,
+                        COUNT(a.id) as count
+                    FROM articles a
+                    LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    GROUP BY ct.id, ct.name
+                """
+                
+                total_results = db.execute_query(total_query)
+                
+                # Reset totals to get accurate counts
+                total_articles = 0
+                total_podcasts = 0
+                total_videos = 0
+                
+                for row in total_results:
+                    content_type = row['content_type'] or 'article'
+                    count = row['count'] or 0
+                    
+                    if content_type.lower() in ['article', 'blog', 'news']:
+                        total_articles += count
+                    elif content_type.lower() in ['podcast', 'audio']:
+                        total_podcasts += count
+                    elif content_type.lower() in ['video', 'youtube']:
+                        total_videos += count
+                    else:
+                        total_articles += count  # Default to articles
+            
+            response = {
+                'total_articles': total_articles,
+                'total_podcasts': total_podcasts,
+                'total_videos': total_videos,
+                'total_all': total_articles + total_podcasts + total_videos,
+                'by_category': by_category,
+                'category_filter': category_id,
+                'database': 'postgresql'
+            }
+            
+            if self.DEBUG:
+                logger.debug(f"🔍 Content counts response: {response}")
+            
+            logger.info(f"✅ Content counts retrieved - Total: {response['total_all']} (A:{total_articles}, P:{total_podcasts}, V:{total_videos})")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get content counts: {str(e)}")
+            if self.DEBUG:
+                logger.debug(f"🔍 Content counts error details: {traceback.format_exc()}")
+            
+            # Return fallback counts
+            return {
+                'total_articles': 0,
+                'total_podcasts': 0,
+                'total_videos': 0,
+                'total_all': 0,
+                'by_category': {},
+                'category_filter': category_id,
+                'error': str(e),
+                'database': 'postgresql'
+            }

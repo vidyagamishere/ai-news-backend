@@ -208,6 +208,41 @@ async def get_content_types(
         )
 
 
+@router.get("/content-counts")
+async def get_content_counts(
+    category_id: Optional[str] = Query(None, description="Category ID or 'all' for all categories"),
+    content_service: ContentService = Depends(get_content_service)
+):
+    """
+    Get content counts by category and content type
+    Endpoint: GET /content-counts?category_id=all or /content-counts?category_id=category_name
+    Returns: {
+        'total_articles': int,
+        'total_podcasts': int, 
+        'total_videos': int,
+        'by_category': {...}
+    }
+    """
+    try:
+        logger.info(f"📊 Content counts requested for category: {category_id or 'all'}")
+        
+        counts = content_service.get_content_counts(category_id)
+        
+        logger.info(f"✅ Content counts retrieved successfully")
+        return counts
+        
+    except Exception as e:
+        logger.error(f"❌ Content counts endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get content counts',
+                'message': str(e),
+                'database': 'postgresql'
+            }
+        )
+
+
 @router.get("/breaking-news")
 async def get_breaking_news_alerts(
     limit: int = Query(5, ge=1, le=10)
@@ -231,8 +266,7 @@ async def get_breaking_news_alerts(
             SELECT title, summary, url, source, significance_score, 
                    published_date, name as content_type_name
             FROM breaking_news_alerts
-            JOIN ai_categories_master ON breaking_news_alerts.category_id = ai_categories_master.priority
-            WHERE name = 'Generative AI'
+            JOIN ai_categories_master ON breaking_news_alerts.category_id = ai_categories_master.id
             ORDER BY significance_score DESC, published_date DESC
             LIMIT %s
         """
@@ -272,7 +306,7 @@ async def get_breaking_news_alerts(
 
 @router.get("/generative-ai-content")
 async def get_generative_ai_stories(
-    limit: int = Query(6, ge=1, le=20)
+    limit: int = Query(3, ge=1, le=20)
 ):
     """
     Get Generative AI category stories for pre-login landing page
@@ -280,7 +314,7 @@ async def get_generative_ai_stories(
     No authentication required - public endpoint for landing page
     
     Endpoint: GET /generative-ai-content  
-    Query params: limit (default: 6, max: 20)
+    Query params: limit (default: 3, max: 20)
     """
     try:
         logger.info(f"🤖 Generative AI content requested - Limit: {limit}")
@@ -293,7 +327,7 @@ async def get_generative_ai_stories(
             SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
                    a.published_date, a.author, c.name as category
             FROM articles a
-            LEFT JOIN ai_categories_master c ON a.category_id = c.priority
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
             WHERE (c.name = 'Generative AI')
             ORDER BY a.significance_score DESC, a.scraped_date DESC
             LIMIT %s
@@ -327,6 +361,240 @@ async def get_generative_ai_stories(
             status_code=500,
             detail={
                 'error': 'Failed to get Generative AI content',
+                'message': str(e)
+            }
+        )
+
+
+@router.get("/ai-applications-content")
+async def get_ai_applications_stories(
+    limit: int = Query(3, ge=1, le=20)
+):
+    """
+    Get AI Applications category stories for pre-login landing page
+    Returns curated AI articles focused on enterprise use cases, industry solutions
+    No authentication required - public endpoint for landing page
+    
+    Endpoint: GET /ai-applications-content  
+    Query params: limit (default: 3, max: 20)
+    """
+    try:
+        logger.info(f"🏢 AI Applications content requested - Limit: {limit}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+    
+        query = """
+            SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
+                   a.published_date, a.author, 'AI Applications' as category
+            FROM articles a
+            WHERE a.category_id = 2
+            ORDER BY a.significance_score DESC, a.scraped_date DESC
+            LIMIT %s
+            """
+        articles = db.execute_query(query, (limit,), fetch_all=True)
+        
+        result = []
+        for article in articles:
+            result.append({
+                'title': article['title'],
+                'summary': article['summary'] or '',
+                'url': article['url'],
+                'source': article['source'],
+                'significanceScore': float(article['significance_score']) if article['significance_score'] else 7.0,
+                'published_date': article['published_date'].isoformat() if article['published_date'] else None,
+                'author': article.get('author', ''),
+                'category': article.get('category', 'AI Applications')
+            })
+        
+        logger.info(f"✅ AI Applications content retrieved: {len(result)} articles")
+        return {
+            'articles': result,
+            'count': len(result),
+            'type': 'ai_applications'
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ AI Applications content endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get AI Applications content',
+                'message': str(e)
+            }
+        )
+
+
+@router.get("/ai-startups-content")
+async def get_ai_startups_stories(
+    limit: int = Query(3, ge=1, le=20)
+):
+    """
+    Get AI Startups category stories for pre-login landing page
+    Returns curated AI articles focused on funding, M&A, emerging companies
+    No authentication required - public endpoint for landing page
+    
+    Endpoint: GET /ai-startups-content  
+    Query params: limit (default: 3, max: 20)
+    """
+    try:
+        logger.info(f"🚀 AI Startups content requested - Limit: {limit}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        query = """
+            SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
+                   a.published_date, a.author, 'AI Startups' as category
+            FROM articles a
+            WHERE a.category_id = 3
+            ORDER BY a.scraped_date DESC
+            LIMIT %s
+            """
+        articles = db.execute_query(query, (limit,), fetch_all=True)
+        
+        result = []
+        for article in articles:
+            result.append({
+                'title': article['title'],
+                'summary': article['summary'] or '',
+                'url': article['url'],
+                'source': article['source'],
+                'significanceScore': float(article['significance_score']) if article['significance_score'] else 7.0,
+                'published_date': article['published_date'].isoformat() if article['published_date'] else None,
+                'author': article.get('author', ''),
+                'category': article.get('category', 'AI Startups')
+            })
+        
+        logger.info(f"✅ AI Startups content retrieved: {len(result)} articles")
+        return {
+            'articles': result,
+            'count': len(result),
+            'type': 'ai_startups'
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ AI Startups content endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get AI Startups content',
+                'message': str(e)
+            }
+        )
+
+
+@router.get("/landing-content")
+async def get_landing_content(
+    limit_per_type: int = Query(3, ge=1, le=10)
+):
+    """
+    Get all categories and content types for landing page
+    Returns content organized by category (Generative AI, AI Applications, AI Startups)
+    Each category contains content types (blogs, podcasts, videos) with max 3 items per type
+    No authentication required - public endpoint for landing page
+    
+    Endpoint: GET /landing-content
+    Query params: limit_per_type (default: 3, max: 10)
+    """
+    try:
+        logger.info(f"🏠 Landing content requested - Limit per type: {limit_per_type}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        # Get all categories sorted by priority
+        categories_query = """
+            SELECT id, name, priority, description
+            FROM ai_categories_master
+            ORDER BY priority ASC
+        """
+        categories = db.execute_query(categories_query, fetch_all=True)
+        
+        # If no categories, create default ones
+        if not categories:
+            categories = [
+                {'id': 1, 'name': 'Generative AI', 'priority': 1, 'description': 'LLMs, GPT, Claude, and AI Generation'},
+                {'id': 2, 'name': 'AI Applications', 'priority': 2, 'description': 'Enterprise Use Cases & Industry Solutions'},
+                {'id': 3, 'name': 'AI Startups', 'priority': 3, 'description': 'Funding, M&A & Emerging Companies'}
+            ]
+        
+        # Get content types
+        content_types_query = """
+            SELECT id, name, display_name, frontend_section
+            FROM content_types
+            WHERE is_active = TRUE
+        """
+        content_types = db.execute_query(content_types_query, fetch_all=True)
+        if not content_types:
+            content_types = [
+                {'id': 1, 'name': 'blogs', 'display_name': 'Blogs', 'frontend_section': 'blog'},
+                {'id': 2, 'name': 'podcasts', 'display_name': 'Podcasts', 'frontend_section': 'podcast'},
+                {'id': 3, 'name': 'videos', 'display_name': 'Videos', 'frontend_section': 'video'}
+            ]
+        
+        result = {
+            'categories': [],
+            'total_categories': len(categories)
+        }
+        
+        for category in categories:
+            category_data = {
+                'id': category['id'],
+                'name': category['name'],
+                'priority': category['priority'],
+                'description': category.get('description', ''),
+                'content': {}
+            }
+            logger.info(f"🔍 Processing category: {category['name']}")
+            
+            # For each content type, get articles
+            for content_type in content_types:
+                # Get articles for this category and content type
+                logger.info(f"🔍 Fetching articles for type: {content_type['name']} in category: {category['name']}")
+                articles_query = """
+                    SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
+                           a.published_date, a.author, ct.name as content_type_name,
+                           cm.name as category_name
+                    FROM articles a
+                    LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    LEFT JOIN ai_categories_master cm ON a.category_id = cm.id
+                    WHERE ct.name = %s 
+                    AND cm.id = %s
+                    ORDER BY a.significance_score DESC, a.scraped_date DESC
+                    LIMIT %s
+                """
+                articles = db.execute_query(articles_query, (content_type['name'], category['id'], limit_per_type), fetch_all=True)
+
+                # Format articles
+                formatted_articles = []
+                for article in articles:
+                    formatted_articles.append({
+                        'title': article['title'],
+                        'summary': article['summary'] or '',
+                        'url': article['url'],
+                        'source': article['source'],
+                        'significanceScore': float(article['significance_score']) if article['significance_score'] else 7.0,
+                        'published_date': article['published_date'].isoformat() if article['published_date'] else None,
+                        'author': article.get('author', ''),
+                        'category': category['name'],
+                        'content_type': content_type['name']
+                    })
+                logger.info(f"🔍 Articles fetched for type: {content_type['name']} in category: {category['name']}")
+                category_data['content'][content_type['name']] = formatted_articles
+
+            result['categories'].append(category_data)
+        
+        logger.info(f"✅ Landing content retrieved: {len(categories)} categories")
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Landing content endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get landing content',
                 'message': str(e)
             }
         )

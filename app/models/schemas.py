@@ -38,9 +38,16 @@ class UserPreferences(BaseModel):
     # Core user_preferences table fields
     experience_level: Optional[str] = "intermediate"  # beginner, intermediate, advanced, expert
     professional_roles: Optional[List[str]] = []  # developer, researcher, student, etc.
-    categories_selected: Optional[List[str]] = []  # AI category names (not IDs)
-    content_types_selected: Optional[List[str]] = ["ARTICLE", "VIDEO", "AUDIO"]  # Content type names
+    
+    # Name-based fields (for backward compatibility)
+    categories_selected: Optional[List[str]] = []  # AI category names
+    content_types_selected: Optional[List[str]] = ["BLOGS", "VIDEOS", "PODCASTS"]  # Content type names
     publishers_selected: Optional[List[str]] = []  # Publisher names
+    
+    # ID-based fields (preferred for new implementations)
+    category_ids_selected: Optional[List[int]] = []  # AI category IDs from ai_categories_master
+    content_type_ids_selected: Optional[List[int]] = []  # Content type IDs from content_types
+    publisher_ids_selected: Optional[List[int]] = []  # Publisher IDs from publishers_master
     
     # Additional preference fields
     newsletter_frequency: Optional[str] = "weekly"
@@ -131,9 +138,15 @@ class Article(BaseModel):
 
 class ContentFilterRequest(BaseModel):
     """Request model for filtering content"""
-    interests: Optional[List[str]] = []
-    content_types: Optional[List[str]] = []
-    publishers: Optional[List[str]] = []
+    interests: Optional[List[str]] = []  # Category names (for backward compatibility)
+    content_types: Optional[List[str]] = []  # Content type names (for backward compatibility)
+    publishers: Optional[List[str]] = []  # Publisher names (for backward compatibility)
+    
+    # New ID-based fields (preferred)
+    category_ids: Optional[List[int]] = []  # Category IDs from ai_categories_master
+    content_type_ids: Optional[List[int]] = []  # Content type IDs from content_types
+    publisher_ids: Optional[List[int]] = []  # Publisher IDs from publishers_master
+    
     time_filter: Optional[str] = "Last Week"
     search_query: Optional[str] = ""
     limit: Optional[int] = 50
