@@ -216,9 +216,9 @@ class PostgreSQLService:
                 if ai_topic_result:
                     final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
                     category_source = f"claude_ai({topic_category_label})"
-                    logger.debug(f"✅ Found Claude AI category '{topic_category_label}' with ID: {final_ai_topic_id}")
+                    logger.debug(f"✅ Found AI category '{topic_category_label}' with ID: {final_ai_topic_id}")
                 else:
-                    logger.warning(f"⚠️ Claude AI category '{topic_category_label}' not found, trying RSS source fallback...")
+                    logger.warning(f"⚠️  AI category '{topic_category_label}' not found, trying RSS source fallback...")
             
             # Priority 2: If Claude AI failed, try RSS source category
             if category_source == "hardcoded_fallback" and source_category and source_category != 'general':
@@ -277,14 +277,14 @@ class PostgreSQLService:
             
             values = (
                 article_data.get('content_hash'),
-                article_data.get('title'),  # Using 'title' from LLM output
-                article_data.get('summary'),   # Using 'summary' from LLM output
+                article_data.get('title'),
+                article_data.get('summary'),
                 url,
                 article_data.get('source'),
                 article_data.get('significance_score'),
-                article_data.get('published_date'),     # Using 'published_date' from LLM output
+                article_data.get('published_date'),
                 article_data.get('scraped_date'),
-                True,  # Assuming if we reached here, LLM processed is True
+                article_data.get('llm_processed'),  # ✅ NOW USES MODEL NAME from article_data (e.g., 'claude-3-haiku-20240307', 'gemini-2.0-flash-exp', 'meta-llama/Meta-Llama-3.1-8B-Instruct')
                 final_content_type_id,
                 final_ai_topic_id,
                 article_data.get('reading_time', 1),
@@ -293,8 +293,12 @@ class PostgreSQLService:
                 article_data.get('updated_date', datetime.now(timezone.utc)),
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', ['generative AI']),
-                article_data.get('publisher_id')  # Include publisher_id from ai_sources mapping
+                article_data.get('publisher_id')
             )
+            
+            # Debug logging for LLM model used
+            llm_model_used = article_data.get('llm_processed')
+            logger.info(f"🤖 Article processed by LLM: {llm_model_used} for {article_data.get('title', url)[:50]}...")
             
             # Debug logging for publisher_id and category
             publisher_id_val = article_data.get('publisher_id')
@@ -309,7 +313,7 @@ class PostgreSQLService:
             logger.info(f"   • Final category_id: {final_ai_topic_id} (from {category_source})")
             
             self.execute_query(insert_query, values, fetch_all=False)
-            logger.info(f"✅ Article inserted with publisher_id {publisher_id_val}: {article_data.get('title', url)[:50]}...")
+            logger.info(f"✅ Article inserted with LLM model '{llm_model_used}' and publisher_id {publisher_id_val}: {article_data.get('title', url)[:50]}...")
             return True
                 
         except Exception as e:

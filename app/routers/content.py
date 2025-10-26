@@ -603,11 +603,15 @@ async def get_landing_content(
 @router.post("/admin/scrape")
 async def admin_initiate_scraping(
     request: Request,
+    llm_model: str = Query('claude', description="LLM model to use: 'claude', 'gemini', or 'huggingface'"),
     content_service: ContentService = Depends(get_content_service)
 ):
     """
     Admin-only endpoint to initiate AI news scraping process
     Uses Content Service for scraping operations
+    
+    Query Parameters:
+    - llm_model: 'claude' | 'gemini' | 'huggingface' (default: 'claude')
     """
     try:
         # Check for admin API key authentication
@@ -625,17 +629,18 @@ async def admin_initiate_scraping(
             )
         
         logger.info(f"🔧 Admin scraping initiated with API key authentication")
+        logger.info(f"🤖 LLM MODEL SELECTED: '{llm_model}'")
         
         if DEBUG:
             logger.debug(f"🔍 Admin scrape request with valid API key")
             logger.debug(f"🔍 Admin permissions verified")
+            logger.debug(f"🔍 LLM model parameter: {llm_model}")
         
-        
-        # Trigger scraping operation with detailed error handling
+        # Trigger scraping operation with LLM model parameter
         try:
-            logger.info("🔍 About to call content_service.scrape_content()")
-            result = await content_service.scrape_content()
-            logger.info("🔍 Successfully called content_service.scrape_content()")
+            logger.info(f"🔍 About to call content_service.scrape_content(llm_model='{llm_model}')")
+            result = await content_service.scrape_content(llm_model=llm_model)
+            logger.info(f"🔍 Successfully called content_service.scrape_content() with {llm_model}")
         except NameError as ne:
             logger.error(f"❌ NameError in scrape_content: {str(ne)}")
             raise ne
@@ -646,10 +651,11 @@ async def admin_initiate_scraping(
         if DEBUG:
             logger.debug(f"🔍 Scraping completed with result: {result}")
         
-        logger.info(f"✅ Admin scraping completed successfully with API key authentication")
+        logger.info(f"✅ Admin scraping completed successfully with {llm_model} model")
         return {
             'success': True,
-            'message': 'Content scraping completed successfully',
+            'message': f'Content scraping completed successfully using {llm_model}',
+            'llm_model_used': llm_model,
             'data': result,
             'database': 'postgresql'
         }

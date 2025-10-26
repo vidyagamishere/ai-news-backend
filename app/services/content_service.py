@@ -376,13 +376,14 @@ class ContentService:
                 }
             ]
     
-    async def scrape_content(self) -> Dict[str, Any]:
-        """Trigger content scraping operation using Crawl4AI + Claude"""
+    async def scrape_content(self, llm_model: str = 'claude') -> Dict[str, Any]:
+        """Trigger content scraping operation using Crawl4AI + selected LLM"""
         try:
-            logger.info("🕷️ Starting content scraping operation with Crawl4AI + Claude")
+            logger.info(f"🕷️ Starting content scraping operation with Crawl4AI + {llm_model}")  # ✅ FIX: Use parameter
+            logger.info(f"🤖 LLM MODEL PARAMETER RECEIVED IN scrape_content: '{llm_model}'")
             
             if self.DEBUG:
-                logger.debug("🔍 Scrape content method called")
+                logger.debug(f"🔍 Scrape content method called with llm_model={llm_model}")
             
             db = get_database_service()
             
@@ -393,13 +394,14 @@ class ContentService:
             if self.DEBUG:
                 logger.debug("🔍 AdminScrapingInterface initialized with database adapter")
             
-            # Run the async scraping process
+            # Run the async scraping process with LLM model
             try:
                 if self.DEBUG:
-                    logger.debug("🔍 Running async scraping process")
+                    logger.debug(f"🔍 Running async scraping process with {llm_model}")
                 
-                # Use await instead of run_until_complete since we're already in async context
-                result = await admin_scraper.initiate_scraping()
+                # ✅ FIX: PASS llm_model TO initiate_scraping!
+                logger.info(f"🔍 Calling admin_scraper.initiate_scraping(llm_model='{llm_model}')")
+                result = await admin_scraper.initiate_scraping(llm_model=llm_model)  # ← ADD THIS PARAMETER!
                 
                 if self.DEBUG:
                     logger.debug(f"🔍 Scraping result: {result}")

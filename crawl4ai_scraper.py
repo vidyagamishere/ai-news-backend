@@ -7,9 +7,10 @@ Implements the exact scraping process: Crawl4AI -> Claude -> Structured Output
 import os
 import tempfile
 import logging
-import feedparser
 import re
 import json
+import feedparser
+import traceback  # ✅ ADD THIS MISSING IMPORT
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
@@ -92,14 +93,20 @@ class Crawl4AIScraper:
         self.extraction_warnings = []  # Track extraction warnings for reporting
         self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '')
         self.google_api_key = os.getenv('GOOGLE_API_KEY', '')
-        self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')  # Add HuggingFace API key
+        self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
-        self.huggingface_api_url = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3.1-8B-Instruct"  # Updated model
+        self.huggingface_api_url = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3.1-8B-Instruct"
         self.headers = {
             "x-api-key": self.anthropic_api_key,
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
+        
+        # Debug: Log API key status
+        logger.info(f"🔑 API Keys Status:")
+        logger.info(f"   - ANTHROPIC_API_KEY: {'✅ Set' if self.anthropic_api_key else '❌ Not set'}")
+        logger.info(f"   - GOOGLE_API_KEY: {'✅ Set' if self.google_api_key else '❌ Not set'}")
+        logger.info(f"   - HUGGINGFACE_API_KEY: {'✅ Set' if self.huggingface_api_key else '❌ Not set'}")
         
         if not self.anthropic_api_key:
             logger.warning("⚠️ ANTHROPIC_API_KEY not set - Claude processing will not work")
@@ -188,8 +195,8 @@ class Crawl4AIScraper:
                     "Accept-Encoding": "gzip, deflate",
                     "Connection": "keep-alive",
                 },
-                user_data_dir=os.path.join(session_dir, 'user_data'),  # Use session directory for user data
-                downloads_path=os.path.join(session_dir, 'downloads')   # Use session directory for downloads
+                user_data_dir=os.path.join(session_dir, 'user_data'),
+                downloads_path=os.path.join(session_dir, 'downloads')
             )
             
             # Define extraction strategy for structured content
@@ -208,18 +215,24 @@ class Crawl4AIScraper:
             # Initialize the async crawler with Railway-compatible settings
             crawler = None
             try:
+                logger.info(f"🔧 Initializing AsyncWebCrawler for {url}")
                 crawler = AsyncWebCrawler(
                     crawler_strategy=crawler_strategy,
                     always_by_pass_cache=True,
-                    verbose=False,  # Reduce logging for Railway
-                    cache_mode="disabled",  # Disable caching to avoid permission issues
-                    timeout=30  # Shorter timeout for Railway
+                    verbose=False,
+                    cache_mode="disabled",
+                    timeout=30
                 )
                 
-                # Modern Crawl4AI versions handle lifecycle automatically
-                # await crawler.astart()  # Not needed in newer versions
+                # ✅ ADD NULL CHECK FOR CRAWLER
+                if crawler is None:
+                    logger.error(f"❌ AsyncWebCrawler initialization returned None for {url}")
+                    return await self._fallback_scrape(url)
+                
+                logger.info(f"✅ AsyncWebCrawler initialized successfully for {url}")
                 
                 # Perform the crawl with advanced options
+                logger.info(f"🌐 Starting crawl for {url}")
                 result = await crawler.arun(
                     url=url,
                     extraction_strategy=extraction_strategy,
@@ -232,12 +245,20 @@ class Crawl4AIScraper:
                     delay_before_return_html=2.0,
                     css_selector="body",
                     screenshot=False,
-                    magic=True  # Enable AI-powered content extraction
+                    magic=True
                 )
                 
-                if not result.success:
-                    logger.error(f"❌ Crawl4AI failed for {url}: {result.error_message}")
+                # ✅ ADD NULL CHECK FOR RESULT
+                if result is None:
+                    logger.error(f"❌ Crawl result is None for {url} - crawler.arun() returned None")
                     return await self._fallback_scrape(url)
+                
+                # ✅ NOW SAFE TO ACCESS result.success
+                if not result.success:
+                    logger.error(f"❌ Crawl4AI failed for {url}: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
+                    return await self._fallback_scrape(url)
+                
+                logger.info(f"✅ Crawl completed successfully for {url}")
                 
                 # Extract structured data
                 extracted_data = {}
@@ -1233,7 +1254,7 @@ class Crawl4AIScraper:
             if indicator in content_lower[:500]:  # Check first 500 chars
                 video_score += 1
         
-        # Check for media elements (if available)
+        # Check media elements (if available)
         if media:
             for media_item in media:
                 if isinstance(media_item, dict):
@@ -1296,52 +1317,58 @@ class Crawl4AIScraper:
         
         return cleaned.strip()
 
+    def _get_standardized_prompt(self, scraped_data: Dict[str, Any]) -> str:
+        """
+        Standardized prompt for all LLM models to ensure consistent results.
+        Used by Claude, Gemini, and HuggingFace.
+        """
+        extraction_method = scraped_data.get('extraction_method', 'unknown')
+        author_info = scraped_data.get('author', 'Not specified')
+        tags_info = scraped_data.get('tags', [])
+        
+        return f"""You are an expert Artificial Intelligence technology expert analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
+
+Content Title: {scraped_data.get('title', '')}
+Content Description: {scraped_data.get('description', '')}
+Author: {author_info}
+Existing Tags: {tags_info}
+Content Text: {scraped_data.get('content', '')[:4000]}
+Source URL: {scraped_data.get('url', '')}
+Extraction Method: {extraction_method}
+
+IMPORTANT: 
+1. Look carefully for publication dates in the content text, meta information, or URL patterns. Common date formats include "Published October 10, 2025", "Oct 10, 2025", "2025-10-10", etc.
+2. Analyze the URL for content type clues: YouTube/Vimeo/video platforms = Videos, Spotify/podcast platforms = Podcasts, news sites = Blogs.
+
+Please analyze this content and return ONLY a valid JSON object with the following structure:
+{{
+    "title": "Clear, concise headline for the article (use original title if good)",
+    "author": "Author name if found, or null",
+    "summary": "4-5 sentence summary of the key points and significance",
+    "date": "Publication date in ISO format (YYYY-MM-DD) if found, or null. Look for dates in content text like 'Published October 10, 2025' or 'Oct 10, 2025'",
+    "content_type_label": "Classify the content type: 'Videos' if from YouTube/video platforms or contains video content, 'Podcasts' if audio content, otherwise 'Blogs'",
+    "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
+    "complexity_level": "Classify the complexity into one of the following levels: Low, Medium, High depending on technical depth of content",
+    "key_topics": ["list of 3-5 key AI tech topics covered in this content"],
+    "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 10 categories: Generative AI,AI Applications,AI Start Ups,AI Infrastructure,Cloud Computing,Machine Learning,AI Safety and Governance,Robotics,Internet Of Things (IoT),Quantum AI,Future Technology"
+}}
+Focus on Artificial Intelligence, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
+If this is not AI/tech related content, set significance_score to 1-3.
+
+Return ONLY the JSON object, nothing else."""
+
     async def process_with_claude(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
         Feed the structured data from Crawl4AI to Claude for processing.
-        Use specific prompt to get structured output with key details.
+        Use standardized prompt to get structured output with key details.
         """
         try:
             logger.info(f"🤖 CLAUDE PROCESSING: {scraped_data.get('title', 'Unknown')[:60]}...")
             
-            # Create specific prompt for structured output with enhanced data
-            extraction_method = scraped_data.get('extraction_method', 'unknown')
-            author_info = scraped_data.get('author', 'Not specified')
-            tags_info = scraped_data.get('tags', [])
-            logger.info(f"🤖  URL : {scraped_data.get('url', '')}, Extraction Method: {extraction_method}, Author: {author_info}, Tags : {tags_info}...")
-            logger.info(f"🤖  Content Txt: {scraped_data.get('content', '')[:100]}...")
+            # Use standardized prompt
+            prompt = self._get_standardized_prompt(scraped_data)
 
-
-            prompt = f"""You are an expert Artificial Intelligence technology expert analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
-
-            Content Title: {scraped_data.get('title', '')}
-            Content Description: {scraped_data.get('description', '')}
-            Author: {author_info}
-            Existing Tags: {tags_info}
-            Content Text: {scraped_data.get('content', '')[:4000]}
-            Source URL: {scraped_data.get('url', '')}
-            Extraction Method: {extraction_method}
-
-            IMPORTANT: 
-            1. Look carefully for publication dates in the content text, meta information, or URL patterns. Common date formats include "Published October 10, 2025", "Oct 10, 2025", "2025-10-10", etc.
-            2. Analyze the URL for content type clues: YouTube/Vimeo/video platforms = Videos, Spotify/podcast platforms = Podcasts, news sites = Blogs.
-
-            Please analyze this content and return ONLY a valid JSON object with the following structure:
-            {{
-                "title": "Clear, concise headline for the article (use original title if good)",
-                "author": "Author name if found, or null",
-                "summary": "4-5 sentence summary of the key points and significance",
-                "date": "Publication date in ISO format (YYYY-MM-DD) if found, or null. Look for dates in content text like 'Published October 10, 2025' or 'Oct 10, 2025'",
-                "content_type_label": "Classify the content type: 'Videos' if from YouTube/video platforms or contains video content, 'Podcasts' if audio content, otherwise 'Blogs'",
-                "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
-                "complexity_level": "Classify the complexity into one of the following levels: Low, Medium, High depending on technical depth of content",
-                "key_topics": ["list of 3-5 key AI tech topics covered in this content"],
-                "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 10 categories: Generative AI,AI Applications,AI Start Ups,AI Infrastructure,Cloud Computing,Machine Learning,AI Safety and Governance,Robotics,Internet Of Things (IoT),Quantum AI, Future Technology"
-            }}
-            Focus on Artificial Intelligence, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
-            If this is not AI/tech related content, set significance_score to 1-3."""
-
-            # Call Claude API - using Claude 3 Haiku (only available model with current API key)
+            # Call Claude API - using Claude 3 Haiku
             payload = {
                 "model": "claude-3-haiku-20240307",
                 "max_tokens": 1000,
@@ -1435,12 +1462,13 @@ class Crawl4AIScraper:
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
                             complexity_level=parsed_data.get('complexity_level', 'Medium'),
                             reading_time=scraped_data.get('reading_time', 1),
-                            publisher_id=publisher_id_preserved,  # Ensure publisher_id is preserved from scraped_data
+                            publisher_id=publisher_id_preserved,
                             published_date=parsed_data.get('date') or scraped_data.get('date'),
                             scraped_date=scraped_data.get('extracted_date'),
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                            keywords=scraped_data.get('tags', [])
+                            keywords=scraped_data.get('tags', []),
+                            llm_processed='claude-3-haiku-20240307'  # Add explicit model name
                         )
 
                         
@@ -1469,42 +1497,15 @@ class Crawl4AIScraper:
         Feed the structured data to Google Gemini for processing.
         """
         try:
-            # Updated to Gemini 2.0 Flash (better performance)
-            model_name = "gemini-2.0-flash-exp"  # or "gemini-1.5-flash-latest"
+            model_name = "gemini-2.0-flash-exp"
             logger.info(f"🤖 GEMINI PROCESSING ({model_name}): {scraped_data.get('title', 'Unknown')[:60]}...")
 
             if not self.google_api_key:
                 logger.error("❌ GOOGLE_API_KEY is not set. Cannot process with Gemini.")
                 return None
 
-            prompt = f"""You are an expert Artificial Intelligence technology expert analyst and content classifier. Analyze the following scraped content and extract key information in JSON format.
-
-            Content Title: {scraped_data.get('title', '')}
-            Content Description: {scraped_data.get('description', '')}
-            Author: {scraped_data.get('author', 'Not specified')}
-            Existing Tags: {scraped_data.get('tags', [])}
-            Content Text: {scraped_data.get('content', '')[:4000]}
-            Source URL: {scraped_data.get('url', '')}
-            Extraction Method: {scraped_data.get('extraction_method', 'unknown')}
-
-            IMPORTANT:
-            1. Look carefully for publication dates in the content text, meta information, or URL patterns. Common date formats include "Published October 10, 2025", "Oct 10, 2025", "2025-10-10", etc.
-            2. Analyze the URL for content type clues: YouTube/Vimeo/video platforms = Videos, Spotify/podcast platforms = Podcasts, news sites = Blogs.
-
-            Please analyze this content and return ONLY a valid JSON object with the following structure:
-            {{
-                "title": "Clear, concise headline for the article (use original title if good)",
-                "author": "Author name if found, or null",
-                "summary": "4-5 sentence summary of the key points and significance",
-                "date": "Publication date in ISO format (YYYY-MM-DD) if found, or null. Look for dates in content text like 'Published October 10, 2025' or 'Oct 10, 2025'",
-                "content_type_label": "Classify the content type: 'Videos' if from YouTube/video platforms or contains video content, 'Podcasts' if audio content, otherwise 'Blogs'",
-                "significance_score": "Number from 1-10 indicating importance of this AI/tech news",
-                "complexity_level": "Classify the complexity into one of the following levels: Low, Medium, High depending on technical depth of content",
-                "key_topics": ["list of 3-5 key AI tech topics covered in this content"],
-                "topic_category_label": "Classify the core subject matter into ONLY ONE of the following 10 categories: Generative AI,AI Applications,AI Start Ups,AI Infrastructure,Cloud Computing,Machine Learning,AI Safety and Governance,Robotics,Internet Of Things (IoT),Quantum AI, Future Technology"
-            }}
-            Focus on Artificial Intelligence, machine learning, technology, and innovation content. Be accurate and provide meaningful analysis.
-            If this is not AI/tech related content, set significance_score to 1-3."""
+            # Use standardized prompt (same as Claude)
+            prompt = self._get_standardized_prompt(scraped_data)
 
             gemini_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.google_api_key}"
             payload = {
@@ -1532,14 +1533,28 @@ class Crawl4AIScraper:
                     content = result['candidates'][0]['content']['parts'][0]['text']
                     
                     try:
-                        parsed_data = json.loads(content)
+                        # Clean up JSON response
+                        content_clean = content.strip()
+                        
+                        if content_clean.startswith('```json'):
+                            content_clean = content_clean[7:]
+                        if content_clean.startswith('```'):
+                            content_clean = content_clean[3:]
+                        if content_clean.endswith('```'):
+                            content_clean = content_clean[:-3]
+                        
+                        content_clean = content_clean.strip()
+                        
+                        parsed_data = json.loads(content_clean)
+                        
                         logger.info(f"✅ GEMINI SUCCESS: Processed Title: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
 
                         publisher_id_preserved = scraped_data.get('publisher_id')
+                        logger.info(f"🔗 Preserving publisher_id {publisher_id_preserved} in Gemini response for {scraped_data.get('url', 'Unknown URL')}")
                         
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
-                            author=parsed_data.get('author') or scraped_data.get('author'),
+                            author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
                             date=parsed_data.get('date') or scraped_data.get('date'),
@@ -1560,30 +1575,51 @@ class Crawl4AIScraper:
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ GEMINI JSON ERROR: Failed to parse response: {e}")
                         logger.error(f"Gemini raw response: {content[:200]}...")
-                        fixed_content = self._fix_json_formatting(content)
+                        
+                        fixed_content = self._fix_json_formatting(content_clean)
                         if fixed_content:
                             try:
                                 parsed_data = json.loads(fixed_content)
                                 logger.info(f"✅ GEMINI SUCCESS (after JSON fix): Processed {parsed_data.get('title', 'Unknown')[:50]}...")
-                                # You would reconstruct the ScrapedArticle here as above
+                                
+                                publisher_id_preserved = scraped_data.get('publisher_id')
+                                
+                                return ScrapedArticle(
+                                    title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                                    author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
+                                    summary=parsed_data.get('summary', 'No summary available'),
+                                    content=scraped_data.get('content', '')[:1000],
+                                    date=parsed_data.get('date') or scraped_data.get('date'),
+                                    url=scraped_data.get('url', ''),
+                                    source=self._extract_domain(scraped_data.get('url', '')),
+                                    significance_score=float(parsed_data.get('significance_score', 5.0)),
+                                    complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                                    reading_time=scraped_data.get('reading_time', 1),
+                                    publisher_id=publisher_id_preserved,
+                                    published_date=parsed_data.get('date') or scraped_data.get('date'),
+                                    scraped_date=scraped_data.get('extracted_date'),
+                                    content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                                    topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                                    keywords=scraped_data.get('tags', []),
+                                    llm_processed=model_name
+                                )
                             except json.JSONDecodeError:
-                                logger.error("❌ JSON fix attempt failed for Gemini, skipping article")
+                                logger.error("❌ JSON fix failed for Gemini")
                                 return None
-                        else:
-                            return None
+                        return None
 
         except Exception as e:
             logger.error(f"❌ GEMINI PROCESSING FAILED: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(traceback.format_exc())  # ✅ NOW traceback IS IMPORTED
             return None
 
     async def process_with_huggingface(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
         Feed the structured data to HuggingFace Llama 3.1 8B Instruct for processing.
-        This model is excellent for content classification, metadata extraction, and analysis.
         """
         try:
-            logger.info(f"🤖 HUGGINGFACE PROCESSING (Llama-3.1-8B-Instruct): {scraped_data.get('title', 'Unknown')[:60]}...")
+            model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            logger.info(f"🤖 HUGGINGFACE PROCESSING ({model_name}): {scraped_data.get('title', 'Unknown')[:60]}...")
 
             if not self.huggingface_api_key:
                 logger.error("❌ HUGGINGFACE_API_KEY is not set. Cannot process with HuggingFace.")
@@ -1619,7 +1655,7 @@ JSON Schema:
     "content_type_label": "Videos|Podcasts|Blogs",
     "significance_score": 1-10,
     "complexity_level": "Low|Medium|High",
-    "key_topics": ["topic1", "topic2", "topic3"],
+       "key_topics": ["topic1", "topic2", "topic3"],
     "topic_category_label": "Generative AI|AI Applications|AI Start Ups|AI Infrastructure|Cloud Computing|Machine Learning|AI Safety and Governance|Robotics|Internet Of Things (IoT)|Quantum AI|Future Technology"
 }}
 
@@ -1711,7 +1747,7 @@ Return ONLY the JSON object, nothing else."""
                                 content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                                 topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                                 keywords=scraped_data.get('tags', []),
-                                llm_processed='huggingface-llama-3.1-8b-instruct'
+                                llm_processed=model_name
                             )
 
                         except json.JSONDecodeError as e:
@@ -1744,13 +1780,11 @@ Return ONLY the JSON object, nothing else."""
                                         content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                                         topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                                         keywords=scraped_data.get('tags', []),
-                                        llm_processed='huggingface-llama-3.1-8b-instruct'
+                                        llm_processed=model_name
                                     )
                                 except json.JSONDecodeError:
                                     logger.error("❌ JSON fix failed for HuggingFace")
                                     return None
-                            return None
-                        
                         break  # Success, exit retry loop
                 
                 # All retries exhausted
@@ -1759,7 +1793,6 @@ Return ONLY the JSON object, nothing else."""
 
         except Exception as e:
             logger.error(f"❌ HUGGINGFACE PROCESSING FAILED: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             return None
 
@@ -1817,13 +1850,17 @@ Return ONLY the JSON object, nothing else."""
     async def scrape_multiple_sources_with_publisher_id(self, article_data: List[Dict], llm_model: str = 'claude') -> List[ScrapedArticle]:
         """Scrape multiple sources with publisher_id and source_category mapping"""
         logger.info(f"🔄 Scraping {len(article_data)} sources with publisher_id and category mapping, using LLM: {llm_model}...")
+        logger.info(f"🔍 CONFIRMING LLM MODEL IN scrape_multiple_sources_with_publisher_id: '{llm_model}'")
         
         tasks = []
         for data in article_data:
             url = data['url']
             publisher_id = data['publisher_id']
-            source_category = data.get('source_category', 'general')  # Get source category for fallback
-            tasks.append(self.scrape_article_with_publisher_id(url, publisher_id, source_category, llm_model))
+            source_category = data.get('source_category', 'general')
+            
+            # ✅ FIX: EXPLICITLY PASS llm_model to each task
+            logger.info(f"🔍 Creating task for {url} with LLM model: {llm_model}")
+            tasks.append(self.scrape_article_with_publisher_id(url, publisher_id, source_category, llm_model=llm_model))
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -1839,7 +1876,8 @@ Return ONLY the JSON object, nothing else."""
     
     async def scrape_article_with_publisher_id(self, url: str, publisher_id: int, source_category: str = 'general', llm_model: str = 'claude') -> Optional[ScrapedArticle]:
         """Scrape individual article, include publisher_id, and process with the selected LLM."""
-        logger.info(f"🕸️ Scraping article with publisher_id {publisher_id}, source_category '{source_category}': {url}")
+        logger.info(f"🕸️ Scraping article with publisher_id {publisher_id}, source_category '{source_category}', LLM model '{llm_model}': {url}")
+        logger.info(f"🔍 CONFIRMING LLM MODEL IN scrape_article_with_publisher_id: '{llm_model}'")
         
         try:
             scraped_data = await self.scrape_with_crawl4ai(url)
@@ -1849,18 +1887,208 @@ Return ONLY the JSON object, nothing else."""
                 scraped_data['source_category'] = source_category
                 logger.info(f"📄 Added publisher_id {publisher_id} and source_category '{source_category}' to scraped data for {url}")
                 
+                # ✅ ADD EXPLICIT DEBUG LOG BEFORE ROUTING
+                logger.info(f"🎯 ROUTING DECISION: llm_model='{llm_model}' for URL: {url}")
+                
+                # Route to appropriate LLM based on llm_model parameter
                 if llm_model == 'gemini':
+                    logger.info(f"✅ ROUTING TO GEMINI for {url}")
+                    if not self.google_api_key:
+                        logger.error(f"❌ Gemini selected but GOOGLE_API_KEY not set, falling back to Claude for {url}")
+                        return await self.process_with_claude(scraped_data)
                     return await self.process_with_gemini(scraped_data)
+                    
                 elif llm_model == 'huggingface':
+                    logger.info(f"✅ ROUTING TO HUGGINGFACE for {url}")
+                    if not self.huggingface_api_key:
+                        logger.error(f"❌ HuggingFace selected but HUGGINGFACE_API_KEY not set, falling back to Claude for {url}")
+                        return await self.process_with_claude(scraped_data)
                     return await self.process_with_huggingface(scraped_data)
+                    
                 elif llm_model == 'claude':
+                    logger.info(f"✅ ROUTING TO CLAUDE for {url}")
+                    if not self.anthropic_api_key:
+                        logger.error(f"❌ Claude selected but ANTHROPIC_API_KEY not set for {url}")
+                        return None
                     return await self.process_with_claude(scraped_data)
+                    
                 else:
-                    logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to HuggingFace for {url}.")
-                    return await self.process_with_huggingface(scraped_data)
+                    logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude for {url}.")
+                    return await self.process_with_claude(scraped_data)
+                    
             return None
         except Exception as e:
             logger.error(f"❌ Failed to scrape article {url}: {str(e)}")
+            return None
+
+    def _extract_domain(self, url: str) -> str:
+        """Extract domain name from URL for source attribution"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            # Remove 'www.' prefix if present
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract domain from {url}: {e}")
+            return "Unknown"
+    
+    async def parse_rss_feed(self, feed_url: str, max_articles: int = 10) -> List[str]:
+        """Parse RSS feed and extract article URLs with enhanced error handling"""
+        try:
+            logger.info(f"📰 Parsing RSS feed: {feed_url}")
+            
+            # Fetch the RSS feed with proper headers
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+            }
+            
+            response = await asyncio.to_thread(
+                requests.get, 
+                feed_url, 
+                headers=headers,
+                timeout=15,
+                allow_redirects=True
+            )
+            
+            logger.info(f"📡 RSS feed HTTP status: {response.status_code}")
+            response.raise_for_status()
+            
+            content_type = response.headers.get('Content-Type', 'unknown')
+            logger.info(f"📡 RSS feed Content-Type: {content_type}")
+            
+            content_length = len(response.content)
+            logger.info(f"📡 RSS feed size: {content_length} bytes")
+            
+            # ✅ ENHANCED: Try BeautifulSoup parsing first for problematic feeds
+            article_urls = []
+            
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.content, 'xml')  # Use 'xml' parser specifically
+                
+                # Extract all <item> tags
+                items = soup.find_all('item')
+                logger.info(f"🔍 BeautifulSoup found {len(items)} items in feed")
+                
+                for item in items[:max_articles]:
+                    # Try multiple link extraction methods for each item
+                    link = None
+                    
+                    # Method 1: Direct <link> tag
+                    link_tag = item.find('link')
+                    if link_tag and link_tag.string:
+                        link = link_tag.string.strip()
+                    elif link_tag and link_tag.get_text():
+                        link = link_tag.get_text().strip()
+                    
+                    # Method 2: <guid> tag (fallback)
+                    if not link:
+                        guid_tag = item.find('guid')
+                        if guid_tag and guid_tag.string:
+                            link = guid_tag.string.strip()
+                    
+                    # Method 3: feedburner:origLink (for FeedBurner feeds)
+                    if not link:
+                        orig_link = item.find('feedburner:origLink')
+                        if orig_link and orig_link.string:
+                            link = orig_link.string.strip()
+                    
+                    if link:
+                        # Extract title for logging
+                        title_tag = item.find('title')
+                        title = title_tag.string.strip() if title_tag and title_tag.string else 'Untitled'
+                        
+                        article_urls.append(link)
+                        logger.debug(f"📄 BeautifulSoup extracted: {title[:60]}... - {link}")
+                    else:
+                        logger.warning(f"⚠️ Item missing link tag")
+                
+                # If BeautifulSoup succeeded, return immediately
+                if article_urls:
+                    logger.info(f"✅ BeautifulSoup extracted {len(article_urls)} article URLs from RSS feed: {feed_url}")
+                    return article_urls
+                    
+            except Exception as bs_error:
+                logger.warning(f"⚠️ BeautifulSoup parsing failed: {bs_error}, trying feedparser...")
+            
+            # ✅ FALLBACK: Use feedparser if BeautifulSoup fails
+            feed = feedparser.parse(response.content)
+            
+            if feed.bozo:
+                logger.warning(f"⚠️ Feed parsing warning (bozo=1): {feed.get('bozo_exception', 'Unknown error')}")
+            
+            logger.info(f"📊 Feed title: {feed.feed.get('title', 'No title')}")
+            logger.info(f"📊 Feed entries found: {len(feed.entries)}")
+            
+            if feed.entries:
+                first_entry = feed.entries[0]
+                logger.debug(f"🔍 First entry keys: {list(first_entry.keys())}")
+                logger.debug(f"🔍 First entry title: {first_entry.get('title', 'No title')}")
+                logger.debug(f"🔍 First entry link: {first_entry.get('link', 'No link')}")
+                logger.debug(f"🔍 First entry id: {first_entry.get('id', 'No id')}")
+            
+            article_urls = []
+            for entry in feed.entries[:max_articles]:
+                article_url = (
+                    entry.get('link') or 
+                    entry.get('id') or 
+                    entry.get('guid') or
+                    entry.get('feedburner_origlink')
+                )
+                
+                if article_url:
+                    article_url = str(article_url).strip()
+                    article_urls.append(article_url)
+                    logger.debug(f"📄 Feedparser found: {entry.get('title', 'Untitled')[:60]}... - {article_url}")
+                else:
+                    logger.warning(f"⚠️ Entry missing URL: {entry.get('title', 'Untitled')[:60]}...")
+                    logger.debug(f"⚠️ Entry data: {dict(entry)}")
+            
+            if not article_urls:
+                logger.warning(f"⚠️ No article URLs extracted from RSS feed: {feed_url}")
+                logger.warning(f"⚠️ Feed has {len(feed.entries)} entries but no valid URLs found")
+                logger.debug(f"⚠️ Feed content preview: {response.text[:500]}...")
+            
+            logger.info(f"✅ Extracted {len(article_urls)} article URLs from RSS feed: {feed_url}")
+            return article_urls
+            
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"❌ HTTP error fetching RSS feed {feed_url}: {http_err}")
+            logger.error(f"❌ Response status: {http_err.response.status_code if hasattr(http_err, 'response') else 'unknown'}")
+            return []
+        except requests.exceptions.Timeout:
+            logger.error(f"❌ Timeout fetching RSS feed {feed_url} (15s limit)")
+            return []
+        except requests.exceptions.RequestException as req_err:
+            logger.error(f"❌ Request error fetching RSS feed {feed_url}: {req_err}")
+            return []
+        except Exception as e:
+            logger.error(f"❌ Failed to parse RSS feed {feed_url}: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
+    
+    def _fix_json_formatting(self, json_str: str) -> Optional[str]:
+        """Attempt to fix common JSON formatting issues"""
+        try:
+            # Remove any leading/trailing whitespace
+            json_str = json_str.strip()
+            
+            # Try to find JSON object boundaries
+            start_idx = json_str.find('{')
+            end_idx = json_str.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = json_str[start_idx:end_idx + 1]
+            
+            # Try to parse - if successful, return
+            json.loads(json_str)
+            return json_str
+        except Exception as e:
+            logger.debug(f"JSON fix attempt failed: {e}")
             return None
 
 # Admin interface and example usage remain unchanged
@@ -2000,13 +2228,49 @@ class AdminScrapingInterface:
         Admin-initiated scraping process as specified:
         1. Select AI sources from ai_sources table
         2. Use Crawl4AI to scrape and extract content
-        3. Process with selected LLM (Claude or Gemini)
+        3. Process with selected LLM (Claude, Gemini, or HuggingFace)
         4. Store structured output in articles table
         5. Repeat for all sources
         """
         logger.info(f"🔧 Admin {admin_email} initiated scraping process with LLM: {llm_model}")
-        logger.info("📰 RSS Feed Parsing Mode: Extracting individual article URLs from RSS feeds")
+        logger.info(f"🤖 EXPLICIT LLM MODEL PARAMETER RECEIVED: '{llm_model}'")
+        logger.info(f"📰 RSS Feed Parsing Mode: Extracting individual article URLs from RSS feeds")
         
+        # Validate LLM model selection and API keys
+        if llm_model == 'gemini':
+            logger.info("✅ Gemini model selected - checking API key...")
+            if not self.scraper.google_api_key:
+                logger.error("❌ Gemini selected but GOOGLE_API_KEY not set. Please add GOOGLE_API_KEY to .env file")
+                return {
+                    "success": False,
+                    "message": "Gemini API key not configured. Please add GOOGLE_API_KEY to your .env file.",
+                    "articles_processed": 0
+                }
+            logger.info("✅ Gemini API key found - will use Gemini for processing")
+        elif llm_model == 'huggingface':
+            logger.info("✅ HuggingFace model selected - checking API key...")
+            if not self.scraper.huggingface_api_key:
+                logger.error("❌ HuggingFace selected but HUGGINGFACE_API_KEY not set. Please add HUGGINGFACE_API_KEY to .env file")
+                return {
+                    "success": False,
+                    "message": "HuggingFace API key not configured. Please add HUGGINGFACE_API_KEY to your .env file.",
+                    "articles_processed": 0
+                }
+            logger.info("✅ HuggingFace API key found - will use HuggingFace for processing")
+        elif llm_model == 'claude':
+            logger.info("✅ Claude model selected - checking API key...")
+            if not self.scraper.anthropic_api_key:
+                logger.error("❌ Claude selected but ANTHROPIC_API_KEY not set. Please add ANTHROPIC_API_KEY to .env file")
+                return {
+                    "success": False,
+                    "message": "Claude API key not configured. Please add ANTHROPIC_API_KEY to your .env file.",
+                    "articles_processed": 0
+                }
+            logger.info("✅ Claude API key found - will use Claude for processing")
+        else:
+            logger.warning(f"⚠️ Unknown LLM model '{llm_model}' - defaulting to Claude")
+            llm_model = 'claude'
+
         try:
             # Step 1: Select AI sources from ai_sources table
             sources = self.db_service.get_ai_sources()
@@ -2089,7 +2353,10 @@ class AdminScrapingInterface:
             
             # Step 3-4: Scrape individual articles with Crawl4AI + selected LLM, passing publisher_id
             logger.info(f"🤖 Starting LLM processing ({llm_model}) for {len(all_article_data)} articles...")
-            articles = await self.scraper.scrape_multiple_sources_with_publisher_id(all_article_data, llm_model)
+            logger.info(f"🔍 CONFIRMING LLM MODEL BEFORE SCRAPING: '{llm_model}'")
+            
+            # EXPLICITLY PASS llm_model TO THE SCRAPER
+            articles = await self.scraper.scrape_multiple_sources_with_publisher_id(all_article_data, llm_model=llm_model)
             
             # Step 5: Insert results into articles table
             articles_inserted = 0
@@ -2115,7 +2382,7 @@ class AdminScrapingInterface:
                         logger.warning(f"⚠️ AI topic mapping failed for {article.title[:50]}...: {str(e)}")
                         ai_topic_id = 21
                     
-                    # Construct article data with exception handling for each field
+                    # Construct article data with exception handling
                     article_data = {}
                     
                     try:
@@ -2197,38 +2464,3 @@ class AdminScrapingInterface:
                 "message": f"Scraping failed: {str(e)}",
                 "articles_processed": 0
             }
-
-# Example usage
-async def main():
-    """Example of how to use the scraper"""
-    scraper = Crawl4AIScraper()
-    
-    # Test scraping a single article
-    test_url = "https://openai.com/blog"
-    article = await scraper.scrape_article(test_url)
-    
-    if article:
-        print(f"✅ Scraped: {article.title}")
-        print(f"📝 Summary: {article.summary}")
-        print(f"⭐ Score: {article.significance_score}")
-    else:
-        print("❌ Scraping failed")
-
-# Cleanup function for module-level temp directory
-def cleanup_crawl4ai_temp():
-    """Cleanup the module-level temp directory"""
-    try:
-        import shutil
-        global temp_base_dir
-        if os.path.exists(temp_base_dir):
-            shutil.rmtree(temp_base_dir, ignore_errors=True)
-            logger.info(f"🧹 Cleaned up Crawl4AI temp directory: {temp_base_dir}")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to cleanup temp directory: {e}")
-
-# Register cleanup on module exit
-import atexit
-atexit.register(cleanup_crawl4ai_temp)
-
-if __name__ == "__main__":
-    asyncio.run(main())
