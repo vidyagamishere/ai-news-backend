@@ -1589,12 +1589,16 @@ class Crawl4AIScraper:
                 logger.error("❌ HUGGINGFACE_API_KEY is not set. Cannot process with HuggingFace.")
                 return None
 
+            extraction_method = scraped_data.get('extraction_method', 'unknown')
+            author_info = scraped_data.get('author', 'Not specified')
+            tags_info = scraped_data.get('tags', [])
+            
             prompt = f"""You are an expert AI content analyst. Analyze this content and return ONLY a valid JSON object.
 
 Content Title: {scraped_data.get('title', '')}
 Content Description: {scraped_data.get('description', '')}
-Author: {scraped_data.get('author', 'Not specified')}
-Tags: {scraped_data.get('tags', [])}
+Author: {author_info}
+Tags: {tags_info}
 Content Text: {scraped_data.get('content', '')[:4000]}
 Source URL: {scraped_data.get('url', '')}
 
@@ -1720,7 +1724,28 @@ Return ONLY the JSON object, nothing else."""
                                 try:
                                     parsed_data = json.loads(fixed_content)
                                     logger.info(f"✅ HUGGINGFACE SUCCESS (after JSON fix): {parsed_data.get('title', 'Unknown')[:50]}...")
-                                    # Return ScrapedArticle as above
+                                    
+                                    publisher_id_preserved = scraped_data.get('publisher_id')
+                                    
+                                    return ScrapedArticle(
+                                        title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                                        author=parsed_data.get('author') or scraped_data.get('author'),
+                                        summary=parsed_data.get('summary', 'No summary available'),
+                                        content=scraped_data.get('content', '')[:1000],
+                                        date=parsed_data.get('date') or scraped_data.get('date'),
+                                        url=scraped_data.get('url', ''),
+                                        source=self._extract_domain(scraped_data.get('url', '')),
+                                        significance_score=float(parsed_data.get('significance_score', 5.0)),
+                                        complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                                        reading_time=scraped_data.get('reading_time', 1),
+                                        publisher_id=publisher_id_preserved,
+                                        published_date=parsed_data.get('date') or scraped_data.get('date'),
+                                        scraped_date=scraped_data.get('extracted_date'),
+                                        content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                                        topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                                        keywords=scraped_data.get('tags', []),
+                                        llm_processed='huggingface-llama-3.1-8b-instruct'
+                                    )
                                 except json.JSONDecodeError:
                                     logger.error("❌ JSON fix failed for HuggingFace")
                                     return None
