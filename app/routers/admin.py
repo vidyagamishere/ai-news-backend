@@ -5,9 +5,13 @@ Handles admin-only endpoints for source management and system control
 """
 
 import os
+import sys
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
+
+# Add parent directory to path to import scheduler_service
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.models.schemas import UserResponse
 from app.dependencies.auth import get_current_user

@@ -35,6 +35,7 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Copy application code for modular FastAPI architecture
 COPY main.py .
 COPY db_service.py .
+COPY scheduler_service.py .
 COPY crawl4ai_scraper.py .
 COPY requirements.txt .
 COPY railway.json .
