@@ -6,7 +6,7 @@ Provides advanced search, filtering, and recommendation capabilities
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
@@ -38,6 +38,10 @@ class ContentFilteringService:
     """Enhanced content filtering and search service"""
     
     def __init__(self):
+        # ✅ FIX: Initialize db attribute with database service
+        self.db = get_database_service()
+        logger.info("✅ ContentFilteringService initialized with database connection")
+    
         self.search_weights = {
             'title': 3.0,
             'summary': 2.0,
@@ -51,13 +55,12 @@ class ContentFilteringService:
             return []
         
         try:
-            db = get_database_service()
-            placeholders = ",".join(["%s"] * len(category_names))
+            placeholders = ','.join(['%s'] * len(category_names))
             query = f"""
                 SELECT id FROM ai_categories_master 
                 WHERE name IN ({placeholders})
             """
-            results = db.execute_query(query, category_names)
+            results = self.db.execute_query(query, tuple(category_names))
             return [row['id'] for row in results]
         except Exception as e:
             logger.error(f"❌ Failed to get category IDs: {str(e)}")
@@ -69,16 +72,13 @@ class ContentFilteringService:
             return []
         
         try:
-            db = get_database_service()
-            placeholders = ",".join(["%s"] * len(content_type_names))
+            # ✅ FIX: Correct variable name from 'content_typeNames' to 'content_type_names'
+            placeholders = ','.join(['%s'] * len(content_type_names))
             query = f"""
                 SELECT id FROM content_types 
                 WHERE LOWER(name) IN ({','.join(['LOWER(%s)'] * len(content_type_names))})
-                   OR UPPER(name) IN ({','.join(['UPPER(%s)'] * len(content_type_names))})
             """
-            # Prepare parameters for both lower and upper case matching
-            params = content_type_names + content_type_names
-            results = db.execute_query(query, params)
+            results = self.db.execute_query(query, tuple(content_type_names))
             return [row['id'] for row in results]
         except Exception as e:
             logger.error(f"❌ Failed to get content type IDs: {str(e)}")
@@ -90,38 +90,60 @@ class ContentFilteringService:
             return []
         
         try:
-            db = get_database_service()
-            placeholders = ",".join(["%s"] * len(publisher_names))
+            placeholders = ','.join(['LOWER(%s)'] * len(publisher_names))
             query = f"""
                 SELECT id FROM publishers_master 
-                WHERE LOWER(publisher_name) IN ({','.join(['LOWER(%s)'] * len(publisher_names))})
-                   OR UPPER(publisher_name) IN ({','.join(['UPPER(%s)'] * len(publisher_names))})
-                   AND is_active = TRUE
+                WHERE LOWER(publisher_name) IN ({placeholders})
             """
-            # Prepare parameters for both lower and upper case matching
-            params = publisher_names + publisher_names
-            results = db.execute_query(query, params)
+            results = self.db.execute_query(query, tuple(publisher_names))
             return [row['id'] for row in results]
         except Exception as e:
             logger.error(f"❌ Failed to get publisher IDs: {str(e)}")
             return []
     
     def parse_time_filter(self, time_filter: str) -> Optional[datetime]:
-        """Convert time filter string to datetime"""
-        if time_filter == "All Time":
+        """Convert time filter string to datetime with timezone awareness"""
+        if not time_filter or time_filter == "All Time":
             return None
         
-        now = datetime.now()
-        filters = {
-            "Last 24 hours": timedelta(days=1),
+        # Use timezone-aware datetime (UTC)
+        now = datetime.now(timezone.utc)
+        
+        # CORRECTED time filter mapping - MUST use hours=24, NOT days=7
+        time_mappings = {
+            # Frontend values (case-sensitive)
+            "Last 24 Hours": timedelta(hours=24),  # ✅ FIXED: Was days=7, now hours=24
             "Last Week": timedelta(days=7),
             "Last Month": timedelta(days=30),
-            "Last Year": timedelta(days=365)
+            "This Year": timedelta(days=365),
+            # Legacy values (for backward compatibility)
+            "Last 24 hours": timedelta(hours=24),
+            "Last Year": timedelta(days=365),
+            "Today": timedelta(hours=24),
+            "Yesterday": timedelta(days=1),
+            "This Week": timedelta(days=7),
+            "This Month": timedelta(days=30)
         }
         
-        delta = filters.get(time_filter, timedelta(days=7))
-        return now - delta
-    
+        # Try exact match first
+        if time_filter in time_mappings:
+            time_threshold = now - time_mappings[time_filter]
+            logger.info(f"⏰ Time filter matched: '{time_filter}' -> {time_mappings[time_filter]}, threshold: {time_threshold.isoformat()}")
+            return time_threshold
+        
+        # Try case-insensitive match
+        for key, delta in time_mappings.items():
+            if time_filter.lower() == key.lower():
+                time_threshold = now - delta
+                logger.info(f"⏰ Time filter matched (case-insensitive): '{time_filter}' -> {delta}, threshold: {time_threshold.isoformat()}")
+                return time_threshold
+        
+        # Default fallback - should NOT be reached for valid filters
+        logger.warning(f"⚠️ Unknown time filter '{time_filter}', defaulting to Last Week")
+        time_threshold = now - timedelta(days=7)
+        logger.info(f"⏰ Using default threshold: {time_threshold.isoformat()}")
+        return time_threshold
+
     def build_search_query(self, criteria: FilterCriteria) -> Tuple[str, List]:
         """Build optimized SQL query with search and filters"""
         
@@ -291,95 +313,131 @@ class ContentFilteringService:
         return terms[:10]  # Limit to 10 terms for performance
     
     def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
-        """Get filtered content based on criteria with enhanced error handling"""
+        """Get filtered content based on criteria"""
         try:
-            db = get_database_service()
+            # Parse time filter FIRST to get the datetime threshold
+            time_threshold = self.parse_time_filter(criteria.time_filter)
             
-            # Validate database connection
-            if not db or not hasattr(db, 'execute_query'):
-                raise RuntimeError("Database service is not available or improperly initialized")
-            
-            # Build query with validation
-            try:
-                query, params = self.build_search_query(criteria)
-            except Exception as query_error:
-                logger.error(f"❌ Failed to build search query: {str(query_error)}")
-                raise RuntimeError(f"Query construction failed: {str(query_error)}")
-            
-            # Validate query parameters
-            if not query or not isinstance(params, list):
-                raise ValueError("Invalid query or parameters generated")
-            
-            logger.info(f"🔍 Content filtering - Query length: {len(query)}, Params: {len(params)}")
-            if criteria.search_query:
-                logger.info(f"🔍 Search query: '{criteria.search_query}'")
-            
-            # Execute query with timeout protection
-            try:
-                results = db.execute_query(query, params)
-            except Exception as db_error:
-                logger.error(f"❌ Database query execution failed: {str(db_error)}")
-                # Try a simplified query as fallback
-                logger.info(f"🔄 Attempting simplified query fallback...")
-                simple_query = "SELECT DISTINCT a.* FROM articles a WHERE a.published_date >= NOW() - INTERVAL '7 days' ORDER BY a.published_date DESC LIMIT %s"
-                try:
-                    results = db.execute_query(simple_query, [min(criteria.limit or 50, 100)])
-                    logger.info(f"✅ Simplified query fallback successful")
-                except Exception as simple_error:
-                    logger.error(f"❌ Even simplified query failed: {str(simple_error)}")
-                    raise RuntimeError(f"All database queries failed: {str(simple_error)}")
-            
-            # Convert to standardized format
-            articles = []
-            for row in results:
-                article = {
-                    'id': row['id'],
-                    'title': row.get('title'),
-                    'summary': row.get('summary'),
-                    'url': row.get('url'),
-                    'source': row.get('source_name') or row.get('source'),
-                    'published_date': row.get('published_date'),
-                    'scraped_date': row.get('scraped_date'),
-                    'significance_score': row.get('significance_score', 5),
-                    'reading_time': row.get('reading_time', 3),
-                    'image_url': row.get('image_url'),
-                    'keywords': row.get('keywords'),
-                    'content_hash': row.get('content_hash'),
-                    'content_type_label': row.get('content_type_label'),
-                    'content_type_display': row.get('content_type_display'),
-                    'category_label': row.get('category_label'),
-                    'source_website': row.get('source_website'),
-                    'publisher_name': row.get('publisher_name'),
-                    'publisher_id': row.get('publisher_id')
-                }
-                articles.append(article)
-            
-            logger.info(f"✅ Found {len(articles)} articles matching criteria")
-            
-            # Final validation
-            if not articles:
-                logger.warning(f"⚠️ No articles found with current criteria - this may indicate data issues or overly restrictive filters")
-            
-            return articles
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Content filtering failed: {error_msg}")
-            
-            # Provide helpful error context
-            if "database" in error_msg.lower():
-                logger.error(f"📎 Database-related error - check connection and query syntax")
-            elif "query" in error_msg.lower():
-                logger.error(f"📎 Query-related error - check filter criteria and SQL syntax")
-            elif "timeout" in error_msg.lower():
-                logger.error(f"📎 Timeout error - query may be too complex or database overloaded")
+            # Log the threshold being used
+            if time_threshold:
+                logger.info(f"⏰ Using time threshold: {time_threshold.isoformat()} for filter '{criteria.time_filter}'")
             else:
-                logger.error(f"📎 Unknown error type - check system resources and logs")
+                logger.info(f"⏰ No time filter applied (showing all time)")
             
-            # Return empty list but log the failure for monitoring
-            logger.info(f"📎 Returning empty result set due to filtering failure")
+            # Build base query
+            query = """
+                SELECT DISTINCT
+                    a.id,
+                    a.title,
+                    a.summary,
+                    a.url,
+                    a.source,
+                    a.published_date,
+                    a.scraped_date,
+                    a.significance_score,
+                    a.reading_time,
+                    a.author,
+                    a.content_hash,
+                    ct.name as content_type_label,
+                    ct.display_name as content_type_display_name,
+                    c.name as category_label,
+                    c.id as category_id,
+                    a.complexity_level,
+                    a.keywords
+                FROM articles a
+                LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                LEFT JOIN ai_categories_master c ON a.category_id = c.id
+                WHERE 1=1
+            """
+            
+            params = []
+            
+            # CRITICAL: Apply time filter FIRST (most restrictive)
+            if time_threshold:
+                query += " AND a.published_date >= %s"
+                params.append(time_threshold)
+                logger.info(f"🔍 Time filter applied: published_date >= {time_threshold.isoformat()}")
+            
+            # Apply category filter (ID-based preferred, fallback to name-based)
+            if criteria.category_ids:
+                placeholders = ','.join(['%s'] * len(criteria.category_ids))
+                query += f" AND c.id IN ({placeholders})"
+                params.extend(criteria.category_ids)
+                logger.info(f"🔍 Category ID filter applied: {criteria.category_ids}")
+            elif criteria.interests:
+                placeholders = ','.join(['%s'] * len(criteria.interests))
+                query += f" AND c.name IN ({placeholders})"
+                params.extend(criteria.interests)
+                logger.info(f"🔍 Category name filter applied: {criteria.interests}")
+            
+            # Apply content type filter (ID-based preferred, fallback to name-based)
+            if criteria.content_type_ids:
+                placeholders = ','.join(['%s'] * len(criteria.content_type_ids))
+                query += f" AND ct.id IN ({placeholders})"
+                params.extend(criteria.content_type_ids)
+                logger.info(f"🔍 Content type ID filter applied: {criteria.content_type_ids}")
+            elif criteria.content_types:
+                placeholders = ','.join(['%s'] * len(criteria.content_types))
+                query += f" AND ct.name IN ({placeholders})"
+                params.extend(criteria.content_types)
+                logger.info(f"🔍 Content type name filter applied: {criteria.content_types}")
+            
+            # Apply publisher filter (ID-based preferred, fallback to name-based)
+            if criteria.publisher_ids:
+                placeholders = ','.join(['%s'] * len(criteria.publisher_ids))
+                query += f" AND a.publisher_id IN ({placeholders})"
+                params.extend(criteria.publisher_ids)
+                logger.info(f"🔍 Publisher ID filter applied: {criteria.publisher_ids}")
+            elif criteria.publishers and criteria.publishers != ['all']:
+                # Get publisher IDs from names
+                publisher_names = criteria.publishers
+                publisher_ids_query = f"SELECT id FROM publishers_master WHERE publisher_name IN ({','.join(['%s'] * len(publisher_names))})"
+                publisher_results = self.db.execute_query(publisher_ids_query, tuple(publisher_names))
+                publisher_ids = [pub['id'] for pub in publisher_results]
+                
+                if publisher_ids:
+                    placeholders = ','.join(['%s'] * len(publisher_ids))
+                    query += f" AND a.publisher_id IN ({placeholders})"
+                    params.extend(publisher_ids)
+                    logger.info(f"🔍 Publisher name filter converted to IDs and applied: {publisher_ids}")
+            
+            # Apply search query filter
+            if criteria.search_query:
+                search_term = f"%{criteria.search_query.lower()}%"
+                query += """
+                    AND (
+                        LOWER(a.title) LIKE %s 
+                        OR LOWER(a.summary) LIKE %s
+                        OR LOWER(c.name) LIKE %s
+                    )
+                """
+                params.extend([search_term, search_term, search_term])
+                logger.info(f"🔍 Search query filter applied: '{criteria.search_query}'")
+            
+            # Order by significance and recency
+            query += " ORDER BY a.significance_score DESC, a.published_date DESC"
+            
+            # Apply limit
+            if criteria.limit:
+                query += " LIMIT %s"
+                params.append(criteria.limit)
+            
+            # Log final query for debugging
+            logger.info(f"🔍 Final query parameters: {params}")
+            logger.debug(f"🔍 Final SQL query: {query}")
+            
+            # Execute query
+            results = self.db.execute_query(query, tuple(params))
+            
+            logger.info(f"✅ Content filtering returned {len(results)} results")
+            return [dict(row) for row in results]
+        
+        except Exception as e:
+            logger.error(f"❌ Error filtering content: {str(e)}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
             return []
-    
+
     def group_content_by_interests(self, articles: List[Dict], user_interests: List[str], include_uncategorized: bool = False) -> Dict[str, List[Dict]]:
         """Group articles by user interests"""
         grouped = {}

@@ -267,6 +267,53 @@ class AuthService:
         try:
             db = get_database_service()
             
+            # Clean up preferences data before saving
+            cleaned_preferences = preferences.copy()
+            
+            # Clean publisher_ids_selected - remove 'all' and ensure all are integers
+            if 'publisher_ids_selected' in cleaned_preferences:
+                publisher_ids = cleaned_preferences['publisher_ids_selected']
+                if isinstance(publisher_ids, list):
+                    # Filter out 'all' and non-numeric values, convert to int
+                    cleaned_ids = []
+                    for pid in publisher_ids:
+                        if pid != 'all' and pid is not None:
+                            try:
+                                cleaned_ids.append(int(pid))
+                            except (ValueError, TypeError):
+                                logger.warning(f"⚠️ Skipping invalid publisher ID: {pid}")
+                                continue
+                    cleaned_preferences['publisher_ids_selected'] = cleaned_ids
+                    logger.info(f"🧹 Cleaned publisher_ids: {len(publisher_ids)} -> {len(cleaned_ids)}")
+            
+            # Clean category_ids_selected - ensure all are integers
+            if 'category_ids_selected' in cleaned_preferences:
+                category_ids = cleaned_preferences['category_ids_selected']
+                if isinstance(category_ids, list):
+                    cleaned_ids = []
+                    for cid in category_ids:
+                        try:
+                            cleaned_ids.append(int(cid))
+                        except (ValueError, TypeError):
+                            logger.warning(f"⚠️ Skipping invalid category ID: {cid}")
+                            continue
+                    cleaned_preferences['category_ids_selected'] = cleaned_ids
+            
+            # Clean content_type_ids_selected - ensure all are integers
+            if 'content_type_ids_selected' in cleaned_preferences:
+                content_type_ids = cleaned_preferences['content_type_ids_selected']
+                if isinstance(content_type_ids, list):
+                    cleaned_ids = []
+                    for ctid in content_type_ids:
+                        try:
+                            cleaned_ids.append(int(ctid))
+                        except (ValueError, TypeError):
+                            logger.warning(f"⚠️ Skipping invalid content type ID: {ctid}")
+                            continue
+                    cleaned_preferences['content_type_ids_selected'] = cleaned_ids
+            
+            logger.info(f"💾 Saving cleaned preferences for user {user_id}: {json.dumps(cleaned_preferences, indent=2)}")
+            
             query = """
                 UPDATE users 
                 SET preferences = %s
@@ -276,7 +323,7 @@ class AuthService:
             
             result = db.execute_query(
                 query,
-                (json.dumps(preferences), user_id),
+                (json.dumps(cleaned_preferences), user_id),
                 fetch_one=True
             )
             
@@ -297,6 +344,7 @@ class AuthService:
                 
         except Exception as e:
             logger.error(f"❌ Failed to update user preferences: {str(e)}")
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             # Return a basic user structure if update fails
             return {
                 'id': user_id,
@@ -304,7 +352,7 @@ class AuthService:
                 'name': '',
                 'profile_image': '',
                 'subscription_tier': 'free',
-                'preferences': preferences,
+                'preferences': cleaned_preferences if 'cleaned_preferences' in locals() else preferences,
                 'verified_email': True,
                 'is_admin': False
             }

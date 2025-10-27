@@ -4,7 +4,7 @@ Enhanced Personalized feed endpoints for mobile-first interface
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
 
@@ -25,16 +25,22 @@ router = APIRouter()
 
 
 def parse_time_filter(time_filter: str) -> Optional[datetime]:
-    """Convert time filter string to datetime with enhanced validation"""
+    """Convert time filter string to datetime with enhanced validation and timezone awareness"""
     if not time_filter or time_filter == "All Time":
         return None
     
-    now = datetime.now()
-    # Enhanced time filter mapping with validation
+    # Use timezone-aware datetime (UTC)
+    now = datetime.now(timezone.utc)
+    
+    # Enhanced time filter mapping with validation - UPDATED to match frontend values
     time_mappings = {
-        "Last 24 hours": timedelta(days=1),
+        # Frontend values (case-sensitive)
+        "Last 24 Hours": timedelta(hours=24),  # ✅ THIS MUST BE hours=24, NOT days=7
         "Last Week": timedelta(days=7),
         "Last Month": timedelta(days=30),
+        "This Year": timedelta(days=365),
+        # Legacy values (for backward compatibility)
+        "Last 24 hours": timedelta(hours=24),
         "Last Year": timedelta(days=365),
         "Today": timedelta(hours=24),
         "Yesterday": timedelta(days=1),
@@ -44,16 +50,22 @@ def parse_time_filter(time_filter: str) -> Optional[datetime]:
     
     # Try exact match first
     if time_filter in time_mappings:
-        return now - time_mappings[time_filter]
+        time_threshold = now - time_mappings[time_filter]
+        logger.info(f"⏰ Time filter matched: '{time_filter}' -> {time_mappings[time_filter]}, threshold: {time_threshold.isoformat()}")
+        return time_threshold
     
     # Try case-insensitive match
     for key, delta in time_mappings.items():
         if time_filter.lower() == key.lower():
-            return now - delta
+            time_threshold = now - delta
+            logger.info(f"⏰ Time filter matched (case-insensitive): '{time_filter}' -> {delta}, threshold: {time_threshold.isoformat()}")
+            return time_threshold
     
     # Default fallback with logging
     logger.warning(f"⚠️ Unknown time filter '{time_filter}', defaulting to Last Week")
-    return now - timedelta(days=7)
+    time_threshold = now - timedelta(days=7)
+    logger.info(f"⏰ Using default threshold: {time_threshold.isoformat()}")
+    return time_threshold
 
 
 def validate_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
