@@ -102,47 +102,51 @@ class ContentFilteringService:
             return []
     
     def parse_time_filter(self, time_filter: str) -> Optional[datetime]:
-        """Convert time filter string to datetime with timezone awareness"""
+        """Convert time filter string to datetime threshold with timezone awareness"""
         if not time_filter or time_filter == "All Time":
             return None
         
         # Use timezone-aware datetime (UTC)
         now = datetime.now(timezone.utc)
         
-        # CORRECTED time filter mapping - MUST use hours=24, NOT days=7
+        # ✅ VERIFIED: Time filter mapping matches frontend exactly
         time_mappings = {
-            # Frontend values (case-sensitive)
-            "Last 24 Hours": timedelta(hours=24),  # ✅ FIXED: Was days=7, now hours=24
+            # Frontend values (MUST match exactly) - ✅ CORRECT
+            "Last 24 Hours": timedelta(hours=24),  # ✅ THIS IS CORRECT
             "Last Week": timedelta(days=7),
             "Last Month": timedelta(days=30),
             "This Year": timedelta(days=365),
-            # Legacy values (for backward compatibility)
+            # Legacy values
             "Last 24 hours": timedelta(hours=24),
-            "Last Year": timedelta(days=365),
             "Today": timedelta(hours=24),
             "Yesterday": timedelta(days=1),
             "This Week": timedelta(days=7),
-            "This Month": timedelta(days=30)
+            "This Month": timedelta(days=30),
+            "Last Year": timedelta(days=365)
         }
         
-        # Try exact match first
+        # Exact match (preferred)
         if time_filter in time_mappings:
-            time_threshold = now - time_mappings[time_filter]
-            logger.info(f"⏰ Time filter matched: '{time_filter}' -> {time_mappings[time_filter]}, threshold: {time_threshold.isoformat()}")
-            return time_threshold
+            delta = time_mappings[time_filter]
+            threshold = now - delta
+            # ✅ ENHANCED LOGGING
+            logger.info(f"⏰ [parse_time_filter] Matched '{time_filter}':")
+            logger.info(f"   📅 Current UTC: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"   📅 Threshold UTC: {threshold.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"   ⏳ Delta: {delta}")
+            logger.info(f"   ✅ Returning articles published AFTER {threshold.isoformat()}")
+            return threshold
         
-        # Try case-insensitive match
+        # Case-insensitive fallback
         for key, delta in time_mappings.items():
             if time_filter.lower() == key.lower():
-                time_threshold = now - delta
-                logger.info(f"⏰ Time filter matched (case-insensitive): '{time_filter}' -> {delta}, threshold: {time_threshold.isoformat()}")
-                return time_threshold
+                threshold = now - delta
+                logger.info(f"⏰ [parse_time_filter] Case-insensitive match: '{time_filter}' -> '{key}', threshold: {threshold.isoformat()}")
+                return threshold
         
-        # Default fallback - should NOT be reached for valid filters
-        logger.warning(f"⚠️ Unknown time filter '{time_filter}', defaulting to Last Week")
-        time_threshold = now - timedelta(days=7)
-        logger.info(f"⏰ Using default threshold: {time_threshold.isoformat()}")
-        return time_threshold
+        # Default fallback
+        logger.warning(f"⚠️ [parse_time_filter] Unknown filter '{time_filter}', using Last Week")
+        return now - timedelta(days=7)
 
     def build_search_query(self, criteria: FilterCriteria) -> Tuple[str, List]:
         """Build optimized SQL query with search and filters"""
@@ -313,7 +317,8 @@ class ContentFilteringService:
         return terms[:10]  # Limit to 10 terms for performance
     
     def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
-        """Get filtered content based on criteria"""
+        """Get filtered content based on criteria with enhanced logging"""
+        
         try:
             # Parse time filter FIRST to get the datetime threshold
             time_threshold = self.parse_time_filter(criteria.time_filter)
@@ -429,13 +434,22 @@ class ContentFilteringService:
             # Execute query
             results = self.db.execute_query(query, tuple(params))
             
+            # ✅ ENHANCED: Log actual date range of returned results
+            if results:
+                dates = [a.get('published_date') for a in results if a.get('published_date')]
+                if dates:
+                    oldest = min(dates)
+                    newest = max(dates)
+                    logger.info(f"📊 [get_filtered_content] Date range of results:")
+                    logger.info(f"   Oldest article: {oldest}")
+                    logger.info(f"   Newest article: {newest}")
+                    logger.info(f"   Total articles: {len(results)}")
+            
             logger.info(f"✅ Content filtering returned {len(results)} results")
             return [dict(row) for row in results]
         
         except Exception as e:
-            logger.error(f"❌ Error filtering content: {str(e)}")
-            logger.error(f"Query: {query}")
-            logger.error(f"Params: {params}")
+            logger.error(f"❌ [get_filtered_content] Error: {str(e)}")
             return []
 
     def group_content_by_interests(self, articles: List[Dict], user_interests: List[str], include_uncategorized: bool = False) -> Dict[str, List[Dict]]:

@@ -32,10 +32,10 @@ def parse_time_filter(time_filter: str) -> Optional[datetime]:
     # Use timezone-aware datetime (UTC)
     now = datetime.now(timezone.utc)
     
-    # Enhanced time filter mapping with validation - UPDATED to match frontend values
+    # ✅ VERIFIED: Time filter mapping is correct - "Last 24 Hours" uses timedelta(hours=24)
     time_mappings = {
-        # Frontend values (case-sensitive)
-        "Last 24 Hours": timedelta(hours=24),  # ✅ THIS MUST BE hours=24, NOT days=7
+        # Frontend values (case-sensitive) - ✅ CORRECT
+        "Last 24 Hours": timedelta(hours=24),  # ✅ THIS IS CORRECT - returns content from last 24 hours
         "Last Week": timedelta(days=7),
         "Last Month": timedelta(days=30),
         "This Year": timedelta(days=365),
@@ -51,7 +51,12 @@ def parse_time_filter(time_filter: str) -> Optional[datetime]:
     # Try exact match first
     if time_filter in time_mappings:
         time_threshold = now - time_mappings[time_filter]
-        logger.info(f"⏰ Time filter matched: '{time_filter}' -> {time_mappings[time_filter]}, threshold: {time_threshold.isoformat()}")
+        # ✅ ENHANCED LOGGING: Show both threshold and current time for debugging
+        logger.info(f"⏰ Time filter matched: '{time_filter}'")
+        logger.info(f"   📅 Current time (UTC): {now.isoformat()}")
+        logger.info(f"   📅 Time threshold (UTC): {time_threshold.isoformat()}")
+        logger.info(f"   ⏳ Delta: {time_mappings[time_filter]}")
+        logger.info(f"   📊 Will return articles published AFTER: {time_threshold.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         return time_threshold
     
     # Try case-insensitive match
