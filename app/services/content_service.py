@@ -480,6 +480,7 @@ class ContentService:
     def get_content_counts(self, category_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Get content counts by category and content type
+        Returns ALL TIME counts (not time-filtered)
         
         Args:
             category_id: Category ID/name, 'all' for all categories, or None for all
@@ -493,7 +494,7 @@ class ContentService:
             if self.DEBUG:
                 logger.debug(f"🔍 Getting content counts for category: {category_id}")
             
-            # Base query for counting articles by content type and category
+            # ✅ FIXED: Query ALL articles without time filter for total counts
             base_query = """
                 SELECT 
                     c.name as category_name,
@@ -505,7 +506,7 @@ class ContentService:
                 LEFT JOIN content_types ct ON a.content_type_id = ct.id
             """
             
-            # Add category filter if specified
+            # Add category filter if specified (but NO time filter)
             if category_id and category_id != 'all':
                 # Try to match by name or ID
                 base_query += " WHERE (c.name ILIKE %s OR c.id::text = %s)"
@@ -515,7 +516,7 @@ class ContentService:
             
             base_query += " GROUP BY c.id, c.name, ct.id, ct.name ORDER BY c.name, ct.name"
             
-            results = db.execute_query(base_query, params)
+            results = db.execute_query(base_query, params if params else None)
             
             # Initialize totals
             total_articles = 0
@@ -526,37 +527,37 @@ class ContentService:
             # Process results
             for row in results:
                 category_name = row['category_name']
-                content_type = row['content_type'] or 'article'  # Default to article if None
+                content_type = row['content_type'] or 'blogs'  # Default to blogs if None
                 count = row['count'] or 0
                 
                 # Initialize category if not exists
                 if category_name not in by_category:
                     by_category[category_name] = {
                         'category_id': row['category_id'],
-                        'articles': 0,
+                        'blogs': 0,
                         'podcasts': 0,
                         'videos': 0,
                         'total': 0
                     }
                 
                 # Map content types and add to totals
-                if content_type.lower() in ['article', 'blog', 'news']:
-                    by_category[category_name]['articles'] += count
+                if content_type.lower() in ['blogs', 'blog', 'article', 'articles', 'news', 'post', 'posts']:
+                    by_category[category_name]['blogs'] += count
                     total_articles += count
-                elif content_type.lower() in ['podcast', 'audio']:
+                elif content_type.lower() in ['podcasts', 'podcast', 'audio', 'sound']:
                     by_category[category_name]['podcasts'] += count
                     total_podcasts += count
-                elif content_type.lower() in ['video', 'youtube']:
+                elif content_type.lower() in ['videos', 'video', 'youtube', 'vimeo']:
                     by_category[category_name]['videos'] += count
                     total_videos += count
                 else:
-                    # Default unknown types to articles
-                    by_category[category_name]['articles'] += count
+                    # Default unknown types to blogs
+                    by_category[category_name]['blogs'] += count
                     total_articles += count
                 
                 by_category[category_name]['total'] += count
-            
-            # Get overall totals if not category-specific
+        
+            # ✅ FIXED: Get overall totals for ALL articles (no time filter)
             if not category_id or category_id == 'all':
                 total_query = """
                     SELECT 
@@ -575,32 +576,34 @@ class ContentService:
                 total_videos = 0
                 
                 for row in total_results:
-                    content_type = row['content_type'] or 'article'
+                    content_type = row['content_type'] or 'blogs'
                     count = row['count'] or 0
                     
-                    if content_type.lower() in ['article', 'blog', 'news']:
+                    if content_type.lower() in ['blogs', 'blog', 'article', 'articles', 'news', 'post', 'posts']:
                         total_articles += count
-                    elif content_type.lower() in ['podcast', 'audio']:
+                    elif content_type.lower() in ['podcasts', 'podcast', 'audio', 'sound']:
                         total_podcasts += count
-                    elif content_type.lower() in ['video', 'youtube']:
+                    elif content_type.lower() in ['videos', 'video', 'youtube', 'vimeo']:
                         total_videos += count
                     else:
                         total_articles += count  # Default to articles
             
             response = {
-                'total_articles': total_articles,
+                'total_blogs': total_articles,
+                'total_articles': total_articles,  # Alias for backward compatibility
                 'total_podcasts': total_podcasts,
                 'total_videos': total_videos,
                 'total_all': total_articles + total_podcasts + total_videos,
                 'by_category': by_category,
                 'category_filter': category_id,
+                'time_filter': 'all_time',  # ✅ NEW: Indicate this is all-time count
                 'database': 'postgresql'
             }
             
             if self.DEBUG:
                 logger.debug(f"🔍 Content counts response: {response}")
             
-            logger.info(f"✅ Content counts retrieved - Total: {response['total_all']} (A:{total_articles}, P:{total_podcasts}, V:{total_videos})")
+            logger.info(f"✅ Content counts retrieved - Total: {response['total_all']} (Blogs:{total_articles}, Podcasts:{total_podcasts}, Videos:{total_videos}) [ALL TIME]")
             
             return response
             
@@ -611,12 +614,14 @@ class ContentService:
             
             # Return fallback counts
             return {
+                'total_blogs': 0,
                 'total_articles': 0,
                 'total_podcasts': 0,
                 'total_videos': 0,
                 'total_all': 0,
                 'by_category': {},
                 'category_filter': category_id,
+                'time_filter': 'all_time',
                 'error': str(e),
                 'database': 'postgresql'
             }

@@ -210,36 +210,27 @@ async def get_content_types(
 
 @router.get("/content-counts")
 async def get_content_counts(
-    category_id: Optional[str] = Query(None, description="Category ID or 'all' for all categories"),
-    content_service: ContentService = Depends(get_content_service)
+    category_id: str = Query("all", description="Category ID or 'all' for all categories")
 ):
     """
     Get content counts by category and content type
-    Endpoint: GET /content-counts?category_id=all or /content-counts?category_id=category_name
-    Returns: {
-        'total_articles': int,
-        'total_podcasts': int, 
-        'total_videos': int,
-        'by_category': {...}
-    }
+    Returns total counts for ALL TIME (not time-filtered)
     """
     try:
-        logger.info(f"📊 Content counts requested for category: {category_id or 'all'}")
+        logger.info(f"📊 Content counts requested for category: {category_id}")
         
+        # Get counts from content service WITHOUT time filtering
+        content_service = ContentService()
         counts = content_service.get_content_counts(category_id)
         
         logger.info(f"✅ Content counts retrieved successfully")
         return counts
         
     except Exception as e:
-        logger.error(f"❌ Content counts endpoint failed: {str(e)}")
+        logger.error(f"❌ Failed to get content counts: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail={
-                'error': 'Failed to get content counts',
-                'message': str(e),
-                'database': 'postgresql'
-            }
+            detail=f"Failed to get content counts: {str(e)}"
         )
 
 
