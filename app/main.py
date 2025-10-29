@@ -4,12 +4,14 @@ Main FastAPI application for AI News Scraper
 Modular architecture with PostgreSQL-only backend
 Maintains exact API compatibility with existing frontend
 """
-
 import os
+import sys
 import logging
+import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 # Import modular routers
 from app.routers import health, auth, content
@@ -224,7 +226,6 @@ async def get_archive():
 
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

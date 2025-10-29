@@ -140,8 +140,11 @@ class PostgreSQLService:
         """Get all AI sources for scraping"""
         try:
             query = """
-                SELECT s.id, s.publisher_id, s.name, s.rss_url, s.website, COALESCE(c.name, 'general') as category, s.priority, s.enabled  
-                FROM ai_sources s LEFT JOIN ai_categories_master c ON s.category_id = c.id WHERE s.enabled = TRUE and s.is_active = TRUE
+                SELECT s.id, s.publisher_id, s.name, s.rss_url, s.website, 
+                       COALESCE(c.name, 'general') as category, s.priority, s.enabled  
+                FROM ai_sources s 
+                LEFT JOIN ai_categories_master c ON s.category_id = c.id 
+                WHERE s.enabled = TRUE and s.is_active = TRUE
                 ORDER BY s.priority DESC, s.name
             """
             sources = self.execute_query(query, fetch_all=True)
@@ -160,6 +163,43 @@ class PostgreSQLService:
             
         except Exception as e:
             logger.error(f"❌ Failed to get AI sources: {e}")
+            return []
+    
+    def get_ai_sources_by_frequency(self, scrape_frequency_days: int = 1) -> List[Dict[str, Any]]:
+        """Get AI sources filtered by scrape_frequency_days"""
+        try:
+            logger.info(f"📡 Fetching AI sources with scrape_frequency_days = {scrape_frequency_days}")
+            
+            query = """
+                SELECT 
+                    s.id,
+                    s.name,
+                    s.rss_url,
+                    s.website,
+                    s.category_id,
+                    s.is_active,
+                    s.priority,
+                    s.scrape_frequency_days,
+                    p.id as publisher_id,
+                    p.publisher_name,
+                    c.name as category_name
+                FROM ai_sources s
+                LEFT JOIN publishers_master p ON s.publisher_id = p.id
+                LEFT JOIN ai_categories_master c ON s.category_id = c.id
+                WHERE s.is_active = TRUE 
+                  AND s.scrape_frequency_days = %s
+                  AND (s.rss_url IS NOT NULL OR s.website IS NOT NULL)
+                ORDER BY s.priority ASC, s.name ASC
+            """
+            
+            results = self.execute_query(query, (scrape_frequency_days,))
+            
+            logger.info(f"✅ Found {len(results)} active sources with {scrape_frequency_days}-day frequency")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching sources by frequency: {str(e)}")
             return []
     
     def insert_article(self, article_data: Dict[str, Any]) -> bool:

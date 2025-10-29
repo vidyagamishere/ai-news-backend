@@ -8,7 +8,7 @@ import os
 import sys
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Header
 
 # Add parent directory to path to import scheduler_service
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -415,5 +415,58 @@ async def get_scheduler_status(
                 'message': str(e)
             }
         )
+
+
+@router.post("/scrape")
+async def trigger_scraping(
+    llm_model: str = Query('claude', description="LLM model to use: claude, gemini, or huggingface"),
+    scrape_frequency: int = Query(1, description="Scrape frequency in days: 1 (daily), 7 (weekly), 30 (monthly)"),
+    admin_key: str = Header(None, alias="X-Admin-API-Key")
+):
+    """
+    Trigger admin-initiated scraping with LLM model selection and frequency filtering
+    """
+    # Validate admin authentication
+    ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
+    if not admin_key or admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    logger.info(f"🔧 Admin scraping triggered with model: {llm_model}, frequency: {scrape_frequency} days")
+    
+    # Validate frequency parameter
+    if scrape_frequency not in [1, 7, 30]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid scrape_frequency. Must be 1 (daily), 7 (weekly), or 30 (monthly)"
+        )
+    
+    # Validate LLM model parameter
+    if llm_model not in ['claude', 'gemini', 'huggingface']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid llm_model. Must be 'claude', 'gemini', or 'huggingface'"
+        )
+    
+    try:
+        # Get database service
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        # Initialize scraper and admin interface
+        from crawl4ai_scraper import AdminScrapingInterface
+        admin_interface = AdminScrapingInterface(db)
+        
+        # Run scraping with selected model and frequency
+        result = await admin_interface.initiate_scraping(
+            admin_email="admin@vidyagam.com",
+            llm_model=llm_model,
+            scrape_frequency=scrape_frequency
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Admin scraping failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 

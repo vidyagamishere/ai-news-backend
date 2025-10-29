@@ -7,6 +7,7 @@ Modular FastAPI application with PostgreSQL-only backend for Railway deployment
 import os
 import sys
 import logging
+import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -186,7 +187,6 @@ async def get_sources():
 
 # For Railway deployment
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.getenv("PORT", 8000))
     logger.info(f"🚀 Starting AI News Scraper API (Modular PostgreSQL Railway) on port {port}")
     uvicorn.run(

@@ -33,6 +33,10 @@ class DatabaseAdapter:
         """Get AI sources with proper field mapping"""
         return self.db_service.get_ai_sources()
     
+    def get_ai_sources_by_frequency(self, scrape_frequency_days: int = 1):
+        """Get AI sources filtered by scrape_frequency_days"""
+        return self.db_service.get_ai_sources_by_frequency(scrape_frequency_days)
+    
     def insert_article(self, article_data):
         """Insert article with proper field mapping and defaults"""
         try:

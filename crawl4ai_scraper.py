@@ -5,12 +5,19 @@ Implements the exact scraping process: Crawl4AI -> Claude -> Structured Output
 """
 
 import os
-import tempfile
-import logging
+import sys
 import re
 import json
-import feedparser
+import random
+import asyncio
+import hashlib
+import logging
+import tempfile
 import traceback  # ✅ ADD THIS MISSING IMPORT
+import requests
+import feedparser
+import aiohttp
+from bs4 import BeautifulSoup
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
@@ -1655,6 +1662,8 @@ JSON Schema:
     "content_type_label": "Videos|Podcasts|Blogs",
     "significance_score": 1-10,
     "complexity_level": "Low|Medium|High",
+      
+      
        "key_topics": ["topic1", "topic2", "topic3"],
     "topic_category_label": "Generative AI|AI Applications|AI Start Ups|AI Infrastructure|Cloud Computing|Machine Learning|AI Safety and Governance|Robotics|Internet Of Things (IoT)|Quantum AI|Future Technology"
 }}
@@ -2223,18 +2232,14 @@ class AdminScrapingInterface:
         else:
             return 21  # Default: AI News & Updates
         
-    async def initiate_scraping(self, admin_email: str = "admin@vidyagam.com", llm_model: str = 'claude') -> Dict[str, Any]:
+    async def initiate_scraping(self, admin_email: str = "admin@vidyagam.com", llm_model: str = 'claude', scrape_frequency: int = 1) -> Dict[str, Any]:
         """
-        Admin-initiated scraping process as specified:
-        1. Select AI sources from ai_sources table
-        2. Use Crawl4AI to scrape and extract content
-        3. Process with selected LLM (Claude, Gemini, or HuggingFace)
-        4. Store structured output in articles table
-        5. Repeat for all sources
+        Admin-initiated scraping process with frequency filtering:
+        scrape_frequency: 1 (daily), 7 (weekly), 30 (monthly) - filters sources by scrape_frequency_days
         """
-        logger.info(f"🔧 Admin {admin_email} initiated scraping process with LLM: {llm_model}")
+        logger.info(f"🔧 Admin {admin_email} initiated scraping with LLM: {llm_model}, Frequency: {scrape_frequency} days")
         logger.info(f"🤖 EXPLICIT LLM MODEL PARAMETER RECEIVED: '{llm_model}'")
-        logger.info(f"📰 RSS Feed Parsing Mode: Extracting individual article URLs from RSS feeds")
+        logger.info(f"⏰ SCRAPE FREQUENCY FILTER: {scrape_frequency} days")
         
         # Validate LLM model selection and API keys
         if llm_model == 'gemini':
@@ -2272,32 +2277,56 @@ class AdminScrapingInterface:
             llm_model = 'claude'
 
         try:
-            # Step 1: Select AI sources from ai_sources table
-            sources = self.db_service.get_ai_sources()
+            # Step 1: Select AI sources from ai_sources table FILTERED BY scrape_frequency_days
+            sources = self.db_service.get_ai_sources_by_frequency(scrape_frequency)
             if not sources:
-                return {
-                    "success": False,
-                    "message": "No AI sources found in database",
-                    "articles_processed": 0
-                }
+                logger.warning(f"⚠️ No AI sources found with scrape_frequency_days = {scrape_frequency}")
+                
+                # Try to get total count of sources to provide helpful message
+                all_sources = self.db_service.get_ai_sources()
+                if all_sources:
+                    frequency_counts = {}
+                    for source in all_sources:
+                        freq = source.get('scrape_frequency_days', 1)
+                        frequency_counts[freq] = frequency_counts.get(freq, 0) + 1
+                    
+                    available_frequencies = ', '.join([f"{count} sources with {freq}-day frequency" for freq, count in sorted(frequency_counts.items())])
+                    
+                    return {
+                        "success": False,
+                        "message": f"No sources configured for {scrape_frequency}-day frequency. Available: {available_frequencies}",
+                        "articles_processed": 0,
+                        "scrape_frequency_days": scrape_frequency,
+                        "available_frequencies": frequency_counts
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"No active sources found in database. Please add sources in admin panel.",
+                        "articles_processed": 0,
+                        "scrape_frequency_days": scrape_frequency
+                    }
             
-            logger.info(f"📡 Found {len(sources)} AI sources to scrape")
+            logger.info(f"📡 Found {len(sources)} AI sources with {scrape_frequency}-day scrape frequency")
             
             # Step 2: Parse RSS feeds and extract article URLs with publisher_id mapping
-            all_article_data = []  # Changed to store URL with publisher_id
-            domain_to_publisher_mapping = {}  # Map domains to publisher_id for robust lookup
-            rss_source_to_publisher_mapping = {}  # Map RSS sources to publisher_id
+            all_article_data = []
+            domain_to_publisher_mapping = {}
+            rss_source_to_publisher_mapping = {}
             
             for source in sources:
                 rss_url = source.get('rss_url')
                 website = source.get('website')
                 source_name = source.get('name', 'Unknown')
-                publisher_id = source.get('publisher_id')  # Get publisher_id from source
-                source_category = source.get('category', 'general')  # Get category from source for fallback
+                publisher_id = source.get('publisher_id')
+                source_category = source.get('category', 'general')
+                source_frequency = source.get('scrape_frequency_days', 1)
+                
+                logger.info(f"📰 Processing source: {source_name} (Frequency: {source_frequency} days)")
                 
                 if rss_url:
                     # Parse RSS feed to get individual article URLs
-                    logger.info(f"📰 RSS FEED MODE for {source_name}: {rss_url} (publisher_id: {publisher_id}, category: {source_category})")
+                    logger.info(f"📰 RSS FEED MODE for {source_name}: {rss_url} (publisher_id: {publisher_id}, category: {source_category}, frequency: {source_frequency}d)")
                     article_urls = await self.scraper.parse_rss_feed(rss_url, max_articles=3)
                     logger.info(f"✅ Extracted {len(article_urls)} articles from RSS feed for {source_name}")
                     
@@ -2316,9 +2345,10 @@ class AdminScrapingInterface:
                         all_article_data.append({
                             'url': url, 
                             'publisher_id': publisher_id,
-                            'source_category': source_category,  # RSS source category for fallback
-                            'source_rss_url': rss_url,  # Keep track of source RSS
-                            'source_name': source_name
+                            'source_category': source_category,
+                            'source_rss_url': rss_url,
+                            'source_name': source_name,
+                            'scrape_frequency_days': source_frequency  # Add frequency to article data
                         })
                         
                         # Also map article domain to same publisher_id
@@ -2334,8 +2364,9 @@ class AdminScrapingInterface:
                     all_article_data.append({
                         'url': website, 
                         'publisher_id': publisher_id,
-                        'source_category': source_category,  # RSS source category for fallback
-                        'source_name': source_name
+                        'source_category': source_category,
+                        'source_name': source_name,
+                        'scrape_frequency_days': source_frequency
                     })
                     
                     # Map website domain to publisher_id
@@ -2347,11 +2378,9 @@ class AdminScrapingInterface:
                 else:
                     logger.warning(f"⚠️ No RSS or website URL for {source_name}")
                 
-            logger.info(f"📡 Total article URLs collected: {len(all_article_data)}")
-            logger.info(f"🗺️ Domain to publisher_id mapping created with {len(domain_to_publisher_mapping)} entries")
-            logger.info(f"🔗 RSS source mappings: {len(rss_source_to_publisher_mapping)} RSS feeds mapped")
+            logger.info(f"📡 Total article URLs collected from {scrape_frequency}-day sources: {len(all_article_data)}")
             
-            # Step 3-4: Scrape individual articles with Crawl4AI + selected LLM, passing publisher_id
+            # Step 3-4: Scrape individual articles with Crawl4AI + selected LLM
             logger.info(f"🤖 Starting LLM processing ({llm_model}) for {len(all_article_data)} articles...")
             logger.info(f"🔍 CONFIRMING LLM MODEL BEFORE SCRAPING: '{llm_model}'")
             
@@ -2449,10 +2478,11 @@ class AdminScrapingInterface:
             
             return {
                 "success": True,
-                "message": f"Scraping completed successfully",
+                "message": f"Scraping completed successfully for {scrape_frequency}-day frequency sources",
                 "sources_scraped": len(sources),
                 "articles_found": len(articles),
                 "articles_processed": articles_inserted,
+                "scrape_frequency_days": scrape_frequency,
                 "initiated_by": admin_email,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
@@ -2462,5 +2492,6 @@ class AdminScrapingInterface:
             return {
                 "success": False,
                 "message": f"Scraping failed: {str(e)}",
-                "articles_processed": 0
+                "articles_processed": 0,
+                "scrape_frequency_days": scrape_frequency
             }
