@@ -477,24 +477,46 @@ class ContentService:
             'scraping_mode': 'fallback_mock'
         }
     
-    def get_content_counts(self, category_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_content_counts(self, category_id: Optional[str] = None, time_filter: str = "All Time") -> Dict[str, Any]:
         """
-        Get content counts by category and content type
-        Returns ALL TIME counts (not time-filtered)
+        Get content counts by category and content type with TIME FILTERING support
         
         Args:
             category_id: Category ID/name, 'all' for all categories, or None for all
+            time_filter: Time filter string like 'Last Week', 'Last Month', 'All Time'
             
         Returns:
-            Dict with total counts and counts by category
+            Dict with total counts and counts by category (filtered by time)
         """
         try:
+            from datetime import datetime, timedelta, timezone
+            
             db = get_database_service()
             
             if self.DEBUG:
-                logger.debug(f"🔍 Getting content counts for category: {category_id}")
+                logger.debug(f"🔍 Getting content counts for category: {category_id}, time_filter: {time_filter}")
             
-            # ✅ FIXED: Query ALL articles without time filter for total counts
+            # ✅ NEW: Parse time filter to get threshold
+            time_threshold = None
+            if time_filter and time_filter != "All Time":
+                now = datetime.now(timezone.utc)
+                time_mappings = {
+                    "Last 24 Hours": timedelta(hours=24),
+                    "Last Week": timedelta(days=7),
+                    "Last Month": timedelta(days=30),
+                    "This Year": timedelta(days=365)
+                }
+                
+                if time_filter in time_mappings:
+                    time_threshold = now - time_mappings[time_filter]
+                    # Convert to naive datetime for database compatibility
+                    if time_threshold and time_threshold.tzinfo:
+                        time_threshold = time_threshold.replace(tzinfo=None)
+                    logger.info(f"📅 Applying time filter: {time_filter} (threshold: {time_threshold.isoformat()})")
+                else:
+                    logger.warning(f"⚠️ Unknown time filter '{time_filter}', using all-time counts")
+            
+            # ✅ UPDATED: Query with time filter support
             base_query = """
                 SELECT 
                     c.name as category_name,
@@ -506,17 +528,26 @@ class ContentService:
                 LEFT JOIN content_types ct ON a.content_type_id = ct.id
             """
             
-            # Add category filter if specified (but NO time filter)
+            params = []
+            where_clauses = []
+            
+            # Add time filter to WHERE clause if provided
+            if time_threshold:
+                where_clauses.append("a.published_date >= %s")
+                params.append(time_threshold)
+            
+            # Add category filter if specified
             if category_id and category_id != 'all':
-                # Try to match by name or ID
-                base_query += " WHERE (c.name ILIKE %s OR c.id::text = %s)"
-                params = [f"%{category_id}%", str(category_id)]
-            else:
-                params = []
+                where_clauses.append("(c.name ILIKE %s OR c.id::text = %s)")
+                params.extend([f"%{category_id}%", str(category_id)])
+            
+            # Add WHERE clause if we have filters
+            if where_clauses:
+                base_query += " WHERE " + " AND ".join(where_clauses)
             
             base_query += " GROUP BY c.id, c.name, ct.id, ct.name ORDER BY c.name, ct.name"
             
-            results = db.execute_query(base_query, params if params else None)
+            results = db.execute_query(base_query, tuple(params) if params else None)
             
             # Initialize totals
             total_articles = 0
@@ -527,7 +558,7 @@ class ContentService:
             # Process results
             for row in results:
                 category_name = row['category_name']
-                content_type = row['content_type'] or 'blogs'  # Default to blogs if None
+                content_type = row['content_type'] or 'blogs'
                 count = row['count'] or 0
                 
                 # Initialize category if not exists
@@ -551,13 +582,12 @@ class ContentService:
                     by_category[category_name]['videos'] += count
                     total_videos += count
                 else:
-                    # Default unknown types to blogs
                     by_category[category_name]['blogs'] += count
                     total_articles += count
                 
                 by_category[category_name]['total'] += count
         
-            # ✅ FIXED: Get overall totals for ALL articles (no time filter)
+            # ✅ UPDATED: Get overall totals with time filter
             if not category_id or category_id == 'all':
                 total_query = """
                     SELECT 
@@ -565,10 +595,16 @@ class ContentService:
                         COUNT(a.id) as count
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
-                    GROUP BY ct.id, ct.name
                 """
                 
-                total_results = db.execute_query(total_query)
+                total_params = []
+                if time_threshold:
+                    total_query += " WHERE a.published_date >= %s"
+                    total_params.append(time_threshold)
+                
+                total_query += " GROUP BY ct.id, ct.name"
+                
+                total_results = db.execute_query(total_query, tuple(total_params) if total_params else None)
                 
                 # Reset totals to get accurate counts
                 total_articles = 0
@@ -586,24 +622,25 @@ class ContentService:
                     elif content_type.lower() in ['videos', 'video', 'youtube', 'vimeo']:
                         total_videos += count
                     else:
-                        total_articles += count  # Default to articles
+                        total_articles += count
             
             response = {
                 'total_blogs': total_articles,
-                'total_articles': total_articles,  # Alias for backward compatibility
+                'total_articles': total_articles,
                 'total_podcasts': total_podcasts,
                 'total_videos': total_videos,
                 'total_all': total_articles + total_podcasts + total_videos,
                 'by_category': by_category,
                 'category_filter': category_id,
-                'time_filter': 'all_time',  # ✅ NEW: Indicate this is all-time count
+                'time_filter': time_filter,
+                'time_threshold': time_threshold.isoformat() if time_threshold else None,
                 'database': 'postgresql'
             }
             
             if self.DEBUG:
                 logger.debug(f"🔍 Content counts response: {response}")
             
-            logger.info(f"✅ Content counts retrieved - Total: {response['total_all']} (Blogs:{total_articles}, Podcasts:{total_podcasts}, Videos:{total_videos}) [ALL TIME]")
+            logger.info(f"✅ Content counts retrieved for {time_filter} - Total: {response['total_all']} (Blogs:{total_articles}, Podcasts:{total_podcasts}, Videos:{total_videos})")
             
             return response
             
@@ -621,7 +658,7 @@ class ContentService:
                 'total_all': 0,
                 'by_category': {},
                 'category_filter': category_id,
-                'time_filter': 'all_time',
+                'time_filter': time_filter,
                 'error': str(e),
                 'database': 'postgresql'
             }

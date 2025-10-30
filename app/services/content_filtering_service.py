@@ -317,17 +317,26 @@ class ContentFilteringService:
         return terms[:10]  # Limit to 10 terms for performance
     
     def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
-        """Get filtered content based on criteria with enhanced logging"""
-        
+        """Get filtered content based on criteria with MANDATORY time filtering"""
         try:
-            # Parse time filter FIRST to get the datetime threshold
-            time_threshold = self.parse_time_filter(criteria.time_filter)
+            # ✅ CRITICAL FIX: Parse time filter FIRST
+            time_threshold = self.parse_time_filter(criteria.time_filter) if criteria.time_filter else None
             
-            # Log the threshold being used
+            # ✅ FIX: Convert timezone-aware datetime to naive datetime for database comparison
+            if time_threshold and time_threshold.tzinfo:
+                # Remove timezone info but keep the UTC time value
+                time_threshold_naive = time_threshold.replace(tzinfo=None)
+                logger.info(f"🔧 Converted timezone-aware threshold to naive: {time_threshold_naive.isoformat()}")
+                time_threshold = time_threshold_naive
+            
+            # ✅ ENHANCED LOGGING
+            logger.info(f"🔍 FILTERING CONTENT:")
+            logger.info(f"   📅 Time filter: '{criteria.time_filter}'")
             if time_threshold:
-                logger.info(f"⏰ Using time threshold: {time_threshold.isoformat()} for filter '{criteria.time_filter}'")
+                logger.info(f"   📅 Time threshold (naive UTC): {time_threshold.isoformat()}")
+                logger.info(f"   📊 SQL will filter: published_date >= '{time_threshold.isoformat()}'")
             else:
-                logger.info(f"⏰ No time filter applied (showing all time)")
+                logger.info(f"   📊 No time filter - returning ALL articles (not recommended)")
             
             # Build base query
             query = """
@@ -335,121 +344,124 @@ class ContentFilteringService:
                     a.id,
                     a.title,
                     a.summary,
+                    a.content_hash,
                     a.url,
                     a.source,
+                    a.author,
                     a.published_date,
                     a.scraped_date,
                     a.significance_score,
-                    a.reading_time,
-                    a.author,
-                    a.content_hash,
-                    ct.name as content_type_label,
-                    ct.display_name as content_type_display_name,
-                    c.name as category_label,
-                    c.id as category_id,
                     a.complexity_level,
-                    a.keywords
+                    a.reading_time,
+                    a.keywords,
+                    a.content_type_id,
+                    a.category_id,
+                    a.publisher_id,
+                    ct.name as content_type_label,
+                    c.name as category_label,
+                    p.publisher_name as publisher_name
                 FROM articles a
                 LEFT JOIN content_types ct ON a.content_type_id = ct.id
                 LEFT JOIN ai_categories_master c ON a.category_id = c.id
+                LEFT JOIN publishers_master p ON a.publisher_id = p.id
                 WHERE 1=1
             """
             
             params = []
             
-            # CRITICAL: Apply time filter FIRST (most restrictive)
+            # ✅ CRITICAL: Apply time filter FIRST and ALWAYS if provided
             if time_threshold:
                 query += " AND a.published_date >= %s"
                 params.append(time_threshold)
-                logger.info(f"🔍 Time filter applied: published_date >= {time_threshold.isoformat()}")
+                logger.info(f"✅ SQL WHERE clause added: AND a.published_date >= %s (param: {time_threshold.isoformat()})")
             
-            # Apply category filter (ID-based preferred, fallback to name-based)
+            # Apply category filter (ID-based preferred)
             if criteria.category_ids:
                 placeholders = ','.join(['%s'] * len(criteria.category_ids))
-                query += f" AND c.id IN ({placeholders})"
+                query += f" AND a.category_id IN ({placeholders})"
                 params.extend(criteria.category_ids)
-                logger.info(f"🔍 Category ID filter applied: {criteria.category_ids}")
-            elif criteria.interests:
-                placeholders = ','.join(['%s'] * len(criteria.interests))
-                query += f" AND c.name IN ({placeholders})"
-                params.extend(criteria.interests)
-                logger.info(f"🔍 Category name filter applied: {criteria.interests}")
-            
-            # Apply content type filter (ID-based preferred, fallback to name-based)
+                logger.info(f"✅ SQL WHERE clause added: AND a.category_id IN ({criteria.category_ids})")
+        
+            # Apply content type filter (ID-based preferred)
             if criteria.content_type_ids:
                 placeholders = ','.join(['%s'] * len(criteria.content_type_ids))
-                query += f" AND ct.id IN ({placeholders})"
+                query += f" AND a.content_type_id IN ({placeholders})"
                 params.extend(criteria.content_type_ids)
-                logger.info(f"🔍 Content type ID filter applied: {criteria.content_type_ids}")
-            elif criteria.content_types:
-                placeholders = ','.join(['%s'] * len(criteria.content_types))
-                query += f" AND ct.name IN ({placeholders})"
-                params.extend(criteria.content_types)
-                logger.info(f"🔍 Content type name filter applied: {criteria.content_types}")
-            
-            # Apply publisher filter (ID-based preferred, fallback to name-based)
+                logger.info(f"✅ SQL WHERE clause added: AND a.content_type_id IN ({criteria.content_type_ids})")
+        
+            # Apply publisher filter (ID-based preferred)
             if criteria.publisher_ids:
                 placeholders = ','.join(['%s'] * len(criteria.publisher_ids))
                 query += f" AND a.publisher_id IN ({placeholders})"
                 params.extend(criteria.publisher_ids)
-                logger.info(f"🔍 Publisher ID filter applied: {criteria.publisher_ids}")
-            elif criteria.publishers and criteria.publishers != ['all']:
-                # Get publisher IDs from names
-                publisher_names = criteria.publishers
-                publisher_ids_query = f"SELECT id FROM publishers_master WHERE publisher_name IN ({','.join(['%s'] * len(publisher_names))})"
-                publisher_results = self.db.execute_query(publisher_ids_query, tuple(publisher_names))
-                publisher_ids = [pub['id'] for pub in publisher_results]
-                
-                if publisher_ids:
-                    placeholders = ','.join(['%s'] * len(publisher_ids))
-                    query += f" AND a.publisher_id IN ({placeholders})"
-                    params.extend(publisher_ids)
-                    logger.info(f"🔍 Publisher name filter converted to IDs and applied: {publisher_ids}")
-            
+                logger.info(f"✅ SQL WHERE clause added: AND a.publisher_id IN ({criteria.publisher_ids})")
+        
             # Apply search query filter
-            if criteria.search_query:
+            if criteria.search_query and criteria.search_query.strip():
                 search_term = f"%{criteria.search_query.lower()}%"
                 query += """
                     AND (
-                        LOWER(a.title) LIKE %s 
-                        OR LOWER(a.summary) LIKE %s
-                        OR LOWER(c.name) LIKE %s
+                        LOWER(a.title) LIKE %s OR 
+                        LOWER(a.summary) LIKE %s OR
+                        LOWER(c.name) LIKE %s OR
+                        LOWER(p.publisher_name) LIKE %s
                     )
                 """
-                params.extend([search_term, search_term, search_term])
-                logger.info(f"🔍 Search query filter applied: '{criteria.search_query}'")
-            
-            # Order by significance and recency
+                params.extend([search_term, search_term, search_term, search_term])
+                logger.info(f"✅ SQL WHERE clause added: search query '{criteria.search_query}'")
+        
+            # Order by significance and date
             query += " ORDER BY a.significance_score DESC, a.published_date DESC"
-            
+        
             # Apply limit
             if criteria.limit:
                 query += " LIMIT %s"
                 params.append(criteria.limit)
-            
-            # Log final query for debugging
-            logger.info(f"🔍 Final query parameters: {params}")
-            logger.debug(f"🔍 Final SQL query: {query}")
-            
+                logger.info(f"✅ SQL LIMIT added: {criteria.limit}")
+        
+            # ✅ LOG FINAL QUERY
+            logger.info(f"🔍 FINAL SQL QUERY:")
+            logger.info(f"   Query: {query[:200]}...")
+            logger.info(f"   Params: {params}")
+        
             # Execute query
-            results = self.db.execute_query(query, tuple(params))
+            db = get_database_service()
+            results = db.execute_query(query, tuple(params) if params else None)
             
-            # ✅ ENHANCED: Log actual date range of returned results
-            if results:
-                dates = [a.get('published_date') for a in results if a.get('published_date')]
-                if dates:
-                    oldest = min(dates)
-                    newest = max(dates)
-                    logger.info(f"📊 [get_filtered_content] Date range of results:")
-                    logger.info(f"   Oldest article: {oldest}")
-                    logger.info(f"   Newest article: {newest}")
-                    logger.info(f"   Total articles: {len(results)}")
+            logger.info(f"✅ Query returned {len(results)} articles")
             
-            logger.info(f"✅ Content filtering returned {len(results)} results")
+            # Log sample of returned dates to verify filtering
+            if results and len(results) > 0:
+                sample_dates = [r.get('published_date').isoformat() if r.get('published_date') else 'NULL' for r in results[:5]]
+                logger.info(f"📅 Sample published dates (first 5): {sample_dates}")
+                
+                # ✅ FIX: Compare naive datetimes (remove timezone awareness before comparison)
+                if time_threshold:
+                    outside_filter = []
+                    for r in results:
+                        pub_date = r.get('published_date')
+                        if pub_date:
+                            # Ensure both datetimes are naive for comparison
+                            if hasattr(pub_date, 'tzinfo') and pub_date.tzinfo:
+                                pub_date_naive = pub_date.replace(tzinfo=None)
+                            else:
+                                pub_date_naive = pub_date
+                            
+                            if pub_date_naive < time_threshold:
+                                outside_filter.append(r)
+                    
+                    if outside_filter:
+                        logger.warning(f"⚠️ FILTER NOT WORKING: {len(outside_filter)} articles are BEFORE threshold!")
+                        logger.warning(f"   Threshold: {time_threshold.isoformat()}")
+                        logger.warning(f"   Sample old dates: {[r.get('published_date').isoformat() if hasattr(r.get('published_date'), 'isoformat') else str(r.get('published_date')) for r in outside_filter[:3]]}")
+                    else:
+                        logger.info(f"✅ Time filter verified: ALL {len(results)} articles are after {time_threshold.isoformat()}")
+        
             return [dict(row) for row in results]
         
         except Exception as e:
-            logger.error(f"❌ [get_filtered_content] Error: {str(e)}")
+            logger.error(f"❌ Error filtering content: {str(e)}")
+            logger.error(traceback.format_exc())
             return []
 
     def group_content_by_interests(self, articles: List[Dict], user_interests: List[str], include_uncategorized: bool = False) -> Dict[str, List[Dict]]:

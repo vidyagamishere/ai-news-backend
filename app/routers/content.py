@@ -210,20 +210,21 @@ async def get_content_types(
 
 @router.get("/content-counts")
 async def get_content_counts(
-    category_id: str = Query("all", description="Category ID or 'all' for all categories")
+    category_id: str = Query("all", description="Category ID or 'all' for all categories"),
+    time_filter: str = Query("All Time", description="Time filter: 'Last 24 Hours', 'Last Week', 'Last Month', 'This Year', 'All Time'")
 ):
     """
     Get content counts by category and content type
-    Returns total counts for ALL TIME (not time-filtered)
+    ✅ NOW SUPPORTS TIME FILTERING - returns counts matching the selected time filter
     """
     try:
-        logger.info(f"📊 Content counts requested for category: {category_id}")
+        logger.info(f"📊 Content counts requested for category: {category_id}, time_filter: {time_filter}")
         
-        # Get counts from content service WITHOUT time filtering
+        # Get counts from content service WITH time filtering
         content_service = ContentService()
-        counts = content_service.get_content_counts(category_id)
+        counts = content_service.get_content_counts(category_id, time_filter)
         
-        logger.info(f"✅ Content counts retrieved successfully")
+        logger.info(f"✅ Content counts retrieved successfully for time filter: {time_filter}")
         return counts
         
     except Exception as e:
