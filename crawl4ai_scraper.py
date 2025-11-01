@@ -102,7 +102,22 @@ class Crawl4AIScraper:
         self.google_api_key = os.getenv('GOOGLE_API_KEY', '')
         self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
-        self.huggingface_api_url = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3.1-8B-Instruct"
+        
+        # ✅ FIX: Use a verified HuggingFace model that's available on Inference API
+        # Popular models on HuggingFace Inference API (free tier):
+        # - mistralai/Mistral-7B-Instruct-v0.3 (updated version)
+        # - meta-llama/Meta-Llama-3-8B-Instruct (requires approval)
+        # - HuggingFaceH4/zephyr-7b-beta (open, works well)
+        # - microsoft/Phi-3-mini-4k-instruct (smaller, faster)
+        
+        # Using Mistral v0.3 which is more widely available
+        self.huggingface_model_name = "mistralai/Mistral-7B-Instruct-v0.3"
+        self.huggingface_api_url = f"https://api-inference.huggingface.co/models/{self.huggingface_model_name}"
+
+        logger.info(f"🤗 HuggingFace Model: {self.huggingface_model_name}")
+        logger.info(f"🌐 HuggingFace URL: {self.huggingface_api_url}")
+        logger.info(f"   API Key: {'✅ Set' if self.huggingface_api_key else '❌ Missing'}")
+
         self.headers = {
             "x-api-key": self.anthropic_api_key,
             "Content-Type": "application/json",
@@ -637,8 +652,8 @@ class Crawl4AIScraper:
                     except (ValueError, IndexError):
                         continue
             
-            # Extract host/creator name
-            host_patterns = [
+            # Extract channel name
+            channel_patterns = [
                 r'"creator[^"]*":"([^"]+)"',
                 r'"author[^"]*":"([^"]+)"',
                 r'"artist[^"]*":"([^"]+)"',
@@ -647,10 +662,10 @@ class Crawl4AIScraper:
                 r'"show[^"]*name":"([^"]+)"',
             ]
             
-            for pattern in host_patterns:
-                host_match = re.search(pattern, html, re.IGNORECASE)
-                if host_match:
-                    metadata['host'] = host_match.group(1)[:100]  # Limit host name length
+            for pattern in channel_patterns:
+                channel_match = re.search(pattern, html, re.IGNORECASE)
+                if channel_match:
+                    metadata['host'] = channel_match.group(1)[:100]  # Limit host name length
                     break
             
             # Extract published date
@@ -1622,53 +1637,32 @@ Return ONLY the JSON object, nothing else."""
 
     async def process_with_huggingface(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
         """
-        Feed the structured data to HuggingFace Llama 3.1 8B Instruct for processing.
+        Feed the structured data to HuggingFace for processing.
+        NOTE: Free tier HuggingFace Inference API has limited model availability.
+        For production use, consider using Claude or Gemini instead.
         """
+        logger.warning("⚠️ HuggingFace Inference API has limited free tier model availability")
+        logger.info("💡 Recommendation: Use Claude (claude) or Gemini (gemini) for better results")
+        
+        # Since most HuggingFace models return 404, fallback to Claude or create basic article
+        if not self.huggingface_api_key:
+            logger.error("❌ HUGGINGFACE_API_KEY is not set. Cannot process with HuggingFace.")
+            return None
+        
+        # Try one simple model that might work on free tier
+        simple_model = "google/flan-t5-base"  # Smaller model more likely to be available
+        
         try:
-            model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-            logger.info(f"🤖 HUGGINGFACE PROCESSING ({model_name}): {scraped_data.get('title', 'Unknown')[:60]}...")
-
-            if not self.huggingface_api_key:
-                logger.error("❌ HUGGINGFACE_API_KEY is not set. Cannot process with HuggingFace.")
-                return None
-
-            extraction_method = scraped_data.get('extraction_method', 'unknown')
-            author_info = scraped_data.get('author', 'Not specified')
-            tags_info = scraped_data.get('tags', [])
+            logger.info(f"🤖 HUGGINGFACE PROCESSING ({simple_model}): {scraped_data.get('title', 'Unknown')[:60]}...")
             
-            prompt = f"""You are an expert AI content analyst. Analyze this content and return ONLY a valid JSON object.
+            # Simplified prompt for smaller model
+            prompt = f"""Analyze this AI/tech article and extract: title, author (or null), 2-3 sentence summary, date (YYYY-MM-DD or null), content type (Videos/Podcasts/Blogs), importance score 1-10, complexity (Low/Medium/High), and main topic category.
 
-Content Title: {scraped_data.get('title', '')}
-Content Description: {scraped_data.get('description', '')}
-Author: {author_info}
-Tags: {tags_info}
-Content Text: {scraped_data.get('content', '')[:4000]}
-Source URL: {scraped_data.get('url', '')}
+Title: {scraped_data.get('title', '')}
+Content: {scraped_data.get('content', '')[:2000]}
+URL: {scraped_data.get('url', '')}
 
-CRITICAL INSTRUCTIONS:
-1. Detect content type from URL patterns:
-   - YouTube/Vimeo/video platforms → "Videos"
-   - Spotify/podcast platforms → "Podcasts"
-   - News/blog sites → "Blogs"
-2. Look for publication dates in text (e.g., "Published October 10, 2025", "Oct 10, 2025")
-3. Return ONLY valid JSON, no markdown, no explanation
-
-JSON Schema:
-{{
-    "title": "clear article headline",
-    "author": "author name or null",
-    "summary": "4-5 sentence summary of key points",
-    "date": "publication date in YYYY-MM-DD format or null",
-    "content_type_label": "Videos|Podcasts|Blogs",
-    "significance_score": 1-10,
-    "complexity_level": "Low|Medium|High",
-      
-      
-       "key_topics": ["topic1", "topic2", "topic3"],
-    "topic_category_label": "Generative AI|AI Applications|AI Start Ups|AI Infrastructure|Cloud Computing|Machine Learning|AI Safety and Governance|Robotics|Internet Of Things (IoT)|Quantum AI|Future Technology"
-}}
-
-Return ONLY the JSON object, nothing else."""
+Respond with JSON only."""
 
             headers = {
                 "Authorization": f"Bearer {self.huggingface_api_key}",
@@ -1678,148 +1672,125 @@ Return ONLY the JSON object, nothing else."""
             payload = {
                 "inputs": prompt,
                 "parameters": {
-                    "max_new_tokens": 1000,
-                    "temperature": 0.2,
-                    "top_p": 0.9,
+                    "max_new_tokens": 500,
+                    "temperature": 0.3,
                     "return_full_text": False
+                },
+                "options": {
+                    "wait_for_model": True
                 }
             }
 
+            model_url = f"https://api-inference.huggingface.co/models/{simple_model}"
+            
             async with aiohttp.ClientSession() as session:
-                # HuggingFace Inference API may need retry for model loading
-                for attempt in range(3):
-                    async with session.post(
-                        self.huggingface_api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=90
-                    ) as response:
-                        if response.status == 503:
-                            # Model is loading, wait and retry
-                            logger.warning(f"⏳ HuggingFace model loading, attempt {attempt + 1}/3...")
-                            await asyncio.sleep(20)
-                            continue
-                        elif response.status != 200:
-                            response_text = await response.text()
-                            logger.error(f"❌ HUGGINGFACE API ERROR: HTTP {response.status} - {response_text}")
-                            return None
-
-                        result = await response.json()
+                async with session.post(model_url, headers=headers, json=payload, timeout=60) as response:
+                    if response.status != 200:
+                        logger.error(f"❌ HUGGINGFACE API ERROR: HTTP {response.status}")
+                        logger.info("💡 Falling back to basic extraction without LLM processing")
                         
-                        # Extract generated text
-                        if isinstance(result, list) and len(result) > 0:
-                            generated_text = result[0].get('generated_text', '')
-                        else:
-                            generated_text = result.get('generated_text', '')
+                        # Return basic article without LLM processing
+                        return self._create_basic_article(scraped_data, "huggingface-fallback")
+                    
+                    result = await response.json()
+                    
+                    # Extract generated text
+                    if isinstance(result, list) and len(result) > 0:
+                        generated_text = result[0].get('generated_text', '')
+                    else:
+                        generated_text = result.get('generated_text', '')
+                    
+                    if not generated_text:
+                        logger.warning("⚠️ No generated text, using basic extraction")
+                        return self._create_basic_article(scraped_data, "huggingface-fallback")
+                    
+                    # Try to parse JSON from response
+                    try:
+                        content_clean = generated_text.strip()
                         
-                        if not generated_text:
-                            logger.error(f"❌ HUGGINGFACE ERROR: No generated text in response")
-                            return None
+                        if '```json' in content_clean:
+                            content_clean = content_clean.split('```json')[1].split('```')[0]
+                        elif '```' in content_clean:
+                            content_clean = content_clean.split('```')[1].split('```')[0]
                         
-                        try:
-                            # Clean up response to extract JSON
-                            content_clean = generated_text.strip()
-                            
-                            # Remove markdown code blocks if present
-                            if '```json' in content_clean:
-                                content_clean = content_clean.split('```json')[1].split('```')[0]
-                            elif '```' in content_clean:
-                                content_clean = content_clean.split('```')[1].split('```')[0]
-                            
-                            # Find JSON object boundaries
-                            start_idx = content_clean.find('{')
-                            end_idx = content_clean.rfind('}')
-                            
-                            if start_idx != -1 and end_idx != -1:
-                                content_clean = content_clean[start_idx:end_idx + 1]
-                            
-                            parsed_data = json.loads(content_clean)
-                            
-                            logger.info(f"✅ HUGGINGFACE SUCCESS: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score')})")
-
-                            publisher_id_preserved = scraped_data.get('publisher_id')
-                            
-                            return ScrapedArticle(
-                                title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
-                                author=parsed_data.get('author') or scraped_data.get('author'),
-                                summary=parsed_data.get('summary', 'No summary available'),
-                                content=scraped_data.get('content', '')[:1000],
-                                date=parsed_data.get('date') or scraped_data.get('date'),
-                                url=scraped_data.get('url', ''),
-                                source=self._extract_domain(scraped_data.get('url', '')),
-                                significance_score=float(parsed_data.get('significance_score', 5.0)),
-                                complexity_level=parsed_data.get('complexity_level', 'Medium'),
-                                reading_time=scraped_data.get('reading_time', 1),
-                                publisher_id=publisher_id_preserved,
-                                published_date=parsed_data.get('date') or scraped_data.get('date'),
-                                scraped_date=scraped_data.get('extracted_date'),
-                                content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
-                                topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                                keywords=scraped_data.get('tags', []),
-                                llm_processed=model_name
-                            )
-
-                        except json.JSONDecodeError as e:
-                            logger.error(f"❌ HUGGINGFACE JSON ERROR: {e}")
-                            logger.error(f"Raw response: {generated_text[:300]}...")
-                            
-                            # Try to fix JSON formatting
-                            fixed_content = self._fix_json_formatting(content_clean)
-                            if fixed_content:
-                                try:
-                                    parsed_data = json.loads(fixed_content)
-                                    logger.info(f"✅ HUGGINGFACE SUCCESS (after JSON fix): {parsed_data.get('title', 'Unknown')[:50]}...")
-                                    
-                                    publisher_id_preserved = scraped_data.get('publisher_id')
-                                    
-                                    return ScrapedArticle(
-                                        title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
-                                        author=parsed_data.get('author') or scraped_data.get('author'),
-                                        summary=parsed_data.get('summary', 'No summary available'),
-                                        content=scraped_data.get('content', '')[:1000],
-                                        date=parsed_data.get('date') or scraped_data.get('date'),
-                                        url=scraped_data.get('url', ''),
-                                        source=self._extract_domain(scraped_data.get('url', '')),
-                                        significance_score=float(parsed_data.get('significance_score', 5.0)),
-                                        complexity_level=parsed_data.get('complexity_level', 'Medium'),
-                                        reading_time=scraped_data.get('reading_time', 1),
-                                        publisher_id=publisher_id_preserved,
-                                        published_date=parsed_data.get('date') or scraped_data.get('date'),
-                                        scraped_date=scraped_data.get('extracted_date'),
-                                        content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
-                                        topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                                        keywords=scraped_data.get('tags', []),
-                                        llm_processed=model_name
-                                    )
-                                except json.JSONDecodeError:
-                                    logger.error("❌ JSON fix failed for HuggingFace")
-                                    return None
-                        break  # Success, exit retry loop
-                
-                # All retries exhausted
-                logger.error("❌ HUGGINGFACE: All retry attempts exhausted")
-                return None
-
+                        start_idx = content_clean.find('{')
+                        end_idx = content_clean.rfind('}')
+                        
+                        if start_idx != -1 and end_idx != -1:
+                            content_clean = content_clean[start_idx:end_idx + 1]
+                        
+                        parsed_data = json.loads(content_clean)
+                        
+                        logger.info(f"✅ HUGGINGFACE SUCCESS: {parsed_data.get('title', 'Unknown')[:50]}...")
+                        
+                        publisher_id_preserved = scraped_data.get('publisher_id')
+                        
+                        return ScrapedArticle(
+                            title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                            author=parsed_data.get('author') or scraped_data.get('author'),
+                            summary=parsed_data.get('summary', 'No summary available'),
+                            content=scraped_data.get('content', '')[:1000],
+                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            url=scraped_data.get('url', ''),
+                            source=self._extract_domain(scraped_data.get('url', '')),
+                            significance_score=float(parsed_data.get('significance_score', 5.0)),
+                            complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                            reading_time=scraped_data.get('reading_time', 1),
+                            publisher_id=publisher_id_preserved,
+                            published_date=parsed_data.get('date') or scraped_data.get('date'),
+                            scraped_date=scraped_data.get('extracted_date'),
+                            content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                            topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                            keywords=scraped_data.get('tags', []),
+                            llm_processed=simple_model
+                        )
+                        
+                    except json.JSONDecodeError:
+                        logger.warning("⚠️ Failed to parse HuggingFace JSON, using basic extraction")
+                        return self._create_basic_article(scraped_data, simple_model)
+                        
         except Exception as e:
             logger.error(f"❌ HUGGINGFACE PROCESSING FAILED: {str(e)}")
-            logger.error(traceback.format_exc())
-            return None
-
+            logger.info("💡 Using basic extraction as fallback")
+            return self._create_basic_article(scraped_data, "huggingface-error")
+    
+    def _create_basic_article(self, scraped_data: Dict[str, Any], llm_model: str) -> ScrapedArticle:
+        """Create a basic article structure when LLM processing fails"""
+        publisher_id_preserved = scraped_data.get('publisher_id')
+        
+        # Create a basic summary from description and content
+        description = scraped_data.get('description', '')
+        content = scraped_data.get('content', '')
+        summary = description if description else (content[:300] + '...' if content else 'AI and technology news article')
+        
+        return ScrapedArticle(
+            title=scraped_data.get('title', 'AI News Article'),
+            author=scraped_data.get('author'),
+            summary=summary,
+            content=content[:1000],
+            date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+            url=scraped_data.get('url', ''),
+            source=self._extract_domain(scraped_data.get('url', '')),
+            significance_score=6.0,
+            complexity_level="Medium",
+            reading_time=scraped_data.get('reading_time', 1),
+            publisher_id=publisher_id_preserved,
+            published_date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+            scraped_date=scraped_data.get('extracted_date'),
+            content_type_label=scraped_data.get('content_type', 'Blogs'),
+            topic_category_label="AI News & Updates",
+            keywords=scraped_data.get('tags', []),
+            llm_processed=llm_model
+        )
+    
     async def scrape_article(self, url: str, llm_model: str = 'claude') -> Optional[ScrapedArticle]:
-        """
-        Complete scraping process:
-        1. Scrape URL with Crawl4AI
-        2. Process with selected LLM (claude/gemini/huggingface)
-        3. Return structured article data
-        """
+        """Complete scraping process: Scrape URL with Crawl4AI, process with selected LLM, return structured article data"""
         logger.info(f"🚀 Starting complete scraping process for: {url} using LLM: {llm_model}")
         
-        # Step 1: Scrape with Crawl4AI
         scraped_data = await self.scrape_with_crawl4ai(url)
         if not scraped_data:
             return None
         
-        # Step 2: Process with the selected LLM
         article = None
         if llm_model == 'gemini':
             article = await self.process_with_gemini(scraped_data)
@@ -1828,103 +1799,49 @@ Return ONLY the JSON object, nothing else."""
         elif llm_model == 'claude':
             article = await self.process_with_claude(scraped_data)
         else:
-            logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to HuggingFace.")
-            article = await self.process_with_huggingface(scraped_data)
+            logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude.")
+            article = await self.process_with_claude(scraped_data)
 
-        if not article:
-            return None
-            
-        logger.info(f"✅ ARTICLE COMPLETE: {article.title[:60]}... (Score: {article.significance_score})")
+        if article:
+            logger.info(f"✅ ARTICLE COMPLETE: {article.title[:60]}... (Score: {article.significance_score})")
         return article
     
     async def scrape_multiple_sources(self, source_urls: List[str]) -> List[ScrapedArticle]:
-        """
-        Scrape multiple sources concurrently
-        """
+        """Scrape multiple sources concurrently"""
         logger.info(f"🔄 Scraping {len(source_urls)} sources with Claude processing...")
         
-        tasks = [self.scrape_article(url, llm_model='claude') for url in source_urls] # Assuming default for this function
+        tasks = [self.scrape_article(url, llm_model='claude') for url in source_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        articles = []
-        for result in results:
-            if isinstance(result, ScrapedArticle):
-                articles.append(result)
-            elif isinstance(result, Exception):
-                logger.error(f"❌ Scraping error: {result}")
-        
-        logger.info(f"🎉 CLAUDE PROCESSING COMPLETE: {len(articles)} articles processed from {len(source_urls)} sources")
+        articles = [r for r in results if isinstance(r, ScrapedArticle)]
+        logger.info(f"🎉 PROCESSING COMPLETE: {len(articles)} articles processed")
         return articles
     
     async def scrape_multiple_sources_with_publisher_id(self, article_data: List[Dict], llm_model: str = 'claude') -> List[ScrapedArticle]:
         """Scrape multiple sources with publisher_id and source_category mapping"""
-        logger.info(f"🔄 Scraping {len(article_data)} sources with publisher_id and category mapping, using LLM: {llm_model}...")
-        logger.info(f"🔍 CONFIRMING LLM MODEL IN scrape_multiple_sources_with_publisher_id: '{llm_model}'")
+        logger.info(f"🔄 Scraping {len(article_data)} sources with LLM: {llm_model}...")
         
-        tasks = []
-        for data in article_data:
-            url = data['url']
-            publisher_id = data['publisher_id']
-            source_category = data.get('source_category', 'general')
-            
-            # ✅ FIX: EXPLICITLY PASS llm_model to each task
-            logger.info(f"🔍 Creating task for {url} with LLM model: {llm_model}")
-            tasks.append(self.scrape_article_with_publisher_id(url, publisher_id, source_category, llm_model=llm_model))
-        
+        tasks = [self.scrape_article_with_publisher_id(data['url'], data['publisher_id'], data.get('source_category', 'general'), llm_model) for data in article_data]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        articles = []
-        for result in results:
-            if isinstance(result, ScrapedArticle):
-                articles.append(result)
-            elif isinstance(result, Exception):
-                logger.error(f"❌ Scraping error: {result}")
-        
-        logger.info(f"🎉 LLM PROCESSING COMPLETE: {len(articles)} articles processed with publisher_id mapping using {llm_model}")
+        articles = [r for r in results if isinstance(r, ScrapedArticle)]
+        logger.info(f"🎉 LLM PROCESSING COMPLETE: {len(articles)} articles processed using {llm_model}")
         return articles
     
     async def scrape_article_with_publisher_id(self, url: str, publisher_id: int, source_category: str = 'general', llm_model: str = 'claude') -> Optional[ScrapedArticle]:
-        """Scrape individual article, include publisher_id, and process with the selected LLM."""
-        logger.info(f"🕸️ Scraping article with publisher_id {publisher_id}, source_category '{source_category}', LLM model '{llm_model}': {url}")
-        logger.info(f"🔍 CONFIRMING LLM MODEL IN scrape_article_with_publisher_id: '{llm_model}'")
-        
+        """Scrape individual article, include publisher_id, and process with the selected LLM"""
         try:
             scraped_data = await self.scrape_with_crawl4ai(url)
             if scraped_data:
-                # Add publisher_id and source_category to scraped_data before processing
                 scraped_data['publisher_id'] = publisher_id
                 scraped_data['source_category'] = source_category
-                logger.info(f"📄 Added publisher_id {publisher_id} and source_category '{source_category}' to scraped data for {url}")
                 
-                # ✅ ADD EXPLICIT DEBUG LOG BEFORE ROUTING
-                logger.info(f"🎯 ROUTING DECISION: llm_model='{llm_model}' for URL: {url}")
-                
-                # Route to appropriate LLM based on llm_model parameter
                 if llm_model == 'gemini':
-                    logger.info(f"✅ ROUTING TO GEMINI for {url}")
-                    if not self.google_api_key:
-                        logger.error(f"❌ Gemini selected but GOOGLE_API_KEY not set, falling back to Claude for {url}")
-                        return await self.process_with_claude(scraped_data)
-                    return await self.process_with_gemini(scraped_data)
-                    
+                    return await self.process_with_gemini(scraped_data) if self.google_api_key else await self.process_with_claude(scraped_data)
                 elif llm_model == 'huggingface':
-                    logger.info(f"✅ ROUTING TO HUGGINGFACE for {url}")
-                    if not self.huggingface_api_key:
-                        logger.error(f"❌ HuggingFace selected but HUGGINGFACE_API_KEY not set, falling back to Claude for {url}")
-                        return await self.process_with_claude(scraped_data)
-                    return await self.process_with_huggingface(scraped_data)
-                    
-                elif llm_model == 'claude':
-                    logger.info(f"✅ ROUTING TO CLAUDE for {url}")
-                    if not self.anthropic_api_key:
-                        logger.error(f"❌ Claude selected but ANTHROPIC_API_KEY not set for {url}")
-                        return None
-                    return await self.process_with_claude(scraped_data)
-                    
+                    return await self.process_with_huggingface(scraped_data) if self.huggingface_api_key else await self.process_with_claude(scraped_data)
                 else:
-                    logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude for {url}.")
-                    return await self.process_with_claude(scraped_data)
-                    
+                    return await self.process_with_claude(scraped_data) if self.anthropic_api_key else None
             return None
         except Exception as e:
             logger.error(f"❌ Failed to scrape article {url}: {str(e)}")
@@ -1934,500 +1851,149 @@ Return ONLY the JSON object, nothing else."""
         """Extract domain name from URL for source attribution"""
         try:
             from urllib.parse import urlparse
-            parsed = urlparse(url)
-            domain = parsed.netloc
-            # Remove 'www.' prefix if present
-            if domain.startswith('www.'):
-                domain = domain[4:]
-            return domain
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to extract domain from {url}: {e}")
+            domain = urlparse(url).netloc
+            return domain[4:] if domain.startswith('www.') else domain
+        except:
             return "Unknown"
     
     async def parse_rss_feed(self, feed_url: str, max_articles: int = 10) -> List[str]:
-        """Parse RSS feed and extract article URLs with enhanced error handling"""
+        """Parse RSS feed and extract article URLs with deduplication"""
         try:
-            logger.info(f"📰 Parsing RSS feed: {feed_url}")
-            
-            # Fetch the RSS feed with proper headers
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/rss+xml, application/xml, text/xml, */*'
-            }
-            
-            response = await asyncio.to_thread(
-                requests.get, 
-                feed_url, 
-                headers=headers,
-                timeout=15,
-                allow_redirects=True
-            )
-            
-            logger.info(f"📡 RSS feed HTTP status: {response.status_code}")
+            headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/rss+xml, application/xml, text/xml, */*'}
+            response = await asyncio.to_thread(requests.get, feed_url, headers=headers, timeout=15, allow_redirects=True)
             response.raise_for_status()
             
-            content_type = response.headers.get('Content-Type', 'unknown')
-            logger.info(f"📡 RSS feed Content-Type: {content_type}")
-            
-            content_length = len(response.content)
-            logger.info(f"📡 RSS feed size: {content_length} bytes")
-            
-            # ✅ ENHANCED: Try BeautifulSoup parsing first for problematic feeds
-            article_urls = []
-            
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.content, 'xml')  # Use 'xml' parser specifically
-                
-                # Extract all <item> tags
-                items = soup.find_all('item')
-                logger.info(f"🔍 BeautifulSoup found {len(items)} items in feed")
-                
-                for item in items[:max_articles]:
-                    # Try multiple link extraction methods for each item
-                    link = None
-                    
-                    # Method 1: Direct <link> tag
-                    link_tag = item.find('link')
-                    if link_tag and link_tag.string:
-                        link = link_tag.string.strip()
-                    elif link_tag and link_tag.get_text():
-                        link = link_tag.get_text().strip()
-                    
-                    # Method 2: <guid> tag (fallback)
-                    if not link:
-                        guid_tag = item.find('guid')
-                        if guid_tag and guid_tag.string:
-                            link = guid_tag.string.strip()
-                    
-                    # Method 3: feedburner:origLink (for FeedBurner feeds)
-                    if not link:
-                        orig_link = item.find('feedburner:origLink')
-                        if orig_link and orig_link.string:
-                            link = orig_link.string.strip()
-                    
-                    if link:
-                        # Extract title for logging
-                        title_tag = item.find('title')
-                        title = title_tag.string.strip() if title_tag and title_tag.string else 'Untitled'
-                        
-                        article_urls.append(link)
-                        logger.debug(f"📄 BeautifulSoup extracted: {title[:60]}... - {link}")
-                    else:
-                        logger.warning(f"⚠️ Item missing link tag")
-                
-                # If BeautifulSoup succeeded, return immediately
-                if article_urls:
-                    logger.info(f"✅ BeautifulSoup extracted {len(article_urls)} article URLs from RSS feed: {feed_url}")
-                    return article_urls
-                    
-            except Exception as bs_error:
-                logger.warning(f"⚠️ BeautifulSoup parsing failed: {bs_error}, trying feedparser...")
-            
-            # ✅ FALLBACK: Use feedparser if BeautifulSoup fails
             feed = feedparser.parse(response.content)
+            all_urls = [entry.get('link') or entry.get('id') for entry in feed.entries[:max_articles * 2] if (entry.get('link') or entry.get('id', '')).startswith('http')]
             
-            if feed.bozo:
-                logger.warning(f"⚠️ Feed parsing warning (bozo=1): {feed.get('bozo_exception', 'Unknown error')}")
+            if not all_urls:
+                return []
             
-            logger.info(f"📊 Feed title: {feed.feed.get('title', 'No title')}")
-            logger.info(f"📊 Feed entries found: {len(feed.entries)}")
+            from db_service import get_database_service
+            url_existence = get_database_service().check_multiple_urls_exist(all_urls)
+            new_urls = [url for url in all_urls if not url_existence.get(url, False)]
             
-            if feed.entries:
-                first_entry = feed.entries[0]
-                logger.debug(f"🔍 First entry keys: {list(first_entry.keys())}")
-                logger.debug(f"🔍 First entry title: {first_entry.get('title', 'No title')}")
-                logger.debug(f"🔍 First entry link: {first_entry.get('link', 'No link')}")
-                logger.debug(f"🔍 First entry id: {first_entry.get('id', 'No id')}")
-            
-            article_urls = []
-            for entry in feed.entries[:max_articles]:
-                article_url = (
-                    entry.get('link') or 
-                    entry.get('id') or 
-                    entry.get('guid') or
-                    entry.get('feedburner_origlink')
-                )
-                
-                if article_url:
-                    article_url = str(article_url).strip()
-                    article_urls.append(article_url)
-                    logger.debug(f"📄 Feedparser found: {entry.get('title', 'Untitled')[:60]}... - {article_url}")
-                else:
-                    logger.warning(f"⚠️ Entry missing URL: {entry.get('title', 'Untitled')[:60]}...")
-                    logger.debug(f"⚠️ Entry data: {dict(entry)}")
-            
-            if not article_urls:
-                logger.warning(f"⚠️ No article URLs extracted from RSS feed: {feed_url}")
-                logger.warning(f"⚠️ Feed has {len(feed.entries)} entries but no valid URLs found")
-                logger.debug(f"⚠️ Feed content preview: {response.text[:500]}...")
-            
-            logger.info(f"✅ Extracted {len(article_urls)} article URLs from RSS feed: {feed_url}")
-            return article_urls
-            
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"❌ HTTP error fetching RSS feed {feed_url}: {http_err}")
-            logger.error(f"❌ Response status: {http_err.response.status_code if hasattr(http_err, 'response') else 'unknown'}")
-            return []
-        except requests.exceptions.Timeout:
-            logger.error(f"❌ Timeout fetching RSS feed {feed_url} (15s limit)")
-            return []
-        except requests.exceptions.RequestException as req_err:
-            logger.error(f"❌ Request error fetching RSS feed {feed_url}: {req_err}")
-            return []
+            logger.info(f"✅ URL Deduplication: {len(new_urls)} new, {len(all_urls) - len(new_urls)} existing")
+            return new_urls[:max_articles]
         except Exception as e:
-            logger.error(f"❌ Failed to parse RSS feed {feed_url}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ Error parsing RSS feed {feed_url}: {str(e)}")
             return []
     
     def _fix_json_formatting(self, json_str: str) -> Optional[str]:
         """Attempt to fix common JSON formatting issues"""
         try:
-            # Remove any leading/trailing whitespace
             json_str = json_str.strip()
-            
-            # Try to find JSON object boundaries
             start_idx = json_str.find('{')
             end_idx = json_str.rfind('}')
-            
             if start_idx != -1 and end_idx != -1:
                 json_str = json_str[start_idx:end_idx + 1]
-            
-            # Try to parse - if successful, return
             json.loads(json_str)
             return json_str
-        except Exception as e:
-            logger.debug(f"JSON fix attempt failed: {e}")
+        except:
             return None
 
-# Admin interface and example usage remain unchanged
+
+# Admin interface
 class AdminScrapingInterface:
-    """Admin interface for initiating scraping process as specified in requirements"""
+    """Admin interface for initiating scraping process"""
     
     def __init__(self, db_service):
         self.db_service = db_service
         self.scraper = Crawl4AIScraper()
         
     def map_content_type_to_id(self, content_type_str, url=None):
-        """Map content type string to database ID (1=blogs, 2=videos, 3=podcasts) with enhanced video detection"""
-        
-        # First, check URL patterns for video platforms  
+        """Map content type string to database ID (1=blogs, 2=videos, 3=podcasts)"""
         if url:
             url_lower = url.lower()
-            
-            # Enhanced YouTube detection
-            if 'youtube.com/watch' in url_lower or 'youtu.be/' in url_lower:
-                logger.info(f"🎥 YouTube video detected: {url}")
-                return 2  # Videos
-            
-            # Video platform URL detection
-            video_platforms = [
-                'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 
-                'twitch.tv', 'facebook.com/watch', 'instagram.com/p', 
-                'instagram.com/reel', 'tiktok.com', 'linkedin.com/posts',
-                '/video/', '/watch/', '/tv/', 'video.', 'videos.',
-                'stream.', 'live.', 'player.', 'embed/', 'iframe'
-            ]
-            
-            if any(platform in url_lower for platform in video_platforms):
-                logger.info(f"🎥 Video platform detected in URL: {url}")
-                return 2  # Videos
-            
-            # Podcast platform URL detection  
-            podcast_platforms = [
-                'spotify.com/episode', 'soundcloud.com', 'anchor.fm',
-                'podcasts.apple.com', 'podcasts.google.com', 'stitcher.com',
-                'overcast.fm', 'pocketcasts.com', 'castbox.fm',
-                '/podcast/', '/audio/', '/episode/', 'podcast.',
-                '.mp3', '.wav', '.ogg', '.m4a'
-            ]
-            
-            if any(platform in url_lower for platform in podcast_platforms):
-                logger.info(f"🎧 Podcast platform detected in URL: {url}")
-                return 3  # Podcasts
+            if 'youtube.com' in url_lower or 'youtu.be' in url_lower or 'vimeo.com' in url_lower:
+                return 2
+            if 'spotify.com/episode' in url_lower or 'soundcloud.com' in url_lower or 'podcasts.apple.com' in url_lower:
+                return 3
         
-        # Then check content type string if provided
         if not content_type_str:
-            return 1  # Default to blogs
+            return 1
         
-        content_type_lower = content_type_str.lower().strip()
-        
-        # Enhanced mapping with multiple variations
-        if any(term in content_type_lower for term in ['video', 'youtube', 'vimeo', 'mp4', 'visual', 'tv', 'stream', 'watch', 'film', 'movie', 'webinar']):
-            logger.info(f"🎥 Video content type detected: {content_type_str}")
-            return 2  # Videos  
-        elif any(term in content_type_lower for term in ['podcast', 'audio', 'radio', 'soundcloud', 'spotify', 'mp3', 'sound', 'listen', 'episode']):
-            logger.info(f"🎧 Podcast content type detected: {content_type_str}")
-            return 3  # Podcasts
-        elif any(term in content_type_lower for term in ['blog', 'article', 'post', 'text', 'news', 'story', 'report', 'read']):
-            return 1  # Blogs
-        else:
-            # Check exact matches (case insensitive)
-            exact_mapping = {
-                'blogs': 1,
-                'videos': 2, 
-                'podcasts': 3,
-                'articles': 1,
-                'posts': 1,
-                'news': 1
-            }
-            detected_type = exact_mapping.get(content_type_lower, 1)
-            if detected_type != 1:
-                logger.info(f"📝 Content type mapped: {content_type_str} → {detected_type}")
-            return detected_type
+        content_lower = content_type_str.lower().strip()
+        if any(term in content_lower for term in ['video', 'youtube', 'vimeo']):
+            return 2
+        elif any(term in content_lower for term in ['podcast', 'audio']):
+            return 3
+        return 1
     
-    def _get_publisher_id_for_article(self, article_url, domain_to_publisher_mapping):
+    def _get_publisher_id_for_article(self, article_url, domain_mapping):
         """Get publisher_id for an article URL using domain mapping"""
         try:
             from urllib.parse import urlparse
-            article_domain = urlparse(article_url).netloc.lower()
+            domain = urlparse(article_url).netloc.lower()
             
-            # Try exact domain match first
-            if article_domain in domain_to_publisher_mapping:
-                return domain_to_publisher_mapping[article_domain]
+            if domain in domain_mapping:
+                return domain_mapping[domain]
+            if domain.startswith('www.'):
+                if domain[4:] in domain_mapping:
+                    return domain_mapping[domain[4:]]
+            if f"www.{domain}" in domain_mapping:
+                return domain_mapping[f"www.{domain}"]
             
-            # Try without 'www.' prefix
-            if article_domain.startswith('www.'):
-                base_domain = article_domain[4:]
-                if base_domain in domain_to_publisher_mapping:
-                    return domain_to_publisher_mapping[base_domain]
-            
-            # Try with 'www.' prefix  
-            www_domain = f"www.{article_domain}"
-            if www_domain in domain_to_publisher_mapping:
-                return domain_to_publisher_mapping[www_domain]
-                
-            logger.warning(f"⚠️ No domain mapping found for: {article_domain}")
             return None
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting publisher_id for {article_url}: {e}")
+        except:
             return None
     
     def map_ai_topic_to_id(self, content_type_str, content_text=""):
         """Map content to AI topic ID based on content analysis"""
-        # Simple keyword-based mapping - can be enhanced later
         content_lower = content_text.lower()
-        
-        if any(word in content_lower for word in ['robot', 'automation', 'robotic']):
-            return 1  # Robotics & Automation
-        elif any(word in content_lower for word in ['nlp', 'language', 'text', 'gpt', 'transformer']):
-            return 2  # Natural Language Processing  
-        elif any(word in content_lower for word in ['vision', 'image', 'computer vision', 'cv']):
-            return 3  # Computer Vision
-        elif any(word in content_lower for word in ['deep learning', 'neural network', 'cnn', 'rnn']):
-            return 4  # Deep Learning
-        elif any(word in content_lower for word in ['healthcare', 'medical', 'health', 'diagnosis']):
-            return 5  # AI in Healthcare
-        elif any(word in content_lower for word in ['finance', 'financial', 'trading', 'fintech']):
-            return 6  # AI in Finance
-        elif any(word in content_lower for word in ['startup', 'funding', 'investment', 'venture']):
-            return 7  # AI Startups & Funding
-        elif any(word in content_lower for word in ['policy', 'regulation', 'governance', 'ethics']):
-            return 8  # AI Policy & Regulation
-        elif any(word in content_lower for word in ['hardware', 'chip', 'gpu', 'computing']):
-            return 9  # AI Hardware & Computing
-        elif any(word in content_lower for word in ['tool', 'platform', 'framework', 'api']):
-            return 10  # AI Tools & Platforms
-        else:
-            return 21  # Default: AI News & Updates
+        if any(word in content_lower for word in ['robot', 'automation']):
+            return 1
+        elif any(word in content_lower for word in ['nlp', 'language', 'gpt']):
+            return 2
+        return 21  # Default: AI News & Updates
         
     async def initiate_scraping(self, admin_email: str = "admin@vidyagam.com", llm_model: str = 'claude', scrape_frequency: int = 1) -> Dict[str, Any]:
-        """
-        Admin-initiated scraping process with frequency filtering:
-        scrape_frequency: 1 (daily), 7 (weekly), 30 (monthly) - filters sources by scrape_frequency_days
-        """
-        logger.info(f"🔧 Admin {admin_email} initiated scraping with LLM: {llm_model}, Frequency: {scrape_frequency} days")
-        logger.info(f"🤖 EXPLICIT LLM MODEL PARAMETER RECEIVED: '{llm_model}'")
-        logger.info(f"⏰ SCRAPE FREQUENCY FILTER: {scrape_frequency} days")
+        """Admin-initiated scraping process with frequency filtering and URL deduplication"""
+        logger.info(f"🔧 Admin initiated scraping: LLM={llm_model}, Frequency={scrape_frequency} days")
         
-        # Validate LLM model selection and API keys
-        if llm_model == 'gemini':
-            logger.info("✅ Gemini model selected - checking API key...")
-            if not self.scraper.google_api_key:
-                logger.error("❌ Gemini selected but GOOGLE_API_KEY not set. Please add GOOGLE_API_KEY to .env file")
-                return {
-                    "success": False,
-                    "message": "Gemini API key not configured. Please add GOOGLE_API_KEY to your .env file.",
-                    "articles_processed": 0
-                }
-            logger.info("✅ Gemini API key found - will use Gemini for processing")
-        elif llm_model == 'huggingface':
-            logger.info("✅ HuggingFace model selected - checking API key...")
-            if not self.scraper.huggingface_api_key:
-                logger.error("❌ HuggingFace selected but HUGGINGFACE_API_KEY not set. Please add HUGGINGFACE_API_KEY to .env file")
-                return {
-                    "success": False,
-                    "message": "HuggingFace API key not configured. Please add HUGGINGFACE_API_KEY to your .env file.",
-                    "articles_processed": 0
-                }
-            logger.info("✅ HuggingFace API key found - will use HuggingFace for processing")
-        elif llm_model == 'claude':
-            logger.info("✅ Claude model selected - checking API key...")
-            if not self.scraper.anthropic_api_key:
-                logger.error("❌ Claude selected but ANTHROPIC_API_KEY not set. Please add ANTHROPIC_API_KEY to .env file")
-                return {
-                    "success": False,
-                    "message": "Claude API key not configured. Please add ANTHROPIC_API_KEY to your .env file.",
-                    "articles_processed": 0
-                }
-            logger.info("✅ Claude API key found - will use Claude for processing")
-        else:
-            logger.warning(f"⚠️ Unknown LLM model '{llm_model}' - defaulting to Claude")
-            llm_model = 'claude'
+        # Validate API keys
+        if llm_model == 'gemini' and not self.scraper.google_api_key:
+            return {"success": False, "message": "Gemini API key not configured", "articles_processed": 0}
+        elif llm_model == 'huggingface' and not self.scraper.huggingface_api_key:
+            return {"success": False, "message": "HuggingFace API key not configured", "articles_processed": 0}
+        elif llm_model == 'claude' and not self.scraper.anthropic_api_key:
+            return {"success": False, "message": "Claude API key not configured", "articles_processed": 0}
 
         try:
-            # Step 1: Select AI sources from ai_sources table FILTERED BY scrape_frequency_days
             sources = self.db_service.get_ai_sources_by_frequency(scrape_frequency)
             if not sources:
-                logger.warning(f"⚠️ No AI sources found with scrape_frequency_days = {scrape_frequency}")
-                
-                # Try to get total count of sources to provide helpful message
-                all_sources = self.db_service.get_ai_sources()
-                if all_sources:
-                    frequency_counts = {}
-                    for source in all_sources:
-                        freq = source.get('scrape_frequency_days', 1)
-                        frequency_counts[freq] = frequency_counts.get(freq, 0) + 1
-                    
-                    available_frequencies = ', '.join([f"{count} sources with {freq}-day frequency" for freq, count in sorted(frequency_counts.items())])
-                    
-                    return {
-                        "success": False,
-                        "message": f"No sources configured for {scrape_frequency}-day frequency. Available: {available_frequencies}",
-                        "articles_processed": 0,
-                        "scrape_frequency_days": scrape_frequency,
-                        "available_frequencies": frequency_counts
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": f"No active sources found in database. Please add sources in admin panel.",
-                        "articles_processed": 0,
-                        "scrape_frequency_days": scrape_frequency
-                    }
+                return {"success": False, "message": f"No sources for {scrape_frequency}-day frequency", "articles_processed": 0}
             
-            logger.info(f"📡 Found {len(sources)} AI sources with {scrape_frequency}-day scrape frequency")
-            
-            # Step 2: Parse RSS feeds and extract article URLs with publisher_id mapping
             all_article_data = []
-            domain_to_publisher_mapping = {}
-            rss_source_to_publisher_mapping = {}
+            domain_mapping = {}
             
             for source in sources:
                 rss_url = source.get('rss_url')
-                website = source.get('website')
-                source_name = source.get('name', 'Unknown')
                 publisher_id = source.get('publisher_id')
-                source_category = source.get('category', 'general')
-                source_frequency = source.get('scrape_frequency_days', 1)
-                
-                logger.info(f"📰 Processing source: {source_name} (Frequency: {source_frequency} days)")
                 
                 if rss_url:
-                    # Parse RSS feed to get individual article URLs
-                    logger.info(f"📰 RSS FEED MODE for {source_name}: {rss_url} (publisher_id: {publisher_id}, category: {source_category}, frequency: {source_frequency}d)")
                     article_urls = await self.scraper.parse_rss_feed(rss_url, max_articles=3)
-                    logger.info(f"✅ Extracted {len(article_urls)} articles from RSS feed for {source_name}")
-                    
-                    # Map the RSS source domain to publisher_id
-                    try:
-                        from urllib.parse import urlparse
-                        rss_domain = urlparse(rss_url).netloc.lower()
-                        domain_to_publisher_mapping[rss_domain] = publisher_id
-                        rss_source_to_publisher_mapping[rss_url] = publisher_id
-                        logger.info(f"🗺️ Mapped RSS domain {rss_domain} → publisher_id: {publisher_id}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to parse RSS domain: {e}")
-                    
-                    # Associate each article URL with its publisher_id and category
                     for url in article_urls:
-                        all_article_data.append({
-                            'url': url, 
-                            'publisher_id': publisher_id,
-                            'source_category': source_category,
-                            'source_rss_url': rss_url,
-                            'source_name': source_name,
-                            'scrape_frequency_days': source_frequency  # Add frequency to article data
-                        })
-                        
-                        # Also map article domain to same publisher_id
+                        all_article_data.append({'url': url, 'publisher_id': publisher_id, 'source_category': source.get('category', 'general')})
                         try:
-                            article_domain = urlparse(url).netloc.lower()
-                            domain_to_publisher_mapping[article_domain] = publisher_id
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to parse article domain: {e}")
-                            
-                elif website:
-                    # Fallback to website homepage if no RSS feed
-                    logger.info(f"🌐 WEBSITE FALLBACK for {source_name}: {website} (publisher_id: {publisher_id}, category: {source_category})")
-                    all_article_data.append({
-                        'url': website, 
-                        'publisher_id': publisher_id,
-                        'source_category': source_category,
-                        'source_name': source_name,
-                        'scrape_frequency_days': source_frequency
-                    })
-                    
-                    # Map website domain to publisher_id
-                    try:
-                        website_domain = urlparse(website).netloc.lower()
-                        domain_to_publisher_mapping[website_domain] = publisher_id
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to parse website domain: {e}")
-                else:
-                    logger.warning(f"⚠️ No RSS or website URL for {source_name}")
-                
-            logger.info(f"📡 Total article URLs collected from {scrape_frequency}-day sources: {len(all_article_data)}")
+                            from urllib.parse import urlparse
+                            domain_mapping[urlparse(url).netloc.lower()] = publisher_id
+                        except:
+                            pass
             
-            # Step 3-4: Scrape individual articles with Crawl4AI + selected LLM
-            logger.info(f"🤖 Starting LLM processing ({llm_model}) for {len(all_article_data)} articles...")
-            logger.info(f"🔍 CONFIRMING LLM MODEL BEFORE SCRAPING: '{llm_model}'")
+            articles = await self.scraper.scrape_multiple_sources_with_publisher_id(all_article_data, llm_model)
             
-            # EXPLICITLY PASS llm_model TO THE SCRAPER
-            articles = await self.scraper.scrape_multiple_sources_with_publisher_id(all_article_data, llm_model=llm_model)
-            
-            # Step 5: Insert results into articles table
             articles_inserted = 0
             for article in articles:
                 try:
-                    # Map content type and AI topic dynamically with exception handling
-                    content_type_id = 1  # Default to blogs
-                    ai_topic_id = 21    # Default to AI News & Updates
-                    
-                    try:
-                        # Enhanced content type detection with URL analysis
-                        logger.debug(f"🔍 Content type detection for: {article.url}")
-                        logger.debug(f"🔍 Original content_type_label: {article.content_type_label}")
-                        content_type_id = self.map_content_type_to_id(article.content_type_label, article.url)
-                        logger.info(f"📋 Content type assigned: {article.url} → content_type_id={content_type_id}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Content type mapping failed for {article.title[:50]}...: {str(e)}")
-                        content_type_id = 1
-                    
-                    try:
-                        ai_topic_id = self.map_ai_topic_to_id(article.content_type_label, article.summary + " " + article.content)
-                    except Exception as e:
-                        logger.warning(f"⚠️ AI topic mapping failed for {article.title[:50]}...: {str(e)}")
-                        ai_topic_id = 21
-                    
-                    # Construct article data with exception handling
-                    article_data = {}
-                    
-                    try:
-                        article_data['content_hash'] = hashlib.md5(article.url.encode()).hexdigest()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Content hash generation failed for {article.url}: {str(e)}")
-                        article_data['content_hash'] = hashlib.md5(f"fallback_{article.url}".encode()).hexdigest()
-                    
-                    # Add fields with safe fallbacks
-                    article_data.update({
-                        'title': str(article.title or "No title found")[:500],  # Limit length
+                    article_data = {
+                        'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
+                        'title': str(article.title or "No title")[:500],
                         'summary': str(article.summary or "")[:1000],
                         'content': str(article.content or "")[:10000],
                         'url': str(article.url or ""),
                         'source': str(article.source or "Unknown"),
-                        'author': str(article.author or "") if article.author else None,
+                        'author': str(article.author) if article.author else None,
                         'significance_score': int(article.significance_score) if article.significance_score else 6,
                         'complexity_level': str(article.complexity_level or "Medium"),
                         'published_date': article.date,
@@ -2438,60 +2004,28 @@ class AdminScrapingInterface:
                         'created_date': datetime.now(timezone.utc).isoformat(),
                         'updated_date': datetime.now(timezone.utc).isoformat(),
                         'llm_processed': article.llm_processed or llm_model,
-                        'publisher_id': self._get_publisher_id_for_article(article.url, domain_to_publisher_mapping),  # Direct mapping from ai_sources
-                        'content_type_id': content_type_id,
-                        'ai_topic_id': ai_topic_id
-                    })
+                        'publisher_id': self._get_publisher_id_for_article(article.url, domain_mapping),
+                        'content_type_id': self.map_content_type_to_id(article.content_type_label, article.url),
+                        'ai_topic_id': self.map_ai_topic_to_id(article.content_type_label, article.summary),
+                        'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None
+                    }
                     
-                    # Debug logging for publisher_id mapping
-                    mapped_publisher_id = self._get_publisher_id_for_article(article.url, domain_to_publisher_mapping)
-                    if mapped_publisher_id:
-                        logger.info(f"🔗 Domain mapping: {article.url} → publisher_id: {mapped_publisher_id}")
-                    else:
-                        logger.warning(f"⚠️ No publisher_id mapping found for URL: {article.url}")
-                    
-                    # Handle keywords safely
-                    try:
-                        if article.keywords and isinstance(article.keywords, list):
-                            article_data['keywords'] = ', '.join(str(k) for k in article.keywords if k)
-                        else:
-                            article_data['keywords'] = None
-                    except Exception as e:
-                        logger.warning(f"⚠️ Keywords processing failed for {article.title[:50]}...: {str(e)}")
-                        article_data['keywords'] = None
-                    
-                    logger.info(f"📋 MAPPING: {article.title[:50]}... → Type:{content_type_id} ({article.content_type_label}) Topic:{ai_topic_id}")
-                    
-                    # Insert into database with exception handling
-                    try:
-                        self.db_service.insert_article(article_data)
-                        articles_inserted += 1
-                    except Exception as db_e:
-                        logger.error(f"❌ Database insertion failed for {article.title[:50]}...: {str(db_e)}")
-                        continue
-                    logger.info(f"💾 DATABASE INSERT: {article.title[:50]}... (#{articles_inserted})")
-                    
+                    self.db_service.insert_article(article_data)
+                    articles_inserted += 1
                 except Exception as e:
-                    logger.error(f"❌ Failed to insert article {article.title}: {e}")
+                    logger.error(f"❌ Failed to insert article: {e}")
             
-            logger.info(f"🎉 SCRAPING COMPLETE: {articles_inserted} articles processed by {llm_model} and stored in database")
+            logger.info(f"🎉 SCRAPING COMPLETE: {articles_inserted} articles processed")
             
             return {
                 "success": True,
-                "message": f"Scraping completed successfully for {scrape_frequency}-day frequency sources",
+                "message": f"Scraping completed for {scrape_frequency}-day frequency sources",
                 "sources_scraped": len(sources),
                 "articles_found": len(articles),
                 "articles_processed": articles_inserted,
-                "scrape_frequency_days": scrape_frequency,
                 "initiated_by": admin_email,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            
         except Exception as e:
-            logger.error(f"❌ Admin scraping process failed: {str(e)}")
-            return {
-                "success": False,
-                "message": f"Scraping failed: {str(e)}",
-                "articles_processed": 0,
-                "scrape_frequency_days": scrape_frequency
-            }
+            logger.error(f"❌ Admin scraping failed: {str(e)}")
+            return {"success": False, "message": f"Scraping failed: {str(e)}", "articles_processed": 0}

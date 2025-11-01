@@ -22,6 +22,21 @@ class UserCreate(UserBase):
     password: Optional[str] = None
 
 
+class UserSignIn(BaseModel):
+    """Schema for user sign-in"""
+    email: EmailStr
+    password: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com",
+                "password": "securepassword123"
+            }
+        }
+
+# ...existing code...
+
 class UserResponse(UserBase):
     id: str
     subscription_tier: str = "free"

@@ -7,11 +7,13 @@ Maintains compatibility with existing frontend API endpoints
 import os
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request,BackgroundTasks
 
 from app.models.schemas import DigestResponse, ContentByTypeResponse, UserResponse
 from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -591,19 +593,47 @@ async def get_landing_content(
             }
         )
 
+# Global scraping job tracker
+scraping_jobs = {}
+
+def track_scraping_job(job_id: str, llm_model: str, scrape_frequency: int, content_service: ContentService):
+    """Background task for scraping - runs async"""
+    try:
+        scraping_jobs[job_id]['status'] = 'running'
+        scraping_jobs[job_id]['started_at'] = datetime.now().isoformat()
+        
+        logger.info(f"🔄 Background scraping job {job_id} started")
+        
+        # Run the actual scraping
+        import asyncio
+        result = asyncio.run(content_service.scrape_with_frequency(
+            llm_model=llm_model,
+            scrape_frequency=scrape_frequency
+        ))
+        
+        scraping_jobs[job_id]['status'] = 'completed'
+        scraping_jobs[job_id]['completed_at'] = datetime.now().isoformat()
+        scraping_jobs[job_id]['result'] = result
+        
+        logger.info(f"✅ Background scraping job {job_id} completed")
+        
+    except Exception as e:
+        scraping_jobs[job_id]['status'] = 'failed'
+        scraping_jobs[job_id]['error'] = str(e)
+        scraping_jobs[job_id]['completed_at'] = datetime.now().isoformat()
+        logger.error(f"❌ Background scraping job {job_id} failed: {str(e)}")
 
 @router.post("/admin/scrape")
 async def admin_initiate_scraping(
     request: Request,
-    llm_model: str = Query('claude', description="LLM model to use: 'claude', 'gemini', or 'huggingface'"),
+    background_tasks: BackgroundTasks,  # ✅ ADD THIS
+    llm_model: str = Query('claude', description="LLM model to use"),
+    scrape_frequency: int = Query(1, description="Scrape frequency in days (1, 7, or 30)"),
     content_service: ContentService = Depends(get_content_service)
 ):
     """
-    Admin-only endpoint to initiate AI news scraping process
-    Uses Content Service for scraping operations
-    
-    Query Parameters:
-    - llm_model: 'claude' | 'gemini' | 'huggingface' (default: 'claude')
+    Admin-only endpoint to initiate AI news scraping process (ASYNC)
+    Returns immediately with job_id, use /admin/scrape-status/{job_id} to check progress
     """
     try:
         # Check for admin API key authentication
@@ -611,61 +641,84 @@ async def admin_initiate_scraping(
         expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
         
         if not admin_api_key or admin_api_key != expected_api_key:
-            logger.warning(f"⚠️ Unauthorized admin scraping attempt")
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    'error': 'Admin access required',
-                    'message': 'Valid admin API key required for scraping'
-                }
-            )
+            raise HTTPException(status_code=403, detail='Admin access required')
         
-        logger.info(f"🔧 Admin scraping initiated with API key authentication")
-        logger.info(f"🤖 LLM MODEL SELECTED: '{llm_model}'")
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())
         
-        if DEBUG:
-            logger.debug(f"🔍 Admin scrape request with valid API key")
-            logger.debug(f"🔍 Admin permissions verified")
-            logger.debug(f"🔍 LLM model parameter: {llm_model}")
+        # Initialize job tracking
+        scraping_jobs[job_id] = {
+            'job_id': job_id,
+            'status': 'queued',
+            'llm_model': llm_model,
+            'scrape_frequency': scrape_frequency,
+            'created_at': datetime.now().isoformat()
+        }
         
-        # Trigger scraping operation with LLM model parameter
-        try:
-            logger.info(f"🔍 About to call content_service.scrape_content(llm_model='{llm_model}')")
-            result = await content_service.scrape_content(llm_model=llm_model)
-            logger.info(f"🔍 Successfully called content_service.scrape_content() with {llm_model}")
-        except NameError as ne:
-            logger.error(f"❌ NameError in scrape_content: {str(ne)}")
-            raise ne
-        except Exception as se:
-            logger.error(f"❌ Other error in scrape_content: {str(se)}")
-            raise se
+        # ✅ Start background task (returns immediately)
+        background_tasks.add_task(
+            track_scraping_job,
+            job_id=job_id,
+            llm_model=llm_model,
+            scrape_frequency=scrape_frequency,
+            content_service=content_service
+        )
         
-        if DEBUG:
-            logger.debug(f"🔍 Scraping completed with result: {result}")
+        logger.info(f"✅ Scraping job {job_id} queued successfully")
         
-        logger.info(f"✅ Admin scraping completed successfully with {llm_model} model")
         return {
             'success': True,
-            'message': f'Content scraping completed successfully using {llm_model}',
-            'llm_model_used': llm_model,
-            'data': result,
-            'database': 'postgresql'
+            'job_id': job_id,
+            'message': f'Scraping job started for {scrape_frequency}-day frequency using {llm_model}',
+            'status': 'queued',
+            'check_status_url': f'/api/content/admin/scrape-status/{job_id}',
+            'estimated_duration_minutes': '3-5'
         }
         
     except Exception as e:
-        import traceback
-        error_traceback = traceback.format_exc()
-        logger.error(f"❌ Admin scraping endpoint failed: {str(e)}")
-        logger.error(f"❌ Full traceback: {error_traceback}")
-        raise HTTPException(
-            status_code=500,
-            detail={
-                'error': 'Admin scraping failed',
-                'message': str(e),
-                'traceback': error_traceback,
-                'database': 'postgresql'
-            }
-        )
+        logger.error(f"❌ Failed to start scraping job: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/scrape-status/{job_id}")
+async def get_scraping_status(
+    request: Request,
+    job_id: str
+):
+    """
+    Check status of a scraping job
+    Returns: queued | running | completed | failed
+    """
+    try:
+        # Check for admin API key
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+        
+        if not admin_api_key or admin_api_key != expected_api_key:
+            raise HTTPException(status_code=403, detail='Admin access required')
+        
+        if job_id not in scraping_jobs:
+            raise HTTPException(status_code=404, detail='Job not found')
+        
+        job = scraping_jobs[job_id]
+        
+        return {
+            'job_id': job_id,
+            'status': job['status'],
+            'llm_model': job['llm_model'],
+            'scrape_frequency': job['scrape_frequency'],
+            'created_at': job['created_at'],
+            'started_at': job.get('started_at'),
+            'completed_at': job.get('completed_at'),
+            'result': job.get('result'),
+            'error': job.get('error')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to get job status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ NEW: Manual Scheduler Trigger Endpoint

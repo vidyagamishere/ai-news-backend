@@ -3,12 +3,14 @@
 Authentication dependencies for FastAPI dependency injection
 """
 
+import os
+from datetime import datetime, timedelta
 import logging
 from typing import Optional
 from datetime import datetime
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+from jose import JWTError, jwt
 from app.services.auth_service import AuthService
 from app.models.schemas import UserResponse
 
@@ -16,6 +18,46 @@ logger = logging.getLogger(__name__)
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
+
+# ...existing code...
+
+class AuthHandler:
+    """Handler for authentication operations"""
+    
+    def __init__(self):
+        self.secret = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+        self.algorithm = "HS256"
+        self.access_token_expire_minutes = 60 * 24 * 7  # 7 days
+    
+    def create_access_token(self, user_id: str, email: str) -> str:
+        """Create JWT access token"""
+        payload = {
+            "user_id": user_id,
+            "email": email,
+            "exp": datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+        }
+        return jwt.encode(payload, self.secret, algorithm=self.algorithm)
+    
+    def decode_token(self, token: str) -> dict:
+        """Decode JWT token"""
+        try:
+            return jwt.decode(token, self.secret, algorithms=[self.algorithm])
+        except JWTError:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    def hash_password(self, password: str) -> str:
+        """Hash password using bcrypt"""
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return pwd_context.hash(password)
+    
+    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+        """Verify password against hash"""
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return pwd_context.verify(plain_password, hashed_password)
+
+# ...existing code...
 
 
 def get_auth_service() -> AuthService:

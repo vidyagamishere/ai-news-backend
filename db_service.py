@@ -484,6 +484,70 @@ class PostgreSQLService:
         if hasattr(self, 'connection_pool'):
             self.connection_pool.closeall()
             logger.info("🔌 PostgreSQL connection pool closed")
+    
+    def check_article_url_exists(self, url: str) -> bool:
+        """
+        Check if an article URL already exists in the articles table
+        
+        Args:
+            url: The article URL to check
+            
+        Returns:
+            bool: True if URL exists, False otherwise
+        """
+        try:
+            query = "SELECT COUNT(*) as count FROM articles WHERE url = %s"
+            result = self.execute_query(query, (url,), fetch_one=True)
+            
+            count = result['count'] if result else 0
+            exists = count > 0
+            
+            if exists:
+                logger.debug(f"🔍 URL already exists in database: {url}")
+            
+            return exists
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking URL existence: {str(e)}")
+            return False  # Default to False to allow scraping on error
+    
+    def check_multiple_urls_exist(self, urls: List[str]) -> Dict[str, bool]:
+        """
+        Check multiple URLs for existence in bulk (more efficient)
+        
+        Args:
+            urls: List of URLs to check
+            
+        Returns:
+            Dict mapping URL to existence status (True if exists, False if new)
+        """
+        try:
+            if not urls:
+                return {}
+            
+            # Build query with placeholders
+            placeholders = ','.join(['%s'] * len(urls))
+            query = f"SELECT url FROM articles WHERE url IN ({placeholders})"
+            
+            results = self.execute_query(query, tuple(urls), fetch_all=True)
+            
+            # Create set of existing URLs for O(1) lookup
+            existing_urls = {row['url'] for row in results}
+            
+            # Build result dictionary
+            url_status = {url: (url in existing_urls) for url in urls}
+            
+            existing_count = sum(1 for exists in url_status.values() if exists)
+            new_count = len(urls) - existing_count
+            
+            logger.info(f"📊 URL deduplication: {existing_count} existing, {new_count} new out of {len(urls)} total")
+            
+            return url_status
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking multiple URLs: {str(e)}")
+            # Default all to False (allow scraping) on error
+            return {url: False for url in urls}
 
 # Global database service instance
 db_service = None
