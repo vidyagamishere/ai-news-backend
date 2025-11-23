@@ -556,7 +556,7 @@ async def get_landing_content(
                     LEFT JOIN ai_categories_master cm ON a.category_id = cm.id
                     WHERE ct.name = %s 
                     AND cm.id = %s
-                    ORDER BY a.significance_score DESC, a.scraped_date DESC
+                    ORDER BY a.published_date DESC,a.significance_score DESC
                     LIMIT %s
                 """
                 articles = db.execute_query(articles_query, (content_type['name'], category['id'], limit_per_type), fetch_all=True)
