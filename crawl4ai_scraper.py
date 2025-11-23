@@ -18,6 +18,7 @@ import requests
 import feedparser
 import aiohttp
 from bs4 import BeautifulSoup
+import ollama  # ✅ NEW: Ollama import
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
@@ -92,6 +93,8 @@ class ScrapedArticle:
     keywords: Optional[List[str]] = None
     publisher_id: Optional[int] = None
     llm_processed: Optional[str] = None
+    image_url: Optional[str] = None          # ✅ ADD THIS
+    image_source: Optional[str] = None       # ✅ ADD THIS
 
 class Crawl4AIScraper:
     """AI News Scraper using Crawl4AI and Claude LLM"""
@@ -102,6 +105,10 @@ class Crawl4AIScraper:
         self.google_api_key = os.getenv('GOOGLE_API_KEY', '')
         self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
+
+        # ✅ NEW: Ollama Configuration
+        self.ollama_model = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Default to Llama 3.2 3B
+        self.ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')  # Default Ollama host
         
         # ✅ FIX: Use a verified HuggingFace model that's available on Inference API
         # Popular models on HuggingFace Inference API (free tier):
@@ -129,6 +136,10 @@ class Crawl4AIScraper:
         logger.info(f"   - ANTHROPIC_API_KEY: {'✅ Set' if self.anthropic_api_key else '❌ Not set'}")
         logger.info(f"   - GOOGLE_API_KEY: {'✅ Set' if self.google_api_key else '❌ Not set'}")
         logger.info(f"   - HUGGINGFACE_API_KEY: {'✅ Set' if self.huggingface_api_key else '❌ Not set'}")
+        logger.info(f"🦙 Ollama Model: {self.ollama_model}")
+        logger.info(f"🌐 Ollama Host: {self.ollama_host}")
+
+        self._test_ollama_connection()
         
         if not self.anthropic_api_key:
             logger.warning("⚠️ ANTHROPIC_API_KEY not set - Claude processing will not work")
@@ -138,6 +149,65 @@ class Crawl4AIScraper:
         
         if not self.huggingface_api_key:
             logger.warning("⚠️ HUGGINGFACE_API_KEY not set - HuggingFace processing will not be available")
+
+    def _test_ollama_connection(self) -> bool:
+        """Test connection to Ollama and verify model availability."""
+        try:
+            response = requests.get(f"{self.ollama_host}/api/tags", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                logger.debug(f"🔍 Ollama response: {data}")
+                
+                # ✅ FIX: Handle different response structures
+                if isinstance(data, dict):
+                    models_list = data.get('models', [])
+                elif isinstance(data, list):
+                    models_list = data
+                else:
+                    logger.error(f"❌ Unexpected Ollama response format: {type(data)}")
+                    return False
+                
+                # ✅ FIX: Safely extract model names
+                available_models = []
+                for model in models_list:
+                    if isinstance(model, dict):
+                        # Handle both 'name' and 'model' keys
+                        model_name = model.get('name') or model.get('model')
+                        if model_name:
+                            available_models.append(model_name)
+                    elif isinstance(model, str):
+                        available_models.append(model)
+                
+                logger.info(f"🔍 Available Ollama models: {available_models}")
+                
+                # ✅ FIX: Check if model exists (with or without tag)
+                model_base = self.ollama_model.split(':')[0]  # Extract base name
+                model_exists = any(
+                    self.ollama_model in m or model_base in m 
+                    for m in available_models
+                )
+                
+                if model_exists:
+                    logger.info(f"✅ Ollama model '{self.ollama_model}' is available")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Model '{self.ollama_model}' not found in Ollama")
+                    logger.info(f"💡 Available models: {available_models}")
+                    logger.info(f"💡 Install model: ollama pull {self.ollama_model}")
+                    return False
+            else:
+                logger.error(f"❌ Ollama returned status {response.status_code}")
+                return False
+                
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"⚠️ Cannot connect to Ollama at {self.ollama_host}")
+            logger.info("💡 Make sure Ollama is running: ollama serve")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Ollama connection test failed: {e}", exc_info=True)
+            logger.info("💡 Make sure Ollama is running: ollama serve")
+            logger.info(f"💡 Install model: ollama pull {self.ollama_model}")
+            return False
 
     def _log_extraction_warning(self, field: str, url: str, error: str):
         """Log extraction warning and track for summary reporting"""
@@ -437,7 +507,15 @@ class Crawl4AIScraper:
                 except Exception as e:
                     logger.warning(f"⚠️ Content type detection failed for {url}: {str(e)}")
                     content_type = "Blogs"
-            
+
+                # ✅ Extract images from HTML
+                try:
+                    soup_for_images = BeautifulSoup(result.html, 'html.parser')
+                    image_data = self._extract_images(soup_for_images, url)
+                except Exception as img_error:
+                    logger.warning(f"⚠️ Image extraction failed in Crawl4AI: {img_error}")
+                    image_data = {'image_url': None, 'image_source': None}
+
             except Exception as crawler_e:
                 logger.error(f"❌ Crawler operations failed for {url}: {str(crawler_e)}")
                 return await self._fallback_scrape(url)
@@ -456,7 +534,9 @@ class Crawl4AIScraper:
                 "extraction_method": "crawl4ai_full",
                 "links": result.links[:10] if result.links else [],  # Extract some links
                 "media": result.media[:5] if result.media else [],  # Extract some media
-                "content_type": content_type  # Add detected content type
+                "content_type": content_type,  # Add detected content type
+                "image_url": image_data.get('image_url'),  # ✅ ADD THIS
+                "image_source": image_data.get('image_source')  # ✅ ADD THIS
             }
 
             logger.info(f"🔄 Crawl4  full scrapre result for title : {extracted_result.get('title', 'Unknown')[:50]}... description: {extracted_result.get('description', 'Unknown')[:50]}...")
@@ -921,6 +1001,8 @@ class Crawl4AIScraper:
                             logger.warning(f"⚠️ Fallback content type detection failed for {url}: {str(e)}")
                             content_type = "Blogs"
                         
+                        image_data = self._extract_images(soup, url)
+
                         return {
                             "title": title.strip(),
                             "description": description.strip(),
@@ -932,7 +1014,9 @@ class Crawl4AIScraper:
                             "reading_time": reading_time_minutes,
                             "extracted_date": datetime.now(timezone.utc).isoformat(),
                             "extraction_method": "enhanced_fallback_with_rotation",
-                            "content_type": content_type  # Add detected content type
+                            "content_type": content_type,  # Add detected content type
+                            "image_url": image_data.get('image_url'),  # ✅ ADD THIS
+                            "image_source": image_data.get('image_source')  # ✅ ADD THIS
                         }
                         
             except Exception as e:
@@ -1072,6 +1156,146 @@ class Crawl4AIScraper:
             return self._clean_content(content)[:4000]
         
         return ""
+
+    def _extract_images(self, soup, url: str) -> Dict[str, Optional[str]]:
+        """
+        Extract article images with multiple fallback methods
+        Returns dict with 'image_url' and 'image_source'
+        """
+        try:
+            article_images = []
+            
+            # Priority 1: Open Graph image (most reliable for social sharing)
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                img_url = og_image['content']
+                article_images.append(('og', img_url))
+                logger.debug(f"🖼️ Found OG image: {img_url[:80]}...")
+            
+            # Priority 2: Twitter card image
+            if not article_images:
+                twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
+                if twitter_image and twitter_image.get('content'):
+                    img_url = twitter_image['content']
+                    article_images.append(('twitter', img_url))
+                    logger.debug(f"🖼️ Found Twitter image: {img_url[:80]}...")
+            
+            # Priority 3: JSON-LD structured data image
+            if not article_images:
+                try:
+                    
+                    json_ld = soup.find('script', type='application/ld+json')
+                    if json_ld:
+                        import json
+                        data = json.loads(json_ld.string)
+                        if isinstance(data, list):
+                            data = data[0] if data else {}
+                        
+                        if isinstance(data, dict) and 'image' in data:
+                            image_data = data['image']
+                            if isinstance(image_data, str):
+                                article_images.append(('jsonld', image_data))
+                            elif isinstance(image_data, dict) and 'url' in image_data:
+                                article_images.append(('jsonld', image_data['url']))
+                            elif isinstance(image_data, list) and image_data:
+                                article_images.append(('jsonld', image_data[0] if isinstance(image_data[0], str) else image_data[0].get('url', '')))
+                except (json.JSONDecodeError, AttributeError, KeyError) as e:
+                    logger.debug(f"⚠️ JSON-LD image extraction failed: {e}")
+                    pass
+            
+            # Priority 4: Article featured/hero image
+            if not article_images:
+                featured_selectors = [
+                    'img.featured-image',
+                    'img.hero-image',
+                    'img.main-image',
+                    'img.article-image',
+                    '.featured-image img',
+                    '.hero-image img',
+                    '.post-thumbnail img',
+                    '[class*="featured"] img',
+                    '[class*="hero"] img'
+                ]
+                
+                for selector in featured_selectors:
+                    featured_img = soup.select_one(selector)
+                    if featured_img and featured_img.get('src'):
+                        img_url = featured_img['src']
+                        article_images.append(('featured', img_url))
+                        logger.debug(f"🖼️ Found featured image: {img_url[:80]}...")
+                        break
+            
+            # Priority 5: First large image in article content
+            if not article_images:
+                # Look inside article/main content areas
+                content_areas = soup.select('article, main, [role="main"], .content, .post-content')
+                for area in content_areas:
+                    for img in area.find_all('img'):
+                        src = img.get('src', '')
+                        
+                        # Skip small images, icons, logos, tracking pixels
+                        if not src or any(x in src.lower() for x in ['icon', 'logo', 'pixel', 'tracker', '1x1', 'avatar', 'emoji', 'blank.gif']):
+                            continue
+                        
+                        # Check image dimensions (if available)
+                        width = img.get('width')
+                        height = img.get('height')
+                        
+                        try:
+                            # Only use images >= 400px wide
+                            if width and int(width) >= 400:
+                                article_images.append(('content', src))
+                                logger.debug(f"🖼️ Found large image in content: {src[:80]}...")
+                                break
+                            elif not width:  # No width specified, assume it's good
+                                # Additional check: skip if alt text suggests it's not a main image
+                                alt = img.get('alt', '').lower()
+                                if not any(skip in alt for skip in ['icon', 'logo', 'avatar', 'button']):
+                                    article_images.append(('content', src))
+                                    logger.debug(f"🖼️ Found image (no dimensions): {src[:80]}...")
+                                    break
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if article_images:
+                        break
+            
+            # Get the best image URL
+            if article_images:
+                source_type, image_url = article_images[0]
+                
+                # Make relative URLs absolute
+                if image_url and not image_url.startswith(('http://', 'https://', 'data:', '//')):
+                    from urllib.parse import urljoin
+                    image_url = urljoin(url, image_url)
+                    logger.debug(f"🔗 Converted to absolute URL: {image_url[:80]}...")
+                
+                # Handle protocol-relative URLs (//example.com/image.jpg)
+                if image_url.startswith('//'):
+                    from urllib.parse import urlparse
+                    page_scheme = urlparse(url).scheme or 'https'
+                    image_url = f"{page_scheme}:{image_url}"
+                
+                # Log success
+                logger.info(f"✅ Image extracted ({source_type}): {image_url[:100]}...")
+                
+                return {
+                    'image_url': image_url,
+                    'image_source': 'scraped'
+                }
+            else:
+                logger.warning(f"⚠️ No image found for URL")
+                return {
+                    'image_url': None,
+                    'image_source': None
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Image extraction failed: {str(e)}")
+            return {
+                'image_url': None,
+                'image_source': None
+            }
     
     def _extract_tags(self, soup) -> List[str]:
         """Extract tags and keywords from multiple sources"""
@@ -1424,7 +1648,9 @@ Return ONLY the JSON object, nothing else."""
                     scraped_date=scraped_data.get('extracted_date'),
                     content_type_label=scraped_data.get('content_type', 'Blogs'),
                     topic_category_label="AI News & Updates",
-                    keywords=scraped_data.get('tags', [])
+                    keywords=scraped_data.get('tags', []),
+                    image_url=scraped_data.get('image_url'),
+                    image_source=scraped_data.get('image_source')
                 )
             
             async with aiohttp.ClientSession() as session:
@@ -1490,14 +1716,14 @@ Return ONLY the JSON object, nothing else."""
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                             keywords=scraped_data.get('tags', []),
-                            llm_processed='claude-3-haiku-20240307'  # Add explicit model name
-                        )
-
-                        
+                            llm_processed='claude-3-haiku-20240307',  # Add explicit model name
+                            image_url=scraped_data.get('image_url'),
+                            image_source=scraped_data.get('image_source')
+                        )                        
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ CLAUDE JSON ERROR: Failed to parse response: {e}")
                         logger.error(f"Claude raw response: {content[:200]}...")
-                        
+                        logger.error(f"Claude cleaned response: {content_clean[:200]}...")
                         # Try to fix common JSON issues and retry
                         fixed_content = self._fix_json_formatting(content_clean)
                         if fixed_content:
@@ -1591,14 +1817,16 @@ Return ONLY the JSON object, nothing else."""
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                             keywords=scraped_data.get('tags', []),
-                            llm_processed=model_name
+                            llm_processed=model_name,
+                            image_url=scraped_data.get('image_url'),
+                            image_source=scraped_data.get('image_source')
                         )
 
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ GEMINI JSON ERROR: Failed to parse response: {e}")
                         logger.error(f"Gemini raw response: {content[:200]}...")
-                        
-                        fixed_content = self._fix_json_formatting(content_clean)
+                        logger.error(f"Gemini cleaned response: {content_clean[:200]}...")
+                        fixed_content = self._fix_json_formatting(content_clean)    
                         if fixed_content:
                             try:
                                 parsed_data = json.loads(fixed_content)
@@ -1623,7 +1851,9 @@ Return ONLY the JSON object, nothing else."""
                                     content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                                     topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                                     keywords=scraped_data.get('tags', []),
-                                    llm_processed=model_name
+                                    llm_processed=model_name,
+                                    image_url=scraped_data.get('image_url'),
+                                    image_source=scraped_data.get('image_source')
                                 )
                             except json.JSONDecodeError:
                                 logger.error("❌ JSON fix failed for Gemini")
@@ -1742,7 +1972,9 @@ Respond with JSON only."""
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
                             keywords=scraped_data.get('tags', []),
-                            llm_processed=simple_model
+                            llm_processed=simple_model,
+                            image_url=scraped_data.get('image_url'),
+                            image_source=scraped_data.get('image_source')
                         )
                         
                     except json.JSONDecodeError:
@@ -1754,6 +1986,143 @@ Respond with JSON only."""
             logger.info("💡 Using basic extraction as fallback")
             return self._create_basic_article(scraped_data, "huggingface-error")
     
+    async def process_with_ollama(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+        """
+        Feed the structured data to local Ollama model for processing.
+        Works with any Ollama model (Llama 3.2, Mistral, Phi, etc.)
+        """
+        try:
+            logger.info(f"🦙 OLLAMA PROCESSING ({self.ollama_model}): {scraped_data.get('title', 'Unknown')[:60]}...")
+
+            # Use standardized prompt (same as Claude/Gemini)
+            prompt = self._get_standardized_prompt(scraped_data)
+
+            # Call Ollama API (synchronous, so we use asyncio.to_thread)
+            response = await asyncio.to_thread(
+                ollama.chat,
+                model=self.ollama_model,
+                messages=[
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                options={
+                    'temperature': 0.2,
+                    'num_predict': 1000,  # Max tokens
+                    'top_k': 40,
+                    'top_p': 0.9,
+                }
+            )
+            
+            if not response or 'message' not in response:
+                logger.error("❌ OLLAMA API ERROR: No response or invalid format")
+                return None
+
+            content = response['message']['content']
+            
+            try:
+                # Clean up JSON response (same as other LLMs)
+                content_clean = content.strip()
+                
+                # Remove markdown code blocks if present
+                if content_clean.startswith('```json'):
+                    content_clean = content_clean[7:]
+                if content_clean.startswith('```'):
+                    content_clean = content_clean[3:]
+                if content_clean.endswith('```'):
+                    content_clean = content_clean[:-3]
+                
+                content_clean = content_clean.strip()
+                
+                # Extract JSON from the response
+                start_idx = content_clean.find('{')
+                end_idx = content_clean.rfind('}')
+                
+                if start_idx != -1 and end_idx != -1:
+                    content_clean = content_clean[start_idx:end_idx + 1]
+                
+                parsed_data = json.loads(content_clean)
+                
+                logger.info(f"✅ OLLAMA SUCCESS: Processed Title: {parsed_data.get('title', 'Unknown')[:50]}... (Score: {parsed_data.get('significance_score', 'N/A')})")
+                logger.info(f"✅ OLLAMA Model: {response.get('model', self.ollama_model)}")
+                logger.info(f"✅ OLLAMA Tokens: {response.get('eval_count', 'N/A')}")
+
+                publisher_id_preserved = scraped_data.get('publisher_id')
+                logger.info(f"🔗 Preserving publisher_id {publisher_id_preserved} in Ollama response for {scraped_data.get('url', 'Unknown URL')}")
+                
+                return ScrapedArticle(
+                    title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                    author=parsed_data.get('author') or scraped_data.get('author', 'Unknown'),
+                    summary=parsed_data.get('summary', 'No summary available'),
+                    content=scraped_data.get('content', '')[:1000],
+                    date=parsed_data.get('date') or scraped_data.get('date'),
+                    url=scraped_data.get('url', ''),
+                    source=self._extract_domain(scraped_data.get('url', '')),
+                    significance_score=float(parsed_data.get('significance_score', 5.0)),
+                    complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                    reading_time=scraped_data.get('reading_time', 1),
+                    publisher_id=publisher_id_preserved,
+                    published_date=parsed_data.get('date') or scraped_data.get('date'),
+                    scraped_date=scraped_data.get('extracted_date'),
+                    content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                    topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                    keywords=scraped_data.get('tags', []),
+                    llm_processed=f"ollama:{self.ollama_model}",  # Track which Ollama model was used
+                    image_url=scraped_data.get('image_url'),
+                    image_source=scraped_data.get('image_source')
+                )
+
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ OLLAMA JSON ERROR: Failed to parse response: {e}")
+                logger.error(f"Ollama raw response: {content[:200]}...")
+                logger.error(f"Ollama cleaned response: {content_clean[:200]}...")
+                
+                # Try to fix common JSON issues
+                fixed_content = self._fix_json_formatting(content_clean)
+                if fixed_content:
+                    try:
+                        parsed_data = json.loads(fixed_content)
+                        logger.info(f"✅ OLLAMA SUCCESS (after JSON fix): Processed {parsed_data.get('title', 'Unknown')[:50]}...")
+                        
+                        publisher_id_preserved = scraped_data.get('publisher_id')
+                        
+                        return ScrapedArticle(
+                            title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
+                            author=parsed_data.get('author') or scraped_data.get('author', 'Unknown'),
+                            summary=parsed_data.get('summary', 'No summary available'),
+                            content=scraped_data.get('content', '')[:1000],
+                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            url=scraped_data.get('url', ''),
+                            source=self._extract_domain(scraped_data.get('url', '')),
+                            significance_score=float(parsed_data.get('significance_score', 5.0)),
+                            complexity_level=parsed_data.get('complexity_level', 'Medium'),
+                            reading_time=scraped_data.get('reading_time', 1),
+                            publisher_id=publisher_id_preserved,
+                            published_date=parsed_data.get('date') or scraped_data.get('date'),
+                            scraped_date=scraped_data.get('extracted_date'),
+                            content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
+                            topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
+                            keywords=scraped_data.get('tags', []),
+                            llm_processed=f"ollama:{self.ollama_model}",
+                            image_url=scraped_data.get('image_url'),
+                            image_source=scraped_data.get('image_source')
+                        )
+                    except json.JSONDecodeError:
+                        logger.error("❌ JSON fix failed for Ollama")
+                        return None
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ OLLAMA PROCESSING FAILED: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+            # If Ollama fails, suggest checking if service is running
+            logger.info("💡 Make sure Ollama is running: ollama serve")
+            logger.info(f"💡 Check model is installed: ollama list | grep {self.ollama_model}")
+            
+            return None
+
     def _create_basic_article(self, scraped_data: Dict[str, Any], llm_model: str) -> ScrapedArticle:
         """Create a basic article structure when LLM processing fails"""
         publisher_id_preserved = scraped_data.get('publisher_id')
@@ -1780,7 +2149,9 @@ Respond with JSON only."""
             content_type_label=scraped_data.get('content_type', 'Blogs'),
             topic_category_label="AI News & Updates",
             keywords=scraped_data.get('tags', []),
-            llm_processed=llm_model
+            llm_processed=llm_model,
+            image_url=scraped_data.get('image_url'),
+            image_source=scraped_data.get('image_source')
         )
     
     async def scrape_article(self, url: str, llm_model: str = 'claude') -> Optional[ScrapedArticle]:
@@ -1795,9 +2166,11 @@ Respond with JSON only."""
         if llm_model == 'gemini':
             article = await self.process_with_gemini(scraped_data)
         elif llm_model == 'huggingface':
-            article = await self.process_with_huggingface(scraped_data)
+            article = await self.process_with_ollama(scraped_data)
         elif llm_model == 'claude':
             article = await self.process_with_claude(scraped_data)
+        elif llm_model == 'ollama':  # ✅ NEW: Add Ollama option
+            article = await self.process_with_ollama(scraped_data)
         else:
             logger.warning(f"⚠️ Unknown LLM model '{llm_model}'. Defaulting to Claude.")
             article = await self.process_with_claude(scraped_data)
@@ -1838,8 +2211,8 @@ Respond with JSON only."""
                 
                 if llm_model == 'gemini':
                     return await self.process_with_gemini(scraped_data) if self.google_api_key else await self.process_with_claude(scraped_data)
-                elif llm_model == 'huggingface':
-                    return await self.process_with_huggingface(scraped_data) if self.huggingface_api_key else await self.process_with_claude(scraped_data)
+                elif llm_model == 'ollama' or llm_model == 'huggingface':
+                    return await self.process_with_ollama(scraped_data) 
                 else:
                     return await self.process_with_claude(scraped_data) if self.anthropic_api_key else None
             return None
@@ -1954,6 +2327,15 @@ class AdminScrapingInterface:
         # Validate API keys
         if llm_model == 'gemini' and not self.scraper.google_api_key:
             return {"success": False, "message": "Gemini API key not configured", "articles_processed": 0}
+        
+        elif llm_model == 'ollama':
+            # Test Ollama connection
+            if not self.scraper._test_ollama_connection():
+                return {
+                    "success": False, 
+                    "message": f"Ollama not available. Make sure it's running: 'ollama serve' and model is installed: 'ollama pull {self.scraper.ollama_model}'", 
+                    "articles_processed": 0
+                }
         elif llm_model == 'huggingface' and not self.scraper.huggingface_api_key:
             return {"success": False, "message": "HuggingFace API key not configured", "articles_processed": 0}
         elif llm_model == 'claude' and not self.scraper.anthropic_api_key:
@@ -2007,11 +2389,18 @@ class AdminScrapingInterface:
                         'publisher_id': self._get_publisher_id_for_article(article.url, domain_mapping),
                         'content_type_id': self.map_content_type_to_id(article.content_type_label, article.url),
                         'ai_topic_id': self.map_ai_topic_to_id(article.content_type_label, article.summary),
-                        'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None
+                        'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None,
+                        'image_url': article.image_url,
+                        'image_source': article.image_source
                     }
                     
-                    self.db_service.insert_article(article_data)
-                    articles_inserted += 1
+                    success = await asyncio.to_thread(self.db_service.insert_article, article_data)
+                    
+                    if success:
+                        articles_inserted += 1
+                        logger.info(f"✅ Inserted article: {article.title[:60]}... (LLM: {llm_model})")
+                    else:
+                        logger.debug(f"⏭️ Skipped (duplicate): {article.title[:60]}...")
                 except Exception as e:
                     logger.error(f"❌ Failed to insert article: {e}")
             

@@ -12,8 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request,Background
 from app.models.schemas import DigestResponse, ContentByTypeResponse, UserResponse
 from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
+from app.services.pagination_service import pagination_service
+from app.models.pagination import PaginationParams, PaginationMeta
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,131 @@ async def get_personalized_digest(
                 'database': 'postgresql'
             }
         )
+
+@router.get("/content/paginated")
+async def get_paginated_content(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(10, ge=1, le=50, description="Items per page (max 50)"),
+    content_type: Optional[str] = Query(None, description="Filter: blogs, podcasts, videos"),
+    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    sort_by: str = Query("published_date", description="Sort field"),
+    sort_order: str = Query("desc", description="asc or desc")
+):
+    """
+    Get paginated content with filtering and sorting.
+    
+    Steve Jobs Strategy:
+    - Fast: Returns only 10 items per request
+    - Smart: Prefetch triggers when user scrolls to item 7
+    - Smooth: No loading spinners, seamless infinite scroll
+    
+    Example:
+        GET /api/content/paginated?page=1&page_size=10&content_type=blogs
+        
+    Returns:
+        {
+            "success": true,
+            "items": [...10 articles...],
+            "meta": {
+                "current_page": 1,
+                "page_size": 10,
+                "total_items": 245,
+                "total_pages": 25,
+                "has_next": true,
+                "has_prev": false,
+                "next_page": 2,
+                "prev_page": null
+            }
+        }
+    """
+    try:
+        logger.info(f"📄 Paginated request: page={page}, size={page_size}, type={content_type}")
+        
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        # Build WHERE clause
+        
+        where_conditions = [] 
+        params = []
+        
+        if content_type:
+            where_conditions.append("ct.name = %s")
+            params.append(content_type)
+        
+        if category_id:
+            where_conditions.append("a.category_id = %s")
+            params.append(category_id)
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+    
+        logger.info(f"🔍 DEBUG: WHERE clause = {where_clause}, params = {params}")  # ✅ ADD DEBUG
+        
+        # Validate sort_order
+        if sort_order.lower() not in ['asc', 'desc']:
+            sort_order = 'desc'
+        
+        # Validate sort_by
+        valid_sort_fields = ['published_date', 'significance_score', 'title', 'source']
+        if sort_by not in valid_sort_fields:
+            sort_by = 'published_date'
+        
+        # Base query
+        base_query = f"""
+            SELECT 
+                a.id,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.published_date,
+                a.significance_score,
+                a.image_url,
+                a.image_source,
+                a.reading_time,
+                a.author,
+                ct.name as content_type,
+                ct.display_name as content_type_display,
+                cm.name as category_name,
+                cm.id as category_id,
+                a.llm_processed
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            LEFT JOIN ai_categories_master cm ON a.category_id = cm.id
+            WHERE {where_clause}
+            ORDER BY a.{sort_by} {sort_order}
+        """
+        
+        # Count query
+        count_query = f"""
+            SELECT COUNT(*) as count
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            WHERE {where_clause}
+        """
+        
+        # Execute paginated query using pagination service
+        items, meta = await pagination_service.paginate_query(
+            db_service=db,
+            base_query=base_query,
+            count_query=count_query,
+            params=tuple(params),
+            page=page,
+            page_size=page_size
+        )
+        
+        logger.info(f"✅ Returned {len(items)} items (page {page}/{meta['total_pages']})")
+        
+        return {
+            "success": True,
+            "items": items,
+            "meta": meta,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Pagination failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/content/{content_type}", response_model=ContentByTypeResponse)
@@ -478,30 +605,53 @@ async def get_ai_startups_stories(
             }
         )
 
+# FIND LINE 457 and REPLACE the entire function with:
 
 @router.get("/landing-content")
 async def get_landing_content(
-    limit_per_type: int = Query(3, ge=1, le=10)
+    page: int = Query(1, ge=1),                      # ✅ NEW: Page number
+    page_size: int = Query(10, ge=1, le=50)          # ✅ NEW: Items per page
 ):
     """
-    Get all categories and content types for landing page
+    Get all categories and content types for landing page with PAGINATION.
     Returns content organized by category (Generative AI, AI Applications, AI Startups)
-    Each category contains content types (blogs, podcasts, videos) with max 3 items per type
+    Each category contains content types (blogs, podcasts, videos) with paginated items
     No authentication required - public endpoint for landing page
     
     Endpoint: GET /landing-content
-    Query params: limit_per_type (default: 3, max: 10)
+    Query params: 
+        - page: Page number (default: 1)
+        - page_size: Items per content type (default: 10, max: 50)
+    
+    Example:
+        GET /api/landing-content?page=1&page_size=10
+    
+    Returns:
+        {
+            "success": true,
+            "categories": [...],
+            "meta": {
+                "page": 1,
+                "page_size": 10,
+                "total_blogs": 150,
+                "total_podcasts": 45,
+                "total_videos": 50,
+                "has_next": true,
+                "total_pages": 15
+            }
+        }
     """
     try:
-        logger.info(f"🏠 Landing content requested - Limit per type: {limit_per_type}")
+        logger.info(f"🏠 Landing content requested - Page: {page}, Size: {page_size}")
         
         from db_service import get_database_service
         db = get_database_service()
         
         # Get all categories sorted by priority
         categories_query = """
-            SELECT id, name, priority, description
+            SELECT id, name, priority, description, default_image_url
             FROM ai_categories_master
+            WHERE is_active = TRUE
             ORDER BY priority ASC
         """
         categories = db.execute_query(categories_query, fetch_all=True)
@@ -509,9 +659,9 @@ async def get_landing_content(
         # If no categories, create default ones
         if not categories:
             categories = [
-                {'id': 1, 'name': 'Generative AI', 'priority': 1, 'description': 'LLMs, GPT, Claude, and AI Generation'},
-                {'id': 2, 'name': 'AI Applications', 'priority': 2, 'description': 'Enterprise Use Cases & Industry Solutions'},
-                {'id': 3, 'name': 'AI Startups', 'priority': 3, 'description': 'Funding, M&A & Emerging Companies'}
+                {'id': 1, 'name': 'Generative AI', 'priority': 1, 'description': 'LLMs, GPT, Claude, and AI Generation', 'default_image_url': ''},
+                {'id': 2, 'name': 'AI Applications', 'priority': 2, 'description': 'Enterprise Use Cases & Industry Solutions', 'default_image_url': ''},
+                {'id': 3, 'name': 'AI Startups', 'priority': 3, 'description': 'Funding, M&A & Emerging Companies', 'default_image_url': ''}
             ]
         
         # Get content types
@@ -521,6 +671,7 @@ async def get_landing_content(
             WHERE is_active = TRUE
         """
         content_types = db.execute_query(content_types_query, fetch_all=True)
+        
         if not content_types:
             content_types = [
                 {'id': 1, 'name': 'blogs', 'display_name': 'Blogs', 'frontend_section': 'blog'},
@@ -528,10 +679,8 @@ async def get_landing_content(
                 {'id': 3, 'name': 'videos', 'display_name': 'Videos', 'frontend_section': 'video'}
             ]
         
-        result = {
-            'categories': [],
-            'total_categories': len(categories)
-        }
+        result = []
+        offset = (page - 1) * page_size  # ✅ Calculate offset for pagination
         
         for category in categories:
             category_data = {
@@ -539,28 +688,38 @@ async def get_landing_content(
                 'name': category['name'],
                 'priority': category['priority'],
                 'description': category.get('description', ''),
+                'default_image_url': category.get('default_image_url', ''),
                 'content': {}
             }
+            
             logger.info(f"🔍 Processing category: {category['name']}")
             
-            # For each content type, get articles
+            # For each content type, get PAGINATED articles
             for content_type in content_types:
-                # Get articles for this category and content type
                 logger.info(f"🔍 Fetching articles for type: {content_type['name']} in category: {category['name']}")
+                
+                # ✅ PAGINATED QUERY with LIMIT and OFFSET
                 articles_query = """
                     SELECT a.title, a.summary, a.url, a.source, a.significance_score, 
                            a.published_date, a.author, ct.name as content_type_name,
-                           cm.name as category_name
+                           cm.name as category_name, a.image_url, a.image_source
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
                     LEFT JOIN ai_categories_master cm ON a.category_id = cm.id
                     WHERE ct.name = %s 
                     AND cm.id = %s
-                    ORDER BY a.significance_score DESC, a.scraped_date DESC
-                    LIMIT %s
+                    AND a.published_date >= NOW() - INTERVAL '30 days'
+                    ORDER BY a.published_date DESC, a.source, a.significance_score DESC
+                    LIMIT %s OFFSET %s
                 """
-                articles = db.execute_query(articles_query, (content_type['name'], category['id'], limit_per_type), fetch_all=True)
-
+                
+                # ✅ Pass page_size and offset for pagination
+                articles = db.execute_query(
+                    articles_query, 
+                    (content_type['name'], category['id'], page_size, offset), 
+                    fetch_all=True
+                )
+                
                 # Format articles
                 formatted_articles = []
                 for article in articles:
@@ -573,15 +732,54 @@ async def get_landing_content(
                         'published_date': article['published_date'].isoformat() if article['published_date'] else None,
                         'author': article.get('author', ''),
                         'category': category['name'],
-                        'content_type': content_type['name']
+                        'content_type': content_type['name'],
+                        'image_url': article.get('image_url', ''),
+                        'image_source': article.get('image_source', '')
                     })
-                logger.info(f"🔍 Articles fetched for type: {content_type['name']} in category: {category['name']}")
+                
+                logger.info(f"✅ Fetched {len(formatted_articles)} articles for type: {content_type['name']}")
                 category_data['content'][content_type['name']] = formatted_articles
-
-            result['categories'].append(category_data)
+            
+            result.append(category_data)
         
-        logger.info(f"✅ Landing content retrieved: {len(categories)} categories")
-        return result
+        # ✅ Get total counts for pagination metadata
+        count_query = """
+            SELECT 
+                ct.name as content_type,
+                COUNT(*) as count
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            WHERE a.published_date >= NOW() - INTERVAL '30 days'
+            GROUP BY ct.name
+        """
+        counts = db.execute_query(count_query, fetch_all=True)
+        
+        total_blogs = next((c['count'] for c in counts if c['content_type'] == 'blogs'), 0)
+        total_podcasts = next((c['count'] for c in counts if c['content_type'] == 'podcasts'), 0)
+        total_videos = next((c['count'] for c in counts if c['content_type'] == 'videos'), 0)
+        
+        # ✅ Calculate pagination metadata
+        max_total = max(total_blogs, total_podcasts, total_videos)
+        has_next = (page * page_size) < max_total
+        total_pages = (max_total + page_size - 1) // page_size  # Ceiling division
+        
+        logger.info(f"✅ Landing content retrieved: {len(categories)} categories, page {page}/{total_pages}")
+        
+        return {
+            'success': True,
+            'categories': result,
+            'meta': {
+                'page': page,
+                'page_size': page_size,
+                'total_blogs': total_blogs,
+                'total_podcasts': total_podcasts,
+                'total_videos': total_videos,
+                'has_next': has_next,
+                'total_pages': total_pages
+            },
+            'total_categories': len(categories),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
         
     except Exception as e:
         logger.error(f"❌ Landing content endpoint failed: {str(e)}")
@@ -592,7 +790,7 @@ async def get_landing_content(
                 'message': str(e)
             }
         )
-
+        
 # Global scraping job tracker
 scraping_jobs = {}
 

@@ -17,8 +17,9 @@ jinja2>=3.1.0
 sendgrid>=6.9.7
 email-validator>=2.0.0
 
+pydantic>=2.0.0
 # PostgreSQL database support (required)
-psycopg2-binary>=2.9.7
+psycopg2-binary>=2.9.9
 
 # Scheduler for automated RSS scraping
 APScheduler>=3.10.4
@@ -51,3 +52,6 @@ certifi>=2023.0.0
 # Async utilities
 asyncio-throttle>=1.0.2
 tenacity>=8.2.0
+
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6

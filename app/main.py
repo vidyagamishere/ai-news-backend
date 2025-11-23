@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 from app.routers import health, auth, content
 from db_service import initialize_database, close_database_service
 
+from app.routers import interactions, gamification, social
+
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -67,6 +70,9 @@ allowed_origins = [
     "https://www.vidyagam.com",
 ]
 
+
+
+
 # Add any additional origins from environment
 env_origins = os.getenv('ALLOWED_ORIGINS', '')
 if env_origins:
@@ -85,6 +91,14 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, tags=["authentication"])
 app.include_router(content.router, tags=["content"])
+
+
+# Register router (around line 60-70)
+app.include_router(interactions.router)
+app.include_router(gamification.router)
+app.include_router(social.router)
+
+
 
 # Additional endpoints for admin and utilities
 @app.get("/sources")

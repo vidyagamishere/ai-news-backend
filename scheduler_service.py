@@ -31,6 +31,9 @@ class DatabaseAdapter:
     def insert_article(self, article_data):
         """Insert article into database"""
         return self.db_service.insert_article(article_data)
+    def get_ai_sources_by_frequency(self, scrape_frequency_days: int = 1):
+        """Forward call to db_service.get_ai_sources_by_frequency"""
+        return self.db_service.get_ai_sources_by_frequency(scrape_frequency_days)
 
 class AutoScrapingScheduler:
     """Automated RSS feed scraping scheduler"""
@@ -70,7 +73,7 @@ class AutoScrapingScheduler:
             admin_scraper = AdminScrapingInterface(db_adapter)
             
             # Run the scraping process
-            result = await admin_scraper.initiate_scraping(admin_email="scheduler@vidyagam.com")
+            result = await admin_scraper.initiate_scraping(admin_email="admin@vidyagam.com")
             
             scrape_end_time = datetime.now(timezone.utc)
             duration = (scrape_end_time - scrape_start_time).total_seconds()
@@ -224,3 +227,19 @@ def stop_auto_scheduler():
 # Cleanup function
 import atexit
 atexit.register(stop_auto_scheduler)
+#
+#if __name__ == "__main__":
+#    import asyncio
+
+#    async def main():
+        # Start the scheduler (will schedule jobs as per interval)
+#        start_auto_scheduler()
+        # Manually trigger a scraping job for immediate test
+#        scheduler = get_scheduler()
+#        await scheduler.scrape_rss_feeds()
+        # Keep the event loop running so APScheduler jobs can execute
+#        while True:
+#            await asyncio.sleep(3600)
+
+#    asyncio.run(main())
+#

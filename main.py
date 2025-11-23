@@ -31,7 +31,11 @@ log_level = logging.DEBUG if DEBUG else getattr(logging, os.getenv("LOG_LEVEL", 
 
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+     handlers=[
+        logging.FileHandler("run.log"),  # <-- File output
+        logging.StreamHandler()          # <-- Console output
+    ]
 )
 logger = logging.getLogger(__name__)
 

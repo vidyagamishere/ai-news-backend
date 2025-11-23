@@ -8,7 +8,7 @@ import os
 import sys
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, Header
+from fastapi import Body, APIRouter, Depends, HTTPException, Request, Query, Header
 
 # Add parent directory to path to import scheduler_service
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -18,6 +18,8 @@ from app.dependencies.auth import get_current_user
 from app.services.content_service import ContentService
 from db_service import get_database_service
 from scheduler_service import get_scheduler
+from app.services.shorts_service import create_shorts_for_articles
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,41 @@ def require_admin_user(current_user: UserResponse = Depends(get_current_user)) -
             }
         )
     return current_user
+
+@router.get("/articles")
+async def get_articles(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin_access: bool = Depends(require_admin_access)
+):
+    try:
+        db = get_database_service()
+        articles = db.get_articles_paginated(page, page_size)
+        total = db.get_articles_count()
+        return {
+            "articles": articles,
+            "total": total,
+            "page": page,
+            "page_size": page_size
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate-shorts")
+async def generate_shorts(
+    article_ids: list[int] = Body(...),
+    request: Request = None,
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Generate shorts for selected articles (admin only)
+    """
+    try:
+        result = await create_shorts_for_articles(article_ids)
+        return {"status": "success", "processed": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sources")
@@ -441,10 +478,10 @@ async def trigger_scraping(
         )
     
     # Validate LLM model parameter
-    if llm_model not in ['claude', 'gemini', 'huggingface']:
+    if llm_model not in ['claude', 'gemini', 'huggingface','ollama']:
         raise HTTPException(
             status_code=400,
-            detail="Invalid llm_model. Must be 'claude', 'gemini', or 'huggingface'"
+            detail="Invalid llm_model. Must be 'claude', 'gemini', 'huggingface', or 'ollama'"
         )
     
     try:

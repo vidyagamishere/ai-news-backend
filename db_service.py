@@ -286,15 +286,29 @@ class PostgreSQLService:
             if article_data.get('created_date') is None:
                 article_data['created_date'] = datetime.now(timezone.utc)
             
+             # --- 5. ✅ NEW: Extract image data ---
+            image_url = article_data.get('image_url')
+            image_source = article_data.get('image_source', 'scraped' if image_url else None)
             
-            # --- 4. Insert New Article (Fixed Query) ---
+            # Log image extraction status
+            if image_url:
+                logger.info(f"🖼️ Article has image: {image_url[:80]}... (source: {image_source})")
+            else:
+                logger.debug(f"⚠️ No image for article: {article_data.get('title', url)[:50]}...")
+                article_data['image_url'] = None
+                article_data['image_source'] = None
+
+            # --- 6. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
-                    llm_processed, content_type_id, category_id, reading_time, author, complexity_level, updated_date, created_date, keywords, publisher_id
+                    llm_processed, content_type_id, category_id, reading_time, author, complexity_level, 
+                    updated_date, created_date, keywords, publisher_id,
+                    image_url, image_source
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, 
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s
                 ) ON CONFLICT (url) DO UPDATE SET
                     content_hash = EXCLUDED.content_hash,
                     title = EXCLUDED.title,
@@ -312,8 +326,10 @@ class PostgreSQLService:
                     updated_date = EXCLUDED.updated_date,
                     created_date = EXCLUDED.created_date,
                     keywords = EXCLUDED.keywords,
-                    publisher_id = EXCLUDED.publisher_id
-            """ # 18 columns, 18 placeholders (%s)
+                    publisher_id = EXCLUDED.publisher_id,
+                    image_url = COALESCE(EXCLUDED.image_url, articles.image_url),
+                    image_source = COALESCE(EXCLUDED.image_source, articles.image_source)
+            """
             
             values = (
                 article_data.get('content_hash'),
@@ -324,7 +340,7 @@ class PostgreSQLService:
                 article_data.get('significance_score'),
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),
-                article_data.get('llm_processed'),  # ✅ NOW USES MODEL NAME from article_data (e.g., 'claude-3-haiku-20240307', 'gemini-2.0-flash-exp', 'meta-llama/Meta-Llama-3.1-8B-Instruct')
+                article_data.get('llm_processed'),
                 final_content_type_id,
                 final_ai_topic_id,
                 article_data.get('reading_time', 1),
@@ -333,9 +349,10 @@ class PostgreSQLService:
                 article_data.get('updated_date', datetime.now(timezone.utc)),
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', ['generative AI']),
-                article_data.get('publisher_id')
-            )
-            
+                article_data.get('publisher_id'),
+                image_url,      # ✅ ADDED
+                image_source    # ✅ ADDED
+            )            
             # Debug logging for LLM model used
             llm_model_used = article_data.get('llm_processed')
             logger.info(f"🤖 Article processed by LLM: {llm_model_used} for {article_data.get('title', url)[:50]}...")
@@ -548,6 +565,86 @@ class PostgreSQLService:
             logger.error(f"❌ Error checking multiple URLs: {str(e)}")
             # Default all to False (allow scraping) on error
             return {url: False for url in urls}
+
+    def get_all_articles_pending_shorts(self):
+        logger.info("Fetching articles pending shorts/reels")
+        query = """
+            SELECT id, title, summary
+            FROM articles
+            WHERE is_yt_shorts = FALSE OR is_insta_reels = FALSE
+        """
+        results = self.execute_query(query, fetch_all=True)
+        return [
+            {"id": r["id"], "title": r["title"], "summary": r["summary"]}
+            for r in results
+        ]
+
+    def get_article_by_id(self, article_id: int):
+        logger.info(f"Fetching article by id: {article_id}")
+        query = """
+            SELECT id, title, summary, image_url, url, is_yt_shorts, is_insta_reels
+            FROM articles WHERE id = %s
+        """
+        result = self.execute_query(query, (article_id,), fetch_one=True)
+        if result:
+            return {
+                "id": result["id"], "title": result["title"], "summary": result["summary"],
+                "image_url": result["image_url"], "url": result["url"],
+                "is_yt_shorts": result["is_yt_shorts"], "is_insta_reels": result["is_insta_reels"]
+            }
+        else:
+            logger.info(f"Article not found: {article_id}")
+            raise Exception("Article not found")
+
+    def mark_shorts_created(self, article_id: int, yt=False, insta=False):
+        logger.info(f"Marking shorts created for article_id={article_id}, yt={yt}, insta={insta}")
+        if yt and insta:
+            query = "UPDATE articles SET is_yt_shorts = TRUE, is_insta_reels = TRUE WHERE id = %s"
+            self.execute_query(query, (article_id,), fetch_all=False)
+        elif yt:
+            query = "UPDATE articles SET is_yt_shorts = TRUE WHERE id = %s"
+            self.execute_query(query, (article_id,), fetch_all=False)
+        elif insta:
+            query = "UPDATE articles SET is_insta_reels = TRUE WHERE id = %s"
+            self.execute_query(query, (article_id,), fetch_all=False)
+
+    def get_all_articles(self):
+        logger.info("Fetching all articles")
+        query = """
+            SELECT id, title, is_yt_shorts, is_insta_reels FROM articles
+        """
+        results = self.execute_query(query, fetch_all=True)
+        return [
+            {"id": r["id"], "title": r["title"], "is_yt_shorts": r["is_yt_shorts"], "is_insta_reels": r["is_insta_reels"]}
+            for r in results
+        ]
+
+    def get_articles_paginated(self, page=1, page_size=20):
+        logger.info(f"Fetching paginated articles: page={page}, page_size={page_size}")
+        offset = (page - 1) * page_size
+        query = """
+            SELECT id, title, summary, is_yt_shorts, is_insta_reels
+            FROM articles
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+        """
+        results = self.execute_query(query, (page_size, offset), fetch_all=True)
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "summary": r["summary"],
+                "is_yt_shorts": r["is_yt_shorts"],
+                "is_insta_reels": r["is_insta_reels"]
+            }
+            for r in results
+        ]
+
+    def get_articles_count(self):
+        logger.info("Fetching articles count")
+        query = "SELECT COUNT(*) as count FROM articles"
+        result = self.execute_query(query, fetch_one=True)
+        return result["count"] if result else 0   
 
 # Global database service instance
 db_service = None
