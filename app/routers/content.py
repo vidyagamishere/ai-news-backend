@@ -300,7 +300,7 @@ async def get_breaking_news_alerts(
 
 @router.get("/generative-ai-content")
 async def get_generative_ai_stories(
-    limit: int = Query(3, ge=1, le=20)
+    limit: int = Query(10, ge=1, le=20)
 ):
     """
     Get Generative AI category stories for pre-login landing page
@@ -308,7 +308,7 @@ async def get_generative_ai_stories(
     No authentication required - public endpoint for landing page
     
     Endpoint: GET /generative-ai-content  
-    Query params: limit (default: 3, max: 20)
+    Query params: limit (default: 10, max: 20)
     """
     try:
         logger.info(f"🤖 Generative AI content requested - Limit: {limit}")
@@ -362,7 +362,7 @@ async def get_generative_ai_stories(
 
 @router.get("/ai-applications-content")
 async def get_ai_applications_stories(
-    limit: int = Query(3, ge=1, le=20)
+    limit: int = Query(10, ge=1, le=20)
 ):
     """
     Get AI Applications category stories for pre-login landing page
@@ -370,10 +370,10 @@ async def get_ai_applications_stories(
     No authentication required - public endpoint for landing page
     
     Endpoint: GET /ai-applications-content  
-    Query params: limit (default: 3, max: 20)
+    Query params: limit (default: 10, max: 20)
     """
     try:
-        logger.info(f"🏢 AI Applications content requested - Limit: {limit}")
+        logger.info(f"AI Applications content requested - Limit: {limit}")
         
         from db_service import get_database_service
         db = get_database_service()
@@ -422,7 +422,7 @@ async def get_ai_applications_stories(
 
 @router.get("/ai-startups-content")
 async def get_ai_startups_stories(
-    limit: int = Query(3, ge=1, le=20)
+    limit: int = Query(10, ge=1, le=20)
 ):
     """
     Get AI Startups category stories for pre-login landing page
@@ -481,7 +481,7 @@ async def get_ai_startups_stories(
 
 @router.get("/landing-content")
 async def get_landing_content(
-    limit_per_type: int = Query(3, ge=1, le=10)
+    limit_per_type: int = Query(10, ge=1, le=10)
 ):
     """
     Get all categories and content types for landing page
