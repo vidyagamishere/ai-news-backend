@@ -18,7 +18,14 @@ import requests
 import feedparser
 import aiohttp
 from bs4 import BeautifulSoup
-import ollama  # ✅ NEW: Ollama import
+
+# ✅ OPTIONAL: Ollama import (only for local development)
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+    logging.warning("⚠️ Ollama not available - local LLM features disabled")
 
 # Configure logging early to avoid import issues
 logging.basicConfig(level=logging.INFO)
@@ -1991,6 +1998,11 @@ Respond with JSON only."""
         Feed the structured data to local Ollama model for processing.
         Works with any Ollama model (Llama 3.2, Mistral, Phi, etc.)
         """
+        # ✅ GUARD: Check if Ollama is available
+        if not OLLAMA_AVAILABLE:
+            logger.warning("⚠️ Ollama not available - skipping local LLM processing")
+            return None
+
         try:
             logger.info(f"🦙 OLLAMA PROCESSING ({self.ollama_model}): {scraped_data.get('title', 'Unknown')[:60]}...")
 
