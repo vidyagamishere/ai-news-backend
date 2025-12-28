@@ -2264,6 +2264,245 @@ Respond with JSON only."""
             return json_str
         except:
             return None
+    
+    async def scrape_pending_podcasts(self, llm_model: str = 'gemini') -> Dict[str, Any]:
+        """
+        Scrape pending podcasts (scraped_status = 'pending') and insert into articles table
+        Updates scraped_status to 'completed' after successful insertion
+        """
+        try:
+            logger.info(f"🎧 Starting pending podcast scraping with LLM: {llm_model}")
+            
+            # Get database service
+            from db_service import get_database_service
+            db_service = get_database_service()
+            
+            # Get pending podcasts
+            podcasts = db_service.get_pending_podcasts()
+            
+            if not podcasts:
+                logger.info("ℹ️ No pending podcasts to scrape")
+                return {
+                    "success": True,
+                    "message": "No pending podcasts found",
+                    "podcasts_processed": 0
+                }
+            
+            logger.info(f"📋 Found {len(podcasts)} pending podcasts")
+            
+            articles_inserted = 0
+            podcasts_processed = []
+            
+            for podcast in podcasts:
+                try:
+                    podcast_url = podcast['url']
+                    podcast_id = podcast['id']
+                    
+                    logger.info(f"🎧 Scraping podcast: {podcast['name'][:50]}... - {podcast_url}")
+                    
+                    # Scrape the podcast URL
+                    article = await self.scrape_article_with_publisher_id(
+                        url=podcast_url,
+                        publisher_id=podcast['publisher_id'],
+                        source_category=podcast.get('category_name', 'Podcasts'),
+                        llm_model=llm_model
+                    )
+                    
+                    if article:
+                        # Force content type to podcasts
+                        # Fix null string values
+                        published_date = article.date if article.date and article.date.lower() != 'null' else None
+                        author = article.author if article.author and str(article.author).lower() != 'null' else "Unknown"
+                        
+                        article_data = {
+                            'title': str(article.title or "Unknown Podcast"),
+                            'author': author,
+                            'summary': str(article.summary or ""),
+                            'content': str(article.content or ""),
+                            'url': str(article.url),
+                            'source': str(article.source),
+                            'significance_score': float(article.significance_score or 5.0),
+                            'complexity_level': str(article.complexity_level or "Medium"),
+                            'published_date': published_date,
+                            'reading_time': int(article.reading_time) if article.reading_time else 30,
+                            'content_type_label': 'podcasts',  # Force podcasts
+                            'topic_category_label': str(article.topic_category_label or "AI News & Updates"),
+                            'scraped_date': datetime.now(timezone.utc).isoformat(),
+                            'created_date': datetime.now(timezone.utc).isoformat(),
+                            'updated_date': datetime.now(timezone.utc).isoformat(),
+                            'llm_processed': article.llm_processed or llm_model,
+                            'publisher_id': article.publisher_id,
+                            'content_type_id': 3,  # Force podcast content type ID
+                            'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None,
+                            'image_url': article.image_url,
+                            'image_source': article.image_source
+                        }
+                        
+                        # Insert into articles table
+                        success = db_service.insert_article(article_data)
+                        
+                        if success:
+                            # Update podcast status to completed
+                            db_service.update_podcast_scrape_status(podcast_id, 'completed')
+                            articles_inserted += 1
+                            podcasts_processed.append(podcast['name'])
+                            logger.info(f"✅ Podcast inserted: {article.title[:60]}...")
+                        else:
+                            # Mark as completed even if duplicate (already exists)
+                            db_service.update_podcast_scrape_status(podcast_id, 'completed')
+                            logger.debug(f"⏭️ Podcast skipped (duplicate): {article.title[:60]}...")
+                    else:
+                        # Mark as failed if scraping didn't work
+                        db_service.update_podcast_scrape_status(podcast_id, 'failed')
+                        logger.warning(f"⚠️ Failed to scrape podcast: {podcast['name']}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error processing podcast {podcast.get('name', 'Unknown')}: {str(e)}")
+                    # Mark as failed
+                    try:
+                        db_service.update_podcast_scrape_status(podcast['id'], 'failed')
+                    except:
+                        pass
+            
+            logger.info(f"🎉 PODCAST SCRAPING COMPLETE: {articles_inserted}/{len(podcasts)} inserted")
+            
+            return {
+                "success": True,
+                "message": f"Podcast scraping completed",
+                "podcasts_total": len(podcasts),
+                "podcasts_processed": len(podcasts_processed),
+                "articles_inserted": articles_inserted,
+                "llm_model": llm_model,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Podcast scraping failed: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Podcast scraping failed: {str(e)}",
+                "podcasts_processed": 0
+            }
+    
+    async def scrape_pending_videos(self, llm_model: str = 'gemini') -> Dict[str, Any]:
+        """
+        Scrape pending videos (scraped_status = 'pending') and insert into articles table
+        Updates scraped_status to 'completed' after successful insertion
+        """
+        try:
+            logger.info(f"🎥 Starting pending video scraping with LLM: {llm_model}")
+            
+            # Get database service
+            from db_service import get_database_service
+            db_service = get_database_service()
+            
+            # Get pending videos
+            videos = db_service.get_pending_videos()
+            
+            if not videos:
+                logger.info("ℹ️ No pending videos to scrape")
+                return {
+                    "success": True,
+                    "message": "No pending videos found",
+                    "videos_processed": 0
+                }
+            
+            logger.info(f"📋 Found {len(videos)} pending videos")
+            
+            articles_inserted = 0
+            videos_processed = []
+            
+            for video in videos:
+                try:
+                    video_url = video['url']
+                    video_id = video['id']
+                    
+                    logger.info(f"🎥 Scraping video: {video['name'][:50]}... - {video_url}")
+                    
+                    # Scrape the video URL
+                    article = await self.scrape_article_with_publisher_id(
+                        url=video_url,
+                        publisher_id=video['publisher_id'],
+                        source_category=video.get('category_name', 'Videos'),
+                        llm_model=llm_model
+                    )
+                    
+                    if article:
+                        # Force content type to videos
+                        # Fix null string values
+                        published_date = article.date if article.date and article.date.lower() != 'null' else None
+                        author = article.author if article.author and str(article.author).lower() != 'null' else "Unknown"
+                        
+                        article_data = {
+                            'title': str(article.title or "Unknown Video"),
+                            'author': author,
+                            'summary': str(article.summary or ""),
+                            'content': str(article.content or ""),
+                            'url': str(article.url),
+                            'source': str(article.source),
+                            'significance_score': float(article.significance_score or 5.0),
+                            'complexity_level': str(article.complexity_level or "Medium"),
+                            'published_date': published_date,
+                            'reading_time': int(article.reading_time) if article.reading_time else 5,
+                            'content_type_label': 'videos',  # Force videos
+                            'topic_category_label': str(article.topic_category_label or "AI News & Updates"),
+                            'scraped_date': datetime.now(timezone.utc).isoformat(),
+                            'created_date': datetime.now(timezone.utc).isoformat(),
+                            'updated_date': datetime.now(timezone.utc).isoformat(),
+                            'llm_processed': article.llm_processed or llm_model,
+                            'publisher_id': article.publisher_id,
+                            'content_type_id': 2,  # Force video content type ID
+                            'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None,
+                            'image_url': article.image_url,
+                            'image_source': article.image_source
+                        }
+                        
+                        # Insert into articles table
+                        success = db_service.insert_article(article_data)
+                        
+                        if success:
+                            # Update video status to completed
+                            db_service.update_video_scrape_status(video_id, 'completed')
+                            articles_inserted += 1
+                            videos_processed.append(video['name'])
+                            logger.info(f"✅ Video inserted: {article.title[:60]}...")
+                        else:
+                            # Mark as completed even if duplicate (already exists)
+                            db_service.update_video_scrape_status(video_id, 'completed')
+                            logger.debug(f"⏭️ Video skipped (duplicate): {article.title[:60]}...")
+                    else:
+                        # Mark as failed if scraping didn't work
+                        db_service.update_video_scrape_status(video_id, 'failed')
+                        logger.warning(f"⚠️ Failed to scrape video: {video['name']}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error processing video {video.get('name', 'Unknown')}: {str(e)}")
+                    # Mark as failed
+                    try:
+                        db_service.update_video_scrape_status(video['id'], 'failed')
+                    except:
+                        pass
+            
+            logger.info(f"🎉 VIDEO SCRAPING COMPLETE: {articles_inserted}/{len(videos)} inserted")
+            
+            return {
+                "success": True,
+                "message": f"Video scraping completed",
+                "videos_total": len(videos),
+                "videos_processed": len(videos_processed),
+                "articles_inserted": articles_inserted,
+                "llm_model": llm_model,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Video scraping failed: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Video scraping failed: {str(e)}",
+                "videos_processed": 0
+            }
+
 
 
 # Admin interface
@@ -2368,6 +2607,10 @@ class AdminScrapingInterface:
             articles_inserted = 0
             for article in articles:
                 try:
+                    # Fix null string values
+                    published_date = article.date if article.date and str(article.date).lower() != 'null' else None
+                    author = article.author if article.author and str(article.author).lower() != 'null' else None
+                    
                     article_data = {
                         'content_hash': hashlib.md5(article.url.encode()).hexdigest(),
                         'title': str(article.title or "No title")[:500],
@@ -2375,10 +2618,10 @@ class AdminScrapingInterface:
                         'content': str(article.content or "")[:10000],
                         'url': str(article.url or ""),
                         'source': str(article.source or "Unknown"),
-                        'author': str(article.author) if article.author else None,
+                        'author': author,
                         'significance_score': int(article.significance_score) if article.significance_score else 6,
                         'complexity_level': str(article.complexity_level or "Medium"),
-                        'published_date': article.date,
+                        'published_date': published_date,
                         'reading_time': int(article.reading_time) if article.reading_time else 1,
                         'content_type_label': str(article.content_type_label or "Blogs"),
                         'topic_category_label': str(article.topic_category_label or "AI News & Updates"),
@@ -2418,3 +2661,4 @@ class AdminScrapingInterface:
         except Exception as e:
             logger.error(f"❌ Admin scraping failed: {str(e)}")
             return {"success": False, "message": f"Scraping failed: {str(e)}", "articles_processed": 0}
+    

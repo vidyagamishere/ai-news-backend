@@ -39,13 +39,6 @@ def parse_time_filter(time_filter: str) -> Optional[datetime]:
         "Last Week": timedelta(days=7),
         "Last Month": timedelta(days=30),
         "This Year": timedelta(days=365),
-        # Legacy values (for backward compatibility)
-        "Last 24 hours": timedelta(hours=24),
-        "Last Year": timedelta(days=365),
-        "Today": timedelta(hours=24),
-        "Yesterday": timedelta(days=1),
-        "This Week": timedelta(days=7),
-        "This Month": timedelta(days=30)
     }
     
     # Try exact match first
@@ -164,7 +157,7 @@ def filter_content_by_criteria(
         FROM articles a
         LEFT JOIN content_types ct ON a.content_type_id = ct.id
         LEFT JOIN ai_categories_master c ON a.category_id = c.id
-        LEFT JOIN ai_sources s ON a.source = s.name
+        LEFT JOIN publishers_master s ON a.publisher_id = s.id
         WHERE 1=1
     """
     
@@ -186,15 +179,10 @@ def filter_content_by_criteria(
     # Publisher filter
     if filter_request.publishers:
         placeholders = ",".join(["%s"] * len(filter_request.publishers))
-        base_query += f" AND s.name IN ({placeholders})"
+        base_query += f" AND s.publisher_name IN ({placeholders})"
         params.extend(filter_request.publishers)
     
-    # Interest/topic filter
-    if filter_request.interests:
-        placeholders = ",".join(["%s"] * len(filter_request.interests))
-        base_query += f" AND at.name IN ({placeholders})"
-        params.extend(filter_request.interests)
-    
+
     # Search query filter
     if filter_request.search_query:
         search_term = f"%{filter_request.search_query.lower()}%"
@@ -208,7 +196,7 @@ def filter_content_by_criteria(
         """
         params.extend([search_term, search_term, search_term, search_term])
     
-    # Order by significance and date
+    # Order by significance score and date
     base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
     
     # Limit

@@ -47,7 +47,7 @@ else:
 
 # Import modular components
 from app.routers import health, content, admin, personalized_feed
-from app.routers import enhanced_auth
+from app.routers import enhanced_auth, search_suggestions
 from db_service import initialize_database, close_database_service
 from scheduler_service import start_auto_scheduler, stop_auto_scheduler, get_scheduler
 
@@ -137,6 +137,7 @@ app.include_router(enhanced_auth.router, prefix="/api/v2", tags=["enhanced-auth"
 app.include_router(content.router, tags=["content"])
 app.include_router(admin.router, tags=["admin"])
 app.include_router(personalized_feed.router, prefix="/api/v1", tags=["personalized-feed"])
+app.include_router(search_suggestions.router, tags=["search-suggestions"])  # Enhanced search system
 
 # Additional endpoints for compatibility
 @app.get("/sources")

@@ -86,12 +86,17 @@
                 <div class="row">
                     <div class="col-md-3 mb-3">
                         <button class="btn btn-outline-primary w-100" onclick="triggerScraping()">
-                            <i class="fas fa-sync-alt me-2"></i>Trigger Scraping
+                            <i class="fas fa-sync-alt me-2"></i>Trigger RSS Scraping
                         </button>
                     </div>
                     <div class="col-md-3 mb-3">
-                        <button class="btn btn-outline-success w-100" onclick="updateSources()">
-                            <i class="fas fa-rss me-2"></i>Update RSS Sources
+                        <button class="btn btn-outline-success w-100" onclick="triggerPodcastScraping()">
+                            <i class="fas fa-podcast me-2"></i>Scrape Pending Podcasts
+                        </button>
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <button class="btn btn-outline-danger w-100" onclick="triggerVideoScraping()">
+                            <i class="fas fa-video me-2"></i>Scrape Pending Videos
                         </button>
                     </div>
                     <div class="col-md-3 mb-3">
@@ -99,9 +104,21 @@
                             <i class="fas fa-heartbeat me-2"></i>System Health
                         </button>
                     </div>
-                    <div class="col-md-3 mb-3">
+                </div>
+                <div class="row mt-2">
+                    <div class="col-md-4 mb-3">
+                        <button class="btn btn-outline-secondary w-100" onclick="updateSources()">
+                            <i class="fas fa-rss me-2"></i>Update RSS Sources
+                        </button>
+                    </div>
+                    <div class="col-md-4 mb-3">
                         <button class="btn btn-outline-warning w-100" onclick="exportAllData()">
                             <i class="fas fa-file-export me-2"></i>Export All Data
+                        </button>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <button class="btn btn-outline-dark w-100" onclick="viewScrapingStats()">
+                            <i class="fas fa-chart-bar me-2"></i>Scraping Stats
                         </button>
                     </div>
                 </div>
@@ -251,7 +268,7 @@ function performUpload() {
 }
 
 function triggerScraping() {
-    $('#loadingMessage').text('Triggering scraping...');
+    $('#loadingMessage').text('Triggering RSS scraping...');
     $('#loadingModal').modal('show');
     
     fetch('https://ai-news-scraper-production.up.railway.app/scrape', {
@@ -262,11 +279,119 @@ function triggerScraping() {
     .then(response => response.json())
     .then(data => {
         $('#loadingModal').modal('hide');
-        alert(`Scraping completed: ${data.new_articles || 0} new articles`);
+        alert(`RSS scraping completed: ${data.new_articles || 0} new articles`);
+        location.reload();
     })
     .catch(error => {
         $('#loadingModal').modal('hide');
-        alert('Scraping failed: ' + error);
+        alert('RSS scraping failed: ' + error);
+    });
+}
+
+function triggerPodcastScraping() {
+    if (!confirm('This will scrape all pending podcasts. Continue?')) {
+        return;
+    }
+    
+    $('#loadingMessage').text('Scraping pending podcasts...');
+    $('#loadingModal').modal('show');
+    
+    // Get admin API key (you should store this securely)
+    const adminApiKey = localStorage.getItem('admin_api_key') || 'admin-api-key-2024';
+    
+    fetch('/api/content/admin/scrape-pending-podcasts?llm_model=gemini', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-API-Key': adminApiKey
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        $('#loadingModal').modal('hide');
+        if (data.success) {
+            alert(`Podcast scraping completed!\n\n` +
+                  `Total: ${data.podcasts_total}\n` +
+                  `Processed: ${data.podcasts_processed}\n` +
+                  `Articles inserted: ${data.articles_inserted}\n` +
+                  `LLM: ${data.llm_model}`);
+            location.reload();
+        } else {
+            alert('Podcast scraping failed: ' + (data.message || data.detail?.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Podcast scraping failed: ' + error);
+    });
+}
+
+function triggerVideoScraping() {
+    if (!confirm('This will scrape all pending videos. Continue?')) {
+        return;
+    }
+    
+    $('#loadingMessage').text('Scraping pending videos...');
+    $('#loadingModal').modal('show');
+    
+    // Get admin API key (you should store this securely)
+    const adminApiKey = localStorage.getItem('admin_api_key') || 'admin-api-key-2024';
+    
+    fetch('/api/content/admin/scrape-pending-videos?llm_model=gemini', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-API-Key': adminApiKey
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        $('#loadingModal').modal('hide');
+        if (data.success) {
+            alert(`Video scraping completed!\n\n` +
+                  `Total: ${data.videos_total}\n` +
+                  `Processed: ${data.videos_processed}\n` +
+                  `Articles inserted: ${data.articles_inserted}\n` +
+                  `LLM: ${data.llm_model}`);
+            location.reload();
+        } else {
+            alert('Video scraping failed: ' + (data.message || data.detail?.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Video scraping failed: ' + error);
+    });
+}
+
+function viewScrapingStats() {
+    $('#loadingMessage').text('Loading scraping statistics...');
+    $('#loadingModal').modal('show');
+    
+    // Query for scraping stats
+    Promise.all([
+        fetch('/api/content/content-counts?category_id=all&time_filter=All%20Time').then(r => r.json()),
+    ])
+    .then(([counts]) => {
+        $('#loadingModal').modal('hide');
+        
+        const stats = `
+Scraping Statistics:
+━━━━━━━━━━━━━━━━━━━━━━
+Total Blogs: ${counts.blogs || 0}
+Total Podcasts: ${counts.podcasts || 0}
+Total Videos: ${counts.videos || 0}
+Total Articles: ${counts.total || 0}
+━━━━━━━━━━━━━━━━━━━━━━
+Database: PostgreSQL
+Last Updated: ${new Date().toLocaleString()}
+        `.trim();
+        
+        alert(stats);
+    })
+    .catch(error => {
+        $('#loadingModal').modal('hide');
+        alert('Failed to load stats: ' + error);
     });
 }
 

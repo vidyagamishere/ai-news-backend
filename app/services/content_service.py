@@ -117,9 +117,11 @@ class ContentService:
             if article_count and article_count['count'] > 0:
                 # Query articles table directly instead of using views that may not exist
                 articles_query = """
-                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display
+                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display,
+                           c.category_label
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    LEFT JOIN ai_categories_master c ON a.category_id = c.id
                     WHERE a.published_date > NOW() - INTERVAL '7 days'
                     ORDER BY a.published_date DESC, a.significance_score DESC
 
@@ -229,9 +231,11 @@ class ContentService:
             if article_count and article_count['count'] > 0:
                 # Query articles table directly instead of using views that may not exist
                 query = """
-                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display
+                    SELECT a.*, ct.name as content_type_name, ct.display_name as content_type_display,
+                           c.category_label
                     FROM articles a
                     LEFT JOIN content_types ct ON a.content_type_id = ct.id
+                    LEFT JOIN ai_categories_master c ON a.category_id = c.id
                     WHERE ct.name = %s
                     ORDER BY a.published_date DESC
                     LIMIT %s

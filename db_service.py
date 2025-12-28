@@ -70,6 +70,7 @@ class PostgreSQLService:
     def execute_query(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = True) -> Optional[Any]:
         """Execute a query with automatic connection management"""
         import os
+        import traceback
         DEBUG = os.getenv("DEBUG", "false").lower() == "true"
         
         if DEBUG:
@@ -80,24 +81,33 @@ class PostgreSQLService:
         try:
             with self.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(query, params)
-                    conn.commit()
-                    
-                    if fetch_one:
-                        result = cursor.fetchone()
-                        if DEBUG:
-                            logger.debug(f"🔍 Query returned one result: {result}")
-                        return result
-                    elif fetch_all:
-                        results = cursor.fetchall()
-                        if DEBUG:
-                            logger.debug(f"🔍 Query returned {len(results)} results")
-                        return results
-                    else:
-                        rowcount = cursor.rowcount
-                        if DEBUG:
-                            logger.debug(f"🔍 Query affected {rowcount} rows")
-                        return rowcount
+                    if DEBUG:
+                        logger.debug(f"🔍 Cursor type: {type(cursor)}")
+                    try:
+                        cursor.execute(query, params)
+                        conn.commit()
+                        
+                        if fetch_one:
+                            result = cursor.fetchone()
+                            if DEBUG:
+                                logger.debug(f"🔍 Query returned one result: {result}")
+                            return result
+                        elif fetch_all:
+                            results = cursor.fetchall()
+                            if DEBUG:
+                                logger.debug(f"🔍 Query returned {len(results)} results")
+                                if results:
+                                    logger.debug(f"🔍 First result type: {type(results[0])}")
+                            return results
+                        else:
+                            rowcount = cursor.rowcount
+                            if DEBUG:
+                                logger.debug(f"🔍 Query affected {rowcount} rows")
+                            return rowcount
+                    except Exception as cursor_error:
+                        logger.error(f"❌ Cursor execution error: {str(cursor_error)}")
+                        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                        raise cursor_error
                         
         except Exception as e:
             logger.error(f"❌ Query execution failed: {str(e)}")
@@ -202,6 +212,172 @@ class PostgreSQLService:
             logger.error(f"❌ Error fetching sources by frequency: {str(e)}")
             return []
     
+    def get_pending_podcasts(self) -> List[Dict[str, Any]]:
+        """Get podcasts that haven't been scraped yet (scraped_status = 'pending')"""
+        try:
+            query = """
+                SELECT 
+                    p.id,
+                    p.name,
+                    p.podcast_url as url,
+                    p.website,
+                    p.category_id,
+                    p.category_name,
+                    p.publisher_id,
+                    p.priority,
+                    p.scraped_status,
+                    pm.publisher_name
+                FROM ai_podcasts p
+                LEFT JOIN publishers_master pm ON p.publisher_id = pm.id
+                WHERE p.is_active = TRUE 
+                  AND p.enabled = TRUE
+                  AND COALESCE(p.scraped_status, 'pending') = 'pending'
+                  AND p.podcast_url IS NOT NULL
+                ORDER BY p.priority ASC, p.name ASC
+            """
+            
+            results = self.execute_query(query, fetch_all=True)
+            logger.info(f"✅ Found {len(results)} pending podcasts to scrape")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching pending podcasts: {str(e)}")
+            return []
+    
+    def get_pending_videos(self) -> List[Dict[str, Any]]:
+        """Get videos that haven't been scraped yet (scraped_status = 'pending')"""
+        try:
+            query = """
+                SELECT 
+                    v.id,
+                    v.name,
+                    v.video_url as url,
+                    v.website,
+                    v.category_id,
+                    v.category_name,
+                    v.publisher_id,
+                    v.priority,
+                    v.scraped_status,
+                    pm.publisher_name
+                FROM ai_videos v
+                LEFT JOIN publishers_master pm ON v.publisher_id = pm.id
+                WHERE v.is_active = TRUE 
+                  AND v.enabled = TRUE
+                  AND COALESCE(v.scraped_status, 'pending') = 'pending'
+                  AND v.video_url IS NOT NULL
+                ORDER BY v.priority ASC, v.name ASC
+            """
+            
+            results = self.execute_query(query, fetch_all=True)
+            logger.info(f"✅ Found {len(results)} pending videos to scrape")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching pending videos: {str(e)}")
+            return []
+    
+    def update_podcast_scrape_status(self, podcast_id: int, status: str = 'completed') -> bool:
+        """Update podcast scrape status and last_scraped_date"""
+        try:
+            query = """
+                UPDATE ai_podcasts 
+                SET scraped_status = %s,
+                    last_scraped_date = NOW()
+                WHERE id = %s
+            """
+            self.execute_query(query, (status, podcast_id), fetch_all=False)
+            logger.debug(f"✅ Updated podcast {podcast_id} status to '{status}'")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error updating podcast status: {str(e)}")
+            return False
+    
+    def update_video_scrape_status(self, video_id: int, status: str = 'completed') -> bool:
+        """Update video scrape status and last_scraped_date"""
+        try:
+            query = """
+                UPDATE ai_videos 
+                SET scraped_status = %s,
+                    last_scraped_date = NOW()
+                WHERE id = %s
+            """
+            self.execute_query(query, (status, video_id), fetch_all=False)
+            logger.debug(f"✅ Updated video {video_id} status to '{status}'")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error updating video status: {str(e)}")
+            return False
+    
+    def get_or_create_publisher(self, article_url: str, article_source: str) -> Optional[int]:
+        """
+        Get existing publisher or create a new one if not found
+        Returns publisher_id or None if creation fails
+        """
+        try:
+            from urllib.parse import urlparse
+            
+            # Extract domain from article URL
+            parsed_url = urlparse(article_url)
+            domain = parsed_url.netloc.lower()
+            
+            # Remove 'www.' prefix for consistency
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            
+            # Use domain as publisher name if source is generic
+            publisher_name = article_source if article_source and article_source != 'Unknown' else domain
+            
+            # Clean up publisher name
+            if not publisher_name or len(publisher_name) < 3:
+                publisher_name = domain
+            
+            # Check if publisher already exists (by name)
+            check_query = """
+                SELECT id FROM publishers_master 
+                WHERE LOWER(publisher_name) = LOWER(%s) 
+                LIMIT 1
+            """
+            existing = self.execute_query(
+                check_query, 
+                (publisher_name,), 
+                fetch_one=True
+            )
+            
+            if existing:
+                publisher_id = existing['id'] if isinstance(existing, dict) else existing[0]
+                logger.debug(f"✅ Found existing publisher: {publisher_name} (ID: {publisher_id})")
+                return publisher_id
+            
+            # Create new publisher
+            insert_query = """
+                INSERT INTO publishers_master (
+                    publisher_name, 
+                    category_id,
+                    priority,
+                    is_active,
+                    created_date
+                ) VALUES (%s, %s, %s, %s, NOW())
+                RETURNING id
+            """
+            
+            result = self.execute_query(
+                insert_query, 
+                (publisher_name, 1, 5, True),  # Default: category_id=1, priority=5, active=True
+                fetch_one=True
+            )
+            
+            if result:
+                new_publisher_id = result['id'] if isinstance(result, dict) else result[0]
+                logger.info(f"✅ Created new publisher: {publisher_name} (ID: {new_publisher_id}, Domain: {domain})")
+                return new_publisher_id
+            else:
+                logger.error(f"❌ Failed to create publisher for {publisher_name}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error in get_or_create_publisher: {str(e)}")
+            return None
+    
     def insert_article(self, article_data: Dict[str, Any]) -> bool:
         # Insert scraped article into articles table after mapping LLM labels to integer foreign keys (content_type_id, ai_topic_id).
         # Define fallback IDs in case the LLM returns an invalid label
@@ -278,13 +454,29 @@ class PostgreSQLService:
             
             logger.info(f"🏷️ Final category assignment: ID {final_ai_topic_id} from {category_source}")
 
-            #if the rss feed  already exists, keep the date as is
-            if article_data.get('published_date') is None:
-                article_data['published_date'] = datetime.now(timezone.utc) - timedelta(days=1)
-            if article_data.get('scraped_date') is None:
-                article_data['scraped_date'] = datetime.now(timezone.utc)
+            # --- 4. ✅ FIX: Convert string "null" to None for all date fields ---
+            date_fields = ['published_date', 'scraped_date', 'created_date', 'updated_date']
+            for field in date_fields:
+                if field in article_data:
+                    value = article_data[field]
+                    if isinstance(value, str) and value.lower() == 'null':
+                        article_data[field] = None
+            
+            # Also check author field for string "null"
+            if article_data.get('author') and isinstance(article_data['author'], str) and article_data['author'].lower() == 'null':
+                article_data['author'] = 'Unknown'
+
+            # Ensure date fields have valid values
             if article_data.get('created_date') is None:
                 article_data['created_date'] = datetime.now(timezone.utc)
+            if article_data.get('scraped_date') is None:
+                article_data['scraped_date'] = datetime.now(timezone.utc)
+            
+            # ✅ CRITICAL: Ensure published_date always has a valid value for ranking score calculation
+            if article_data.get('published_date') is None:
+                # Use created_date as fallback to ensure ranking score works correctly
+                article_data['published_date'] = article_data['created_date']
+                logger.debug(f"📅 Using created_date as published_date fallback for: {article_data.get('title', url)[:50]}...")
             
              # --- 5. ✅ NEW: Extract image data ---
             image_url = article_data.get('image_url')
@@ -298,7 +490,26 @@ class PostgreSQLService:
                 article_data['image_url'] = None
                 article_data['image_source'] = None
 
-            # --- 6. ✅ UPDATED: Insert New Article with Images ---
+            # --- 6. ✅ NEW: Get or Create Publisher if Missing ---
+            publisher_id_val = article_data.get('publisher_id')
+            
+            if not publisher_id_val:
+                logger.warning(f"⚠️ No publisher_id provided for article, creating/finding publisher...")
+                publisher_id_val = self.get_or_create_publisher(
+                    article_url=url,
+                    article_source=article_data.get('source', 'Unknown')
+                )
+                
+                if publisher_id_val:
+                    article_data['publisher_id'] = publisher_id_val
+                    logger.info(f"✅ Assigned publisher_id {publisher_id_val} to article: {article_data.get('title', url)[:50]}...")
+                else:
+                    logger.error(f"❌ Failed to get/create publisher for article: {article_data.get('title', url)[:50]}...")
+                    # Continue without publisher_id (will be NULL in database)
+            else:
+                logger.debug(f"📎 Using provided publisher_id {publisher_id_val} for article")
+
+            # --- 7. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
@@ -349,7 +560,7 @@ class PostgreSQLService:
                 article_data.get('updated_date', datetime.now(timezone.utc)),
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', ['generative AI']),
-                article_data.get('publisher_id'),
+                article_data.get('publisher_id'),  # Will be the created/found publisher_id
                 image_url,      # ✅ ADDED
                 image_source    # ✅ ADDED
             )            
@@ -358,11 +569,11 @@ class PostgreSQLService:
             logger.info(f"🤖 Article processed by LLM: {llm_model_used} for {article_data.get('title', url)[:50]}...")
             
             # Debug logging for publisher_id and category
-            publisher_id_val = article_data.get('publisher_id')
-            if publisher_id_val:
-                logger.info(f"📎 Including publisher_id {publisher_id_val} for article: {article_data.get('title', url)[:50]}...")
+            final_publisher_id = article_data.get('publisher_id')
+            if final_publisher_id:
+                logger.info(f"📎 Final publisher_id {final_publisher_id} assigned to article: {article_data.get('title', url)[:50]}...")
             else:
-                logger.warning(f"⚠️ No publisher_id provided for article: {article_data.get('title', url)[:50]}...")
+                logger.warning(f"⚠️ Article will be inserted without publisher_id: {article_data.get('title', url)[:50]}...")
             
             logger.info(f"📂 Category assignment summary for {article_data.get('title', url)[:50]}:")
             logger.info(f"   • Claude AI category: '{topic_category_label}' → {'✅ Found' if topic_category_label and category_source.startswith('claude_ai') else '❌ Not found/used'}")
@@ -370,7 +581,7 @@ class PostgreSQLService:
             logger.info(f"   • Final category_id: {final_ai_topic_id} (from {category_source})")
             
             self.execute_query(insert_query, values, fetch_all=False)
-            logger.info(f"✅ Article inserted with LLM model '{llm_model_used}' and publisher_id {publisher_id_val}: {article_data.get('title', url)[:50]}...")
+            logger.info(f"✅ Article inserted with LLM model '{llm_model_used}' and publisher_id {final_publisher_id}: {article_data.get('title', url)[:50]}...")
             return True
                 
         except Exception as e:
@@ -644,7 +855,128 @@ class PostgreSQLService:
         logger.info("Fetching articles count")
         query = "SELECT COUNT(*) as count FROM articles"
         result = self.execute_query(query, fetch_one=True)
-        return result["count"] if result else 0   
+        return result["count"] if result else 0
+
+    def create_scrape_job_status(self, job_id: str, scrape_frequency: int, content_type: str = 'articles') -> Dict[str, Any]:
+        """
+        Create initial job status structure with all required fields
+        
+        TWO SCRAPING MODELS:
+        1. FREQUENCY-BASED (Articles from RSS feeds via ai_sources table)
+           - Uses scrape_frequency_days column (1, 7, or 30 days)
+           - Sources: ai_sources table with scrape_frequency_days filter
+           - Example: scrape_frequency=1 for daily sources
+        
+        2. ONE-TIME PENDING (Podcasts & Videos)
+           - Uses scraped_status='pending' column
+           - Sources: ai_podcasts and ai_videos tables
+           - Example: scrape_frequency=0 indicates pending-based scraping
+        
+        Args:
+            job_id: Unique job identifier
+            scrape_frequency: Scraping frequency in days (0 = one-time pending scraping)
+            content_type: Type of content being scraped (articles, podcasts, videos)
+            
+        Returns:
+            Dict containing job status structure
+        """
+        # Determine scraping mode based on content type and frequency
+        is_one_time_scraping = (content_type in ['podcasts', 'videos']) or (scrape_frequency == 0)
+        scraping_mode = 'one_time_pending' if is_one_time_scraping else 'frequency_based'
+        
+        return {
+            'job_id': job_id,
+            'status': 'queued',  # Changed from 'started' to 'queued'
+            'scrape_frequency': scrape_frequency,
+            'content_type': content_type,
+            'scraping_mode': scraping_mode,  # NEW: Track scraping mode
+            'started_at': None,  # Will be set when job actually starts
+            'completed_at': None,
+            'total_sources': 0,
+            'processed_sources': 0,
+            'total_items': 0,
+            'new_items': 0,
+            'duplicate_items': 0,
+            'error_count': 0,
+            'errors': [],
+            'progress_percentage': 0,
+            'created_at': datetime.now(timezone.utc).isoformat()
+        }
+    
+    def update_scrape_job_status(self, job_status: Dict[str, Any], **updates) -> Dict[str, Any]:
+        """
+        Safely update job status with new values
+        
+        Args:
+            job_status: Current job status dictionary
+            **updates: Key-value pairs to update
+            
+        Returns:
+            Updated job status dictionary
+        """
+        job_status.update(updates)
+        
+        # Recalculate progress if relevant fields updated
+        if 'processed_sources' in updates or 'total_sources' in updates:
+            total = job_status.get('total_sources', 0)
+            processed = job_status.get('processed_sources', 0)
+            if total > 0:
+                job_status['progress_percentage'] = int((processed / total) * 100)
+        
+        return job_status
+    
+    def get_safe_job_status(self, job_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Get job status with safe defaults for missing fields
+        
+        Args:
+            job_status: Raw job status dictionary (may be incomplete)
+            
+        Returns:
+            Job status with all required fields populated
+        """
+        if not job_status:
+            return {
+                'job_id': 'unknown',
+                'status': 'not_found',
+                'scrape_frequency': 0,
+                'content_type': 'unknown',
+                'scraping_mode': 'unknown',
+                'started_at': None,
+                'completed_at': None,
+                'total_sources': 0,
+                'processed_sources': 0,
+                'total_items': 0,
+                'new_items': 0,
+                'duplicate_items': 0,
+                'error_count': 0,
+                'errors': [],
+                'progress_percentage': 0,
+                'created_at': None
+            }
+        
+        # Ensure all required fields exist with defaults
+        defaults = {
+            'job_id': 'unknown',
+            'status': 'unknown',
+            'scrape_frequency': 0,
+            'content_type': 'unknown',
+            'scraping_mode': 'unknown',
+            'started_at': None,
+            'completed_at': None,
+            'total_sources': 0,
+            'processed_sources': 0,
+            'total_items': 0,
+            'new_items': 0,
+            'duplicate_items': 0,
+            'error_count': 0,
+            'errors': [],
+            'progress_percentage': 0,
+            'created_at': None
+        }
+        
+        # Merge with defaults (job_status values take precedence)
+        return {**defaults, **job_status}
 
 # Global database service instance
 db_service = None

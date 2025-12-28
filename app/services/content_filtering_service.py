@@ -160,23 +160,20 @@ class ContentFilteringService:
                    ct.display_name as content_type_display,
                    c.name as category_label,
                    s.name as source_name,
-                   s.website as source_website,
-                   p.publisher_name,
-                   p.id as publisher_id
+                   s.website as source_website
             FROM articles a
             LEFT JOIN content_types ct ON a.content_type_id = ct.id
             LEFT JOIN ai_categories_master c ON a.category_id = c.id
             LEFT JOIN ai_sources s ON a.source = s.name
-            LEFT JOIN publishers_master p ON a.publisher_id = p.id
             WHERE 1=1
         """
         
         params = []
         
-        # Time filter
+        # Time filter - ✅ FIXED: Include NULL published_dates to match landing-content behavior
         time_threshold = self.parse_time_filter(criteria.time_filter)
         if time_threshold:
-            base_query += " AND a.published_date >= %s"
+            base_query += " AND (a.published_date >= %s OR a.published_date IS NULL)"
             params.append(time_threshold)
         
         # Content type filter - prioritize ID-based filtering
@@ -247,11 +244,8 @@ class ContentFilteringService:
                 base_query += " AND (" + search_conditions['query'] + ")"
                 params.extend(search_conditions['params'])
         
-        # Order by relevance and significance
-        if criteria.search_query:
-            base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
-        else:
-            base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
+        # Order by significance score and date
+        base_query += " ORDER BY a.significance_score DESC, a.published_date DESC"
        
         logger.debug(f"Constructed Query: {base_query} with params {params}")
        
@@ -338,7 +332,7 @@ class ContentFilteringService:
             else:
                 logger.info(f"   📊 No time filter - returning ALL articles (not recommended)")
             
-            # Build base query
+            # Build base query with composite ranking score
             query = """
                 SELECT DISTINCT
                     a.id,
@@ -359,11 +353,26 @@ class ContentFilteringService:
                     a.publisher_id,
                     ct.name as content_type_label,
                     c.name as category_label,
-                    p.publisher_name as publisher_name
+                    -- DYNAMIC RANKING SCORE (hybrid approach)
+                        (
+                            -- Static component (pre-computed publisher + significance)
+                            COALESCE(a.static_score_component, 0.375) +
+                            
+                            -- Dynamic recency component (calculated in real-time with NOW())
+                            (
+                                CASE 
+                                    WHEN a.published_date >= NOW() - INTERVAL '1 day' THEN 1.0
+                                    WHEN a.published_date >= NOW() - INTERVAL '3 days' THEN 0.8
+                                    WHEN a.published_date >= NOW() - INTERVAL '7 days' THEN 0.6
+                                    WHEN a.published_date >= NOW() - INTERVAL '14 days' THEN 0.4
+                                    WHEN a.published_date >= NOW() - INTERVAL '30 days' THEN 0.2
+                                    ELSE 0.1
+                                END
+                            ) * 0.25
+                        ) as ranking_score
                 FROM articles a
                 LEFT JOIN content_types ct ON a.content_type_id = ct.id
                 LEFT JOIN ai_categories_master c ON a.category_id = c.id
-                LEFT JOIN publishers_master p ON a.publisher_id = p.id
                 WHERE 1=1
             """
             
@@ -403,15 +412,14 @@ class ContentFilteringService:
                     AND (
                         LOWER(a.title) LIKE %s OR 
                         LOWER(a.summary) LIKE %s OR
-                        LOWER(c.name) LIKE %s OR
-                        LOWER(p.publisher_name) LIKE %s
+                        LOWER(c.name) LIKE %s
                     )
                 """
-                params.extend([search_term, search_term, search_term, search_term])
+                params.extend([search_term, search_term, search_term])
                 logger.info(f"✅ SQL WHERE clause added: search query '{criteria.search_query}'")
         
-            # Order by significance and date
-            query += " ORDER BY a.significance_score DESC, a.published_date DESC"
+            # Order by significance score and date
+            query += " ORDER BY ranking_score DESC, a.published_date DESC"
         
             # Apply limit
             if criteria.limit:
@@ -421,7 +429,7 @@ class ContentFilteringService:
         
             # ✅ LOG FINAL QUERY
             logger.info(f"🔍 FINAL SQL QUERY:")
-            logger.info(f"   Query: {query[:200]}...")
+            logger.info(f"   Query: {query}...")
             logger.info(f"   Params: {params}")
         
             # Execute query
