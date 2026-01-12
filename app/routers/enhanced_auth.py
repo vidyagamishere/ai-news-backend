@@ -20,7 +20,7 @@ import jwt
 
 from app.models.schemas import (
     GoogleAuthRequest, PasswordAuthRequest, UserSignupRequest, 
-    TokenResponse, UserResponse, UserPreferences
+    TokenResponse, UserResponse, UserPreferences, SendOTPRequest
 )
 from app.dependencies.database import get_database_service
 from db_service import DatabaseService
@@ -145,11 +145,16 @@ def send_otp_email_smtp(to_email: str, name: str, otp: str):
     smtp_user = os.getenv('SMTP_USER')
     smtp_password = os.getenv('SMTP_PASSWORD')
     
-    logger.info(f"📧 Sending OTP to {to_email} via Zoho SMTP")
+    logger.info(f"📧 Attempting to send OTP to {to_email} via Zoho SMTP")
+    logger.info(f"📧 SMTP Config - Host: {smtp_host}, Port: {smtp_port}, User: {smtp_user}")
     
     if not smtp_password:
-        logger.warning("⚠️ SMTP_PASSWORD not configured, email not sent")
+        logger.error("⚠️ SMTP_PASSWORD not configured")
         raise Exception("SMTP not configured. Please set SMTP_PASSWORD in environment variables.")
+    
+    if not smtp_user:
+        logger.error("⚠️ SMTP_USER not configured")
+        raise Exception("SMTP not configured. Please set SMTP_USER in environment variables.")
     
     # Create message
     msg = MIMEMultipart('alternative')
@@ -219,13 +224,26 @@ def send_otp_email_smtp(to_email: str, name: str, otp: str):
     html_part = MIMEText(html_content, 'html')
     msg.attach(html_part)
     
-    # Send email
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(smtp_user, smtp_password)
-        server.send_message(msg)
-    
-    logger.info(f"✅ OTP email sent to {to_email}")
+    # Send email with detailed error logging
+    try:
+        logger.info(f"📧 Connecting to SMTP server: {smtp_host}:{smtp_port}")
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            logger.info("📧 SMTP connection established, starting TLS...")
+            server.starttls()
+            logger.info(f"📧 TLS started, attempting login as {smtp_user}...")
+            server.login(smtp_user, smtp_password)
+            logger.info(f"📧 Login successful, sending email to {to_email}...")
+            server.send_message(msg)
+            logger.info(f"✅ OTP email sent successfully to {to_email}")
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"❌ SMTP Authentication failed: {str(e)}")
+        raise Exception(f"Email authentication failed. Please check SMTP credentials. Error: {str(e)}")
+    except smtplib.SMTPException as e:
+        logger.error(f"❌ SMTP error: {str(e)}")
+        raise Exception(f"Failed to send email via SMTP. Error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error sending email: {str(e)}")
+        raise Exception(f"Failed to send OTP email. Error: {str(e)}")
 
 
 def hash_password(password: str) -> str:
@@ -1011,9 +1029,14 @@ async def send_otp(
     Stores OTP in database with 10-minute expiry
     """
     try:
+        logger.info(f"📧 Received send-otp raw request: {request}")
+        
+        # Manually validate and extract fields
         email = request.get('email')
         name = request.get('name', '')
         auth_mode = request.get('auth_mode', 'signup')
+        
+        logger.info(f"📧 Extracted - email: {email}, name: {name}, auth_mode: {auth_mode}")
         
         if not email:
             raise HTTPException(status_code=400, detail="Email is required")

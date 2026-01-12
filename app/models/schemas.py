@@ -78,6 +78,12 @@ class PasswordAuthRequest(BaseModel):
     auth_mode: str = "signin"  # signin or signup
 
 
+class SendOTPRequest(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+    auth_mode: str = "signup"  # signin or signup
+
+
 class UserSignupRequest(BaseModel):
     email: EmailStr
     password: str

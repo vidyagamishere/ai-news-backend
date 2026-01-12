@@ -1115,7 +1115,7 @@ async def get_landing_content(
                     LIMIT %s
                 """
                 articles = db.execute_query(articles_query, (content_type['id'], category['id'], cutoff_date, limit_per_type), fetch_all=True)
-
+                logger.info(f"✅ Query executed for type: {content_type['name']} in category: {category['name']} is {articles_query} ")
                 # Format articles
                 formatted_articles = []
                 for article in articles:
@@ -1155,8 +1155,10 @@ scraping_jobs = {}
 def track_scraping_job(job_id: str, llm_model: str, scrape_frequency: int, content_service: ContentService):
     """Background task for scraping - runs async"""
     try:
+        logger.info(f"🔄 Background scraping job {job_id} starting - Setting status to 'running'")
         scraping_jobs[job_id]['status'] = 'running'
         scraping_jobs[job_id]['started_at'] = datetime.now().isoformat()
+        logger.info(f"🔍 DEBUG: Status after setting to running: {scraping_jobs[job_id].get('status')}")
         
         logger.info(f"🔄 Background scraping job {job_id} started")
         
@@ -1167,13 +1169,18 @@ def track_scraping_job(job_id: str, llm_model: str, scrape_frequency: int, conte
             scrape_frequency=scrape_frequency
         ))
         
+        logger.info(f"🔍 DEBUG: Scraping function completed, now updating status to 'completed'")
         scraping_jobs[job_id]['status'] = 'completed'
         scraping_jobs[job_id]['completed_at'] = datetime.now().isoformat()
         scraping_jobs[job_id]['result'] = result
         
         logger.info(f"✅ Background scraping job {job_id} completed")
+        logger.info(f"🔍 DEBUG: Job status after completion: {scraping_jobs[job_id].get('status')}")
+        logger.info(f"🔍 DEBUG: Full job data: {scraping_jobs[job_id]}")
+        logger.info(f"🔍 DEBUG: Job {job_id} is in scraping_jobs dict: {job_id in scraping_jobs}")
         
     except Exception as e:
+        logger.error(f"❌ Background scraping job {job_id} failed with error: {str(e)}")
         scraping_jobs[job_id]['status'] = 'failed'
         scraping_jobs[job_id]['error'] = str(e)
         scraping_jobs[job_id]['completed_at'] = datetime.now().isoformat()
@@ -1368,10 +1375,14 @@ async def get_scraping_status(
         if job_id not in scraping_jobs:
             raise HTTPException(status_code=404, detail='Job not found')
         
+        # ✅ DEBUG: Log the raw job data from scraping_jobs
+        raw_job_data = scraping_jobs.get(job_id)
+        logger.info(f"🔍 DEBUG: Raw job data for {job_id}: status={raw_job_data.get('status')}, completed_at={raw_job_data.get('completed_at')}")
+        
         # ✅ FIX: Use safe job status retrieval
         from db_service import get_database_service
         db = get_database_service()
-        job = db.get_safe_job_status(scraping_jobs.get(job_id))
+        job = db.get_safe_job_status(raw_job_data)
         
         # Add user-friendly description based on scraping mode
         scraping_description = ""
