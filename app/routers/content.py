@@ -1024,13 +1024,15 @@ async def get_landing_content(
                 SELECT id, name, display_name, frontend_section
                 FROM content_types
                 WHERE is_active = TRUE AND id = %s
-            """
+                ORDER BY display_order ASC
+            """ 
             content_types = db.execute_query(content_types_query, (content_type_id,), fetch_all=True)
         else:
             content_types_query = """
                 SELECT id, name, display_name, frontend_section
                 FROM content_types
                 WHERE is_active = TRUE
+                ORDER BY display_order ASC
             """
             content_types = db.execute_query(content_types_query, fetch_all=True)
         if not content_types:

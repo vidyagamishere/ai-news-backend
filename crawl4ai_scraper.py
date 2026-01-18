@@ -19,6 +19,14 @@ import feedparser
 import aiohttp
 from bs4 import BeautifulSoup
 
+# Import resource monitor for system resource management
+try:
+    from resource_monitor import ResourceMonitor, ResourceThresholds
+    RESOURCE_MONITOR_AVAILABLE = True
+except ImportError:
+    RESOURCE_MONITOR_AVAILABLE = False
+    logging.warning("⚠️ Resource monitor not available - no resource throttling")
+
 # ✅ OPTIONAL: Ollama import (only for local development)
 try:
     import ollama
@@ -49,7 +57,10 @@ else:
     # Set up writable directories for local/other deployments
     temp_base_dir = tempfile.mkdtemp(prefix='crawl4ai_')
     os.environ['CRAWL4AI_CACHE_DIR'] = temp_base_dir
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(temp_base_dir, 'browsers')
+    # Use system Playwright browsers instead of temp directory
+    playwright_path = os.path.expanduser('~/Library/Caches/ms-playwright')
+    if os.path.exists(playwright_path):
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = playwright_path
     os.environ['CRAWL4AI_BASE_DIRECTORY'] = temp_base_dir
 
 import json
@@ -97,14 +108,14 @@ class ScrapedArticle:
     scraped_date: Optional[str] = None
     content_type_label: str = "article"
     topic_category_label: str = "Generative AI"
-    keywords: Optional[List[str]] = None
+    keywords: Optional[str] = None  # Changed from List[str] to str for comma-separated format
     publisher_id: Optional[int] = None
     llm_processed: Optional[str] = None
     image_url: Optional[str] = None          # ✅ ADD THIS
     image_source: Optional[str] = None       # ✅ ADD THIS
 
 class Crawl4AIScraper:
-    """AI News Scraper using Crawl4AI and Claude LLM"""
+    """AI News Scraper using Crawl4AI and Claude LLM with resource management"""
     
     def __init__(self):
         self.extraction_warnings = []  # Track extraction warnings for reporting
@@ -112,6 +123,27 @@ class Crawl4AIScraper:
         self.google_api_key = os.getenv('GOOGLE_API_KEY', '')
         self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
+
+        # ✅ NEW: Resource Monitor for system health
+        if RESOURCE_MONITOR_AVAILABLE:
+            # Configure conservative thresholds for Mac to prevent crashes
+            thresholds = ResourceThresholds(
+                max_cpu_percent=70.0,  # Throttle threshold
+                max_memory_percent=65.0,  # Throttle threshold
+                max_memory_mb=5000,  # Throttle at 5GB process memory
+                warning_memory_percent=60.0,  # Less noisy - 60% is normal with apps running
+                critical_memory_percent=70.0,
+                abort_cpu_percent=85.0,  # STOP scraping if CPU > 85%
+                abort_memory_percent=80.0,  # STOP scraping if memory > 80%
+                abort_memory_mb=6500  # STOP scraping if process > 6.5GB
+            )
+            self.resource_monitor = ResourceMonitor(thresholds)
+            logger.info("✅ Resource monitoring enabled with ABORT protection")
+            logger.info(f"   Throttle: CPU<{thresholds.max_cpu_percent}%, Memory<{thresholds.max_memory_percent}%")
+            logger.info(f"   ABORT: CPU>{thresholds.abort_cpu_percent}%, Memory>{thresholds.abort_memory_percent}%")
+        else:
+            self.resource_monitor = None
+            logger.warning("⚠️ Resource monitoring disabled")
 
         # ✅ NEW: Ollama Configuration
         self.ollama_model = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Default to Llama 3.2 3B
@@ -283,16 +315,48 @@ class Crawl4AIScraper:
             session_dir = os.path.join(temp_base_dir, f'session_{os.getpid()}_{asyncio.current_task().get_name() if asyncio.current_task() else "main"}')
             os.makedirs(session_dir, exist_ok=True)
             
-            # Configure Crawl4AI with advanced options and proper permissions
+            # Configure Crawl4AI with LIGHTWEIGHT browser options for reduced resource usage
+            # NOTE: These settings affect ONLY the browser (Chromium), not Ollama/system GPU
+            # Ollama can still use GPU for LLM processing independently
             crawler_strategy = AsyncPlaywrightCrawlerStrategy(
                 headless=True,
-                browser_type="chromium",
+                browser_type="chromium",  # Chromium is lighter than Chrome
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                # Lightweight browser arguments to reduce memory and CPU usage
+                # These only affect browser rendering, not Ollama or system GPU
+                browser_args=[
+                    "--disable-dev-shm-usage",  # Overcome limited resource problems
+                    "--disable-setuid-sandbox",
+                    "--no-sandbox",
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-extensions",
+                    "--disable-plugins",
+                    "--disable-images",  # Don't load images to save bandwidth and memory
+                    "--blink-settings=imagesEnabled=false",
+                    "--single-process",  # Use single process mode
+                    "--no-zygote",  # Don't use zygote process
+                    "--disable-accelerated-2d-canvas",  # Disable canvas acceleration
+                    "--disable-accelerated-jpeg-decoding",
+                    "--disable-accelerated-mjpeg-decode",
+                    "--disable-accelerated-video-decode",
+                    "--memory-pressure-off",  # Disable memory pressure signals
+                    "--max-old-space-size=512",  # Limit V8 heap size to 512MB
+                    # GPU flags - disable for browser rendering only (Ollama GPU unaffected)
+                    "--disable-gpu",  # Browser doesn't need GPU for text scraping
+                    "--disable-software-rasterizer",
+                ],
                 headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
                     "Accept-Encoding": "gzip, deflate",
                     "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Cache-Control": "max-age=0"
                 },
                 user_data_dir=os.path.join(session_dir, 'user_data'),
                 downloads_path=os.path.join(session_dir, 'downloads')
@@ -332,29 +396,56 @@ class Crawl4AIScraper:
                 
                 # Perform the crawl with advanced options
                 logger.info(f"🌐 Starting crawl for {url}")
-                result = await crawler.arun(
-                    url=url,
-                    extraction_strategy=extraction_strategy,
-                    bypass_cache=True,
-                    process_iframes=True,
-                    remove_overlay_elements=True,
-                    simulate_user=True,
-                    override_navigator=True,
-                    wait_for="body",
-                    delay_before_return_html=2.0,
-                    css_selector="body",
-                    screenshot=False,
-                    magic=True
-                )
+                result = None
+                try:
+                    # Use longer delays for sites that require browser mode
+                    wait_time = 3.0 if self._requires_browser_mode(url) else 2.0
+                    
+                    result = await crawler.arun(
+                        url=url,
+                        extraction_strategy=extraction_strategy,
+                        bypass_cache=True,
+                        process_iframes=True,
+                        remove_overlay_elements=True,
+                        simulate_user=True,
+                        override_navigator=True,
+                        wait_for="body",
+                        delay_before_return_html=wait_time,
+                        css_selector="body",
+                        screenshot=False,
+                        magic=True,
+                        page_timeout=60000  # 60 second timeout for heavy pages
+                    )
+                except Exception as crawl_error:
+                    logger.error(f"❌ Crawl4AI exception for {url}: {str(crawl_error)}")
+                    logger.debug(f"📋 Crawl error traceback: {traceback.format_exc()}")
+                    # Don't fallback to HTTP for sites that require browser rendering
+                    if self._requires_browser_mode(url):
+                        logger.warning(f"⚠️ Skipping HTTP fallback for {url} - browser mode required")
+                        return None
+                    return await self._fallback_scrape(url)
                 
                 # ✅ ADD NULL CHECK FOR RESULT
                 if result is None:
                     logger.error(f"❌ Crawl result is None for {url} - crawler.arun() returned None")
+                    # For browser-required sites, try direct Playwright as fallback
+                    if self._requires_browser_mode(url):
+                        logger.info(f"🔄 Attempting direct Playwright fallback for {url}")
+                        return await self._direct_playwright_fallback(url)
                     return await self._fallback_scrape(url)
                 
                 # ✅ NOW SAFE TO ACCESS result.success
                 if not result.success:
                     logger.error(f"❌ Crawl4AI failed for {url}: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
+                    # For browser-required sites, try direct Playwright as fallback
+                    if self._requires_browser_mode(url):
+                        logger.info(f"🔄 Attempting direct Playwright fallback for {url}")
+                        return await self._direct_playwright_fallback(url)
+                    return await self._fallback_scrape(url)
+                    # Don't fallback to HTTP for sites that require browser rendering
+                    if self._requires_browser_mode(url):
+                        logger.warning(f"⚠️ Skipping HTTP fallback for {url} - browser mode required")
+                        return None
                     return await self._fallback_scrape(url)
                 
                 logger.info(f"✅ Crawl completed successfully for {url}")
@@ -601,7 +692,9 @@ class Crawl4AIScraper:
             
             # Try to extract metadata from the YouTube page
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9'
             }
             
             response = requests.get(url, headers=headers, timeout=10)
@@ -655,7 +748,9 @@ class Crawl4AIScraper:
             
             # Try to extract metadata from the podcast page
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9'
             }
             
             response = requests.get(url, headers=headers, timeout=10)
@@ -797,6 +892,266 @@ class Crawl4AIScraper:
         import random
         return random.choice(self.USER_AGENTS)
     
+    def _normalize_date(self, date_str: Optional[str]) -> Optional[str]:
+        """
+        Normalize various date formats to valid PostgreSQL timestamps.
+        Handles malformed dates from LLMs like:
+        - "2024-07-00" -> "2024-07-01"
+        - "2024-12" -> "2024-12-01"
+        - "July 2024" -> "2024-07-01"
+        - Partial dates with missing day -> add day 01
+        
+        Returns None if date cannot be normalized.
+        """
+        if not date_str or date_str.lower() in ['null', 'none', 'n/a', 'unknown']:
+            return None
+        
+        try:
+            from datetime import datetime
+            import re
+            
+            # Clean the input
+            date_str = str(date_str).strip()
+            
+            # Case 1: "2024-07-00" - invalid day (00)
+            if re.match(r'^\d{4}-\d{2}-00$', date_str):
+                date_str = date_str[:-2] + '01'  # Replace 00 with 01
+                logger.debug(f"📅 Normalized date with day=00: {date_str}")
+            
+            # Case 2: "2024-12" or "2024-07" - missing day
+            if re.match(r'^\d{4}-\d{1,2}$', date_str):
+                date_str = date_str + '-01'  # Add day 01
+                logger.debug(f"📅 Normalized date missing day: {date_str}")
+            
+            # Case 3: "2024" - year only
+            if re.match(r'^\d{4}$', date_str):
+                date_str = date_str + '-01-01'  # Add Jan 1st
+                logger.debug(f"📅 Normalized year-only date: {date_str}")
+            
+            # Case 4: Try to parse various formats
+            try:
+                # Try ISO format first
+                parsed_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return parsed_date.isoformat()
+            except ValueError:
+                # Try other common formats
+                for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%B %Y', '%b %Y', '%Y-%m', '%m/%d/%Y', '%d/%m/%Y']:
+                    try:
+                        parsed_date = datetime.strptime(date_str, fmt)
+                        return parsed_date.isoformat()
+                    except ValueError:
+                        continue
+                
+                # If nothing works, return None
+                logger.warning(f"⚠️ Could not normalize date: {date_str}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Date normalization error for '{date_str}': {e}")
+            return None
+    
+    def _is_category_or_root_url(self, url: str) -> bool:
+        """
+        Detect if a URL is a category/root page rather than an individual article.
+        Category pages typically end with just a category name (e.g., /news/product-releases/)
+        while article pages have additional path segments (e.g., /index/article-title/).
+        Also filters out RSS/XML feeds.
+        
+        Returns True if URL is a category/root page that should be excluded.
+        """
+        # ✅ CRITICAL: Filter out RSS/XML feed URLs
+        rss_feed_patterns = [
+            r'\.xml$',           # Ends with .xml
+            r'\.rss$',           # Ends with .rss
+            r'/rss\.xml$',       # /rss.xml
+            r'/feed\.xml$',      # /feed.xml
+            r'/atom\.xml$',      # /atom.xml
+            r'/feed/?$',         # /feed or /feed/
+            r'/feeds/?$',        # /feeds or /feeds/
+            r'/rss/?$',          # /rss or /rss/
+        ]
+        
+        for pattern in rss_feed_patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                logger.debug(f"🚫 Detected RSS/XML feed URL (pattern: {pattern}): {url}")
+                return True
+        
+        # Common category path patterns that should be excluded
+        # NOTE: Patterns should only match ROOT/CATEGORY pages, not article URLs that contain these paths
+        category_patterns = [
+            # OpenAI specific patterns (exact matches only)
+            r'/news/product-releases/?$',
+            r'/news/safety-alignment/?$', 
+            r'/news/security/?$',
+            r'/news/engineering/?$',
+            r'/news/research/?$',
+            r'/news/?$',
+            
+            # Root category pages - only if they're truly at the end of the URL
+            # Use negative lookahead to ensure nothing follows after the trailing slash
+            r'/index/?$(?!.)',
+            r'/blog/?$(?!.)',
+            
+            # Google DeepMind specific patterns
+            r'/blog/page/\d+/?$',              # Pagination: /blog/page/2/
+            r'/research/evals/?$',             # Research evals category
+            r'/research/publications/?$',      # Publications category
+            r'/research/projects/?$',          # Projects category
+            r'/research/datasets/?$',          # Datasets category
+            r'/discover/blog/?$',              # Blog root
+            r'/discover/?$',                   # Discover root
+            
+            # Google Research blog label patterns (category pages with articles)
+            r'/blog/label/[^/]+/?$',           # Blog label categories: /blog/label/algorithms-theory/
+            r'research\.google/blog/label/',  # Full research.google domain pattern
+            r'/blog/\d{4}/?$',                 # Year-based archives: /blog/2026/, /blog/2025/
+            r'research\.google/blog/\d{4}',   # Full year archive pattern
+            
+            # General pagination patterns
+            r'/page/\d+/?$',                   # Generic pagination: /page/2/
+            
+            # General category patterns (exact matches)
+            r'/category/[^/]+/?$',
+            r'/tag/[^/]+/?$',
+            r'/topic/[^/]+/?$',
+            r'/archive/?$',
+            r'/archives/?$',
+            
+            # Only match /posts/, /articles/, etc if they're truly root pages
+            r'/posts/?$(?!.)',
+            r'/articles/?$(?!.)',
+        ]
+        
+        # Check if URL matches any category pattern
+        for pattern in category_patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                logger.debug(f"🚫 Detected category URL (pattern: {pattern}): {url}")
+                return True
+        
+        # Additional heuristic: If URL ends with /news/something/ where something is a single word,
+        # it's likely a category page
+        news_category_match = re.search(r'/news/([a-z-]+)/?$', url, re.IGNORECASE)
+        if news_category_match:
+            category_name = news_category_match.group(1)
+            # If it's a short category name (single word or hyphenated), likely a category page
+            if len(category_name.split('-')) <= 3:  # e.g., "product-releases", "engineering"
+                logger.debug(f"🚫 Detected news category URL: {url}")
+                return True
+        
+        # If URL contains /index/ but doesn't have a path after it (beyond trailing slash), 
+        # it's the index page itself
+        if re.search(r'/index/?$', url, re.IGNORECASE):
+            logger.debug(f"🚫 Detected index root URL: {url}")
+            return True
+            
+        return False
+    
+    def _requires_browser_mode(self, url: str) -> bool:
+        """Check if URL requires browser rendering (no fallback to basic HTTP)"""
+        browser_required_domains = [
+            'openai.com',
+            'anthropic.com',
+            'cohere.com',  # Added for Cohere research pages
+            'deepmind.com',
+            'google.com/ai',
+            'microsoft.com/ai',
+            'research.google'  # Added for Google Research blog
+        ]
+        return any(domain in url.lower() for domain in browser_required_domains)
+    
+    async def _direct_playwright_fallback(self, url: str) -> Optional[Dict[str, Any]]:
+        """Direct Playwright fallback when Crawl4AI fails for browser-required sites"""
+        try:
+            from playwright.async_api import async_playwright
+            import subprocess
+            import sys
+            
+            logger.info(f"🎭 Starting direct Playwright scraping for {url}")
+            
+            # Get the Playwright browser path from the venv
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "playwright", "install", "chromium"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                logger.info(f"📦 Playwright install result: {result.returncode}")
+            except Exception as install_error:
+                logger.warning(f"⚠️ Playwright install attempt failed: {install_error}")
+            
+            async with async_playwright() as p:
+                # Launch browser with stealth settings - let Playwright find its own installation
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-blink-features=AutomationControlled'
+                    ]
+                )
+                
+                context = await browser.new_context(
+                    user_agent=self._get_random_user_agent(),
+                    viewport={'width': 1920, 'height': 1080},
+                    extra_http_headers={
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Referer': 'https://www.google.com/'
+                    }
+                )
+                
+                page = await context.new_page()
+                
+                # Navigate to the page with a more reliable wait strategy
+                logger.info(f"🌐 Navigating to {url}")
+                try:
+                    # Try with domcontentloaded first (faster, more reliable)
+                    await page.goto(url, wait_until='domcontentloaded', timeout=120000)
+                    logger.info(f"✅ Page loaded successfully: {url}")
+                except Exception as goto_error:
+                    logger.warning(f"⚠️ Failed with domcontentloaded, trying with load: {str(goto_error)}")
+                    await page.goto(url, wait_until='load', timeout=120000)
+                
+                # Wait for content to fully render (but don't wait for networkidle)
+                await page.wait_for_timeout(5000)  # Give JavaScript time to execute
+                
+                # Get the HTML content
+                html_content = await page.content()
+                
+                # Extract text content
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Remove script and style elements
+                for script in soup(['script', 'style', 'nav', 'footer', 'header']):
+                    script.decompose()
+                
+                # Get title
+                title = soup.find('h1')
+                title_text = title.get_text(strip=True) if title else soup.title.string if soup.title else "No title"
+                
+                # Get main content
+                content_element = soup.find('article') or soup.find('main') or soup.find('body')
+                content_text = content_element.get_text(separator=' ', strip=True) if content_element else ""
+                
+                await browser.close()
+                
+                logger.info(f"✅ Direct Playwright scraping successful for {url}")
+                
+                return {
+                    'title': title_text,
+                    'content': content_text[:5000],  # Limit content length
+                    'html': html_content,
+                    'url': url
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Direct Playwright fallback failed for {url}: {str(e)}")
+            logger.debug(f"📋 Playwright error traceback: {traceback.format_exc()}")
+            return None
+    
     async def _retry_request_with_different_agent(self, url: str, max_retries: int = 3) -> Optional[str]:
         """Retry HTTP request with different user agents"""
         import random
@@ -807,15 +1162,16 @@ class Crawl4AIScraper:
                 user_agent = self._get_random_user_agent()
                 headers = {
                     'User-Agent': user_agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
                     'Sec-Fetch-Site': 'none',
-                    'Cache-Control': 'max-age=0'
+                    'Cache-Control': 'max-age=0',
+                    'Referer': 'https://www.google.com/'
                 }
                 
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
@@ -827,7 +1183,7 @@ class Crawl4AIScraper:
                             logger.warning(f"⚠️ HTTP 403 attempt {attempt + 1}/{max_retries} for {url}")
                             if attempt < max_retries - 1:
                                 # Wait with exponential backoff
-                                wait_time = random.uniform(1, 3) * (2 ** attempt)
+                                wait_time = random.uniform(2, 5) * (1.5 ** attempt)
                                 await asyncio.sleep(wait_time)
                                 continue
                         else:
@@ -892,24 +1248,31 @@ class Crawl4AIScraper:
                 user_agent = self._get_random_user_agent()
                 headers = {
                     'User-Agent': user_agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
-                    'Referer': 'https://google.com/',
+                    'Referer': 'https://www.google.com/',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'cross-site',
+                    'Sec-Fetch-User': '?1'
                 }
                 
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(url, timeout=30, allow_redirects=True) as response:
                         if response.status == 403 and attempt < 2:
-                            # HTTP 403 - try again with different user agent
-                            logger.warning(f"⚠️ HTTP 403 for {url}, retrying with different user agent (attempt {attempt + 1})")
-                            await asyncio.sleep(random.uniform(1, 3))  # Random delay
+                            # HTTP 403 - try again with different user agent and longer delay
+                            wait_time = random.uniform(2, 5) * (1.5 ** attempt)  # Exponential backoff
+                            logger.warning(f"⚠️ HTTP 403 for {url}, retrying with different user agent (attempt {attempt + 1}/3) after {wait_time:.1f}s")
+                            await asyncio.sleep(wait_time)
                             continue
                         elif response.status != 200:
                             logger.error(f"❌ Failed to fetch {url}: HTTP {response.status}")
                             if attempt < 2:
-                                await asyncio.sleep(random.uniform(1, 2))
+                                wait_time = random.uniform(1, 3) * (1.5 ** attempt)
+                                await asyncio.sleep(wait_time)
                                 continue
                             return None
                         
@@ -1432,7 +1795,23 @@ class Crawl4AIScraper:
         
         fallback_keywords = []
         
-        # 1. Extract domain-based keywords
+        # 1. PRIORITY: Extract keywords from title first (most important)
+        if title:
+            # Extract capitalized words and proper nouns from title
+            title_caps = re.findall(r'\b[A-Z][a-zA-Z0-9]{2,}\b', title)
+            # Filter out common stop words
+            stop_words = {'The', 'This', 'That', 'When', 'Where', 'What', 'How', 'Why', 'And', 'But', 'For', 'With', 'Are', 'Our', 'New', 'All'}
+            title_keywords = [word for word in title_caps if word not in stop_words]
+            fallback_keywords.extend(title_keywords[:5])  # Take up to 5 keywords from title
+            
+            # Extract quoted terms from title (often important)
+            quoted_terms = re.findall(r'"([^"]+)"|\'([^\']+)\'', title)
+            for quoted in quoted_terms:
+                term = quoted[0] or quoted[1]
+                if term:
+                    fallback_keywords.append(term.strip())
+        
+        # 2. Extract domain-based keywords
         domain = urlparse(url).netloc.lower()
         if 'openai' in domain:
             fallback_keywords.extend(['OpenAI', 'ChatGPT', 'Artificial Intelligence'])
@@ -1449,26 +1828,34 @@ class Crawl4AIScraper:
         elif 'techcrunch' in domain or 'verge' in domain:
             fallback_keywords.extend(['Tech News', 'Technology'])
             
-        # 2. Extract from title and content
+        # 3. Extract from title and content
         text_to_analyze = f"{title} {content[:500]}"  # First 500 chars of content
         
         # Find common AI/tech terms
-        tech_pattern = r'\b(?:AI|ML|GPU|CPU|API|IoT|5G|quantum|neural|machine learning|deep learning|algorithm|blockchain|cryptocurrency|robot|automation|cloud|edge computing|cybersecurity|artificial intelligence|natural language|computer vision|data science|big data)\b'
+        tech_pattern = r'\b(?:AI|ML|GPU|CPU|API|IoT|5G|quantum|neural|machine learning|deep learning|algorithm|blockchain|cryptocurrency|robot|automation|cloud|edge computing|cybersecurity|artificial intelligence|natural language|computer vision|data science|big data|LLM|GPT|transformer)\b'
         tech_terms = re.findall(tech_pattern, text_to_analyze, re.IGNORECASE)
         fallback_keywords.extend([term.title() for term in tech_terms])
         
-        # 3. Find capitalized words (potential proper nouns/companies)
-        capitalized_words = re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', text_to_analyze)
+        # 4. Find capitalized words from content (potential proper nouns/companies)
+        capitalized_words = re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', content[:500])
         # Filter out common words
-        meaningful_caps = [word for word in capitalized_words if word not in ['The', 'This', 'That', 'When', 'Where', 'What', 'How', 'Why', 'And', 'But', 'For', 'With']]
+        meaningful_caps = [word for word in capitalized_words if word not in stop_words]
         fallback_keywords.extend(meaningful_caps[:3])
         
-        # 4. Add generic AI keywords if nothing found
+        # 5. Add generic AI keywords if nothing found
         if not fallback_keywords:
             fallback_keywords = ['Artificial Intelligence', 'Technology', 'Innovation']
             
         # Remove duplicates and limit
-        return list(set(fallback_keywords))[:8]
+        unique_keywords = []
+        seen = set()
+        for kw in fallback_keywords:
+            kw_lower = kw.lower()
+            if kw_lower not in seen:
+                seen.add(kw_lower)
+                unique_keywords.append(kw)
+        
+        return unique_keywords[:8]
     
     def _detect_content_type(self, url: str, html: str, title: str, content: str, media: list) -> str:
         """Detect content type: Videos, Podcasts, or Blogs"""
@@ -1639,23 +2026,28 @@ Return ONLY the JSON object, nothing else."""
                 publisher_id_fallback = scraped_data.get('publisher_id')
                 logger.warning("⚠️ Using fallback processing (no Anthropic API key)")
                 logger.info(f"🔗 Fallback: Preserving publisher_id {publisher_id_fallback} for {scraped_data.get('url', 'Unknown URL')}")
+                
+                # Normalize dates
+                raw_date = scraped_data.get('date') or scraped_data.get('extracted_date')
+                normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                
                 return ScrapedArticle(
                     title=scraped_data.get('title', 'AI News Article'),
                     author=scraped_data.get('author'),
                     summary=scraped_data.get('description', 'AI news and developments'),
                     content=scraped_data.get('content', '')[:1000],
-                    date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+                    date=normalized_date,
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=6.0,
                     complexity_level="Medium",
                     reading_time=scraped_data.get('reading_time', 1),
                     publisher_id=publisher_id_fallback,  # Ensure publisher_id is preserved from scraped_data
-                    published_date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+                    published_date=normalized_date,
                     scraped_date=scraped_data.get('extracted_date'),
                     content_type_label=scraped_data.get('content_type', 'Blogs'),
                     topic_category_label="AI News & Updates",
-                    keywords=scraped_data.get('tags', []),
+                    keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                     image_url=scraped_data.get('image_url'),
                     image_source=scraped_data.get('image_source')
                 )
@@ -1706,23 +2098,27 @@ Return ONLY the JSON object, nothing else."""
                         publisher_id_preserved = scraped_data.get('publisher_id')
                         logger.info(f"🔗 Preserving publisher_id {publisher_id_preserved} in Claude response for {scraped_data.get('url', 'Unknown URL')}")
                         
+                        # Normalize dates from LLM response
+                        raw_date = parsed_data.get('date') or scraped_data.get('date')
+                        normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                        
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
-                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            date=normalized_date,
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
                             complexity_level=parsed_data.get('complexity_level', 'Medium'),
                             reading_time=scraped_data.get('reading_time', 1),
                             publisher_id=publisher_id_preserved,
-                            published_date=parsed_data.get('date') or scraped_data.get('date'),
+                            published_date=normalized_date,
                             scraped_date=scraped_data.get('extracted_date'),
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                            keywords=scraped_data.get('tags', []),
+                            keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                             llm_processed='claude-3-haiku-20240307',  # Add explicit model name
                             image_url=scraped_data.get('image_url'),
                             image_source=scraped_data.get('image_source')
@@ -1807,23 +2203,27 @@ Return ONLY the JSON object, nothing else."""
                         publisher_id_preserved = scraped_data.get('publisher_id')
                         logger.info(f"🔗 Preserving publisher_id {publisher_id_preserved} in Gemini response for {scraped_data.get('url', 'Unknown URL')}")
                         
+                        # Normalize dates from LLM response
+                        raw_date = parsed_data.get('date') or scraped_data.get('date')
+                        normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                        
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
-                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            date=normalized_date,
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
                             complexity_level=parsed_data.get('complexity_level', 'Medium'),
                             reading_time=scraped_data.get('reading_time', 1),
                             publisher_id=publisher_id_preserved,
-                            published_date=parsed_data.get('date') or scraped_data.get('date'),
+                            published_date=normalized_date,
                             scraped_date=scraped_data.get('extracted_date'),
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                            keywords=scraped_data.get('tags', []),
+                            keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                             llm_processed=model_name,
                             image_url=scraped_data.get('image_url'),
                             image_source=scraped_data.get('image_source')
@@ -1841,23 +2241,27 @@ Return ONLY the JSON object, nothing else."""
                                 
                                 publisher_id_preserved = scraped_data.get('publisher_id')
                                 
+                                # Normalize dates from LLM response
+                                raw_date = parsed_data.get('date') or scraped_data.get('date')
+                                normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                                
                                 return ScrapedArticle(
                                     title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                                     author=parsed_data.get('author') or scraped_data.get('author','Unknown'),
                                     summary=parsed_data.get('summary', 'No summary available'),
                                     content=scraped_data.get('content', '')[:1000],
-                                    date=parsed_data.get('date') or scraped_data.get('date'),
+                                    date=normalized_date,
                                     url=scraped_data.get('url', ''),
                                     source=self._extract_domain(scraped_data.get('url', '')),
                                     significance_score=float(parsed_data.get('significance_score', 5.0)),
                                     complexity_level=parsed_data.get('complexity_level', 'Medium'),
                                     reading_time=scraped_data.get('reading_time', 1),
                                     publisher_id=publisher_id_preserved,
-                                    published_date=parsed_data.get('date') or scraped_data.get('date'),
+                                    published_date=normalized_date,
                                     scraped_date=scraped_data.get('extracted_date'),
                                     content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                                     topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                                    keywords=scraped_data.get('tags', []),
+                                    keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                                     llm_processed=model_name,
                                     image_url=scraped_data.get('image_url'),
                                     image_source=scraped_data.get('image_source')
@@ -1962,23 +2366,27 @@ Respond with JSON only."""
                         
                         publisher_id_preserved = scraped_data.get('publisher_id')
                         
+                        # Normalize dates from LLM response
+                        raw_date = parsed_data.get('date') or scraped_data.get('date')
+                        normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                        
                         return ScrapedArticle(
                             title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                             author=parsed_data.get('author') or scraped_data.get('author'),
                             summary=parsed_data.get('summary', 'No summary available'),
                             content=scraped_data.get('content', '')[:1000],
-                            date=parsed_data.get('date') or scraped_data.get('date'),
+                            date=normalized_date,
                             url=scraped_data.get('url', ''),
                             source=self._extract_domain(scraped_data.get('url', '')),
                             significance_score=float(parsed_data.get('significance_score', 5.0)),
                             complexity_level=parsed_data.get('complexity_level', 'Medium'),
                             reading_time=scraped_data.get('reading_time', 1),
                             publisher_id=publisher_id_preserved,
-                            published_date=parsed_data.get('date') or scraped_data.get('date'),
+                            published_date=normalized_date,
                             scraped_date=scraped_data.get('extracted_date'),
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                            keywords=scraped_data.get('tags', []),
+                            keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                             llm_processed=simple_model,
                             image_url=scraped_data.get('image_url'),
                             image_source=scraped_data.get('image_source')
@@ -2063,23 +2471,27 @@ Respond with JSON only."""
                 publisher_id_preserved = scraped_data.get('publisher_id')
                 logger.info(f"🔗 Preserving publisher_id {publisher_id_preserved} in Ollama response for {scraped_data.get('url', 'Unknown URL')}")
                 
+                # Normalize dates from LLM response
+                raw_date = parsed_data.get('date') or scraped_data.get('date')
+                normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                
                 return ScrapedArticle(
                     title=parsed_data.get('title', scraped_data.get('title', 'Unknown')),
                     author=parsed_data.get('author') or scraped_data.get('author', 'Unknown'),
                     summary=parsed_data.get('summary', 'No summary available'),
                     content=scraped_data.get('content', '')[:1000],
-                    date=parsed_data.get('date') or scraped_data.get('date'),
+                    date=normalized_date,
                     url=scraped_data.get('url', ''),
                     source=self._extract_domain(scraped_data.get('url', '')),
                     significance_score=float(parsed_data.get('significance_score', 5.0)),
                     complexity_level=parsed_data.get('complexity_level', 'Medium'),
                     reading_time=scraped_data.get('reading_time', 1),
                     publisher_id=publisher_id_preserved,
-                    published_date=parsed_data.get('date') or scraped_data.get('date'),
+                    published_date=normalized_date,
                     scraped_date=scraped_data.get('extracted_date'),
                     content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                     topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                    keywords=scraped_data.get('tags', []),
+                    keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                     llm_processed=f"ollama:{self.ollama_model}",  # Track which Ollama model was used
                     image_url=scraped_data.get('image_url'),
                     image_source=scraped_data.get('image_source')
@@ -2115,7 +2527,7 @@ Respond with JSON only."""
                             scraped_date=scraped_data.get('extracted_date'),
                             content_type_label=parsed_data.get('content_type_label', scraped_data.get('content_type', 'Blogs')),
                             topic_category_label=parsed_data.get('topic_category_label', 'Generative AI'),
-                            keywords=scraped_data.get('tags', []),
+                            keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
                             llm_processed=f"ollama:{self.ollama_model}",
                             image_url=scraped_data.get('image_url'),
                             image_source=scraped_data.get('image_source')
@@ -2144,23 +2556,27 @@ Respond with JSON only."""
         content = scraped_data.get('content', '')
         summary = description if description else (content[:300] + '...' if content else 'AI and technology news article')
         
+        # Normalize dates
+        raw_date = scraped_data.get('date') or scraped_data.get('extracted_date')
+        normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+        
         return ScrapedArticle(
             title=scraped_data.get('title', 'AI News Article'),
             author=scraped_data.get('author'),
             summary=summary,
             content=content[:1000],
-            date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+            date=normalized_date,
             url=scraped_data.get('url', ''),
             source=self._extract_domain(scraped_data.get('url', '')),
             significance_score=6.0,
             complexity_level="Medium",
             reading_time=scraped_data.get('reading_time', 1),
             publisher_id=publisher_id_preserved,
-            published_date=scraped_data.get('date') or scraped_data.get('extracted_date'),
+            published_date=normalized_date,
             scraped_date=scraped_data.get('extracted_date'),
             content_type_label=scraped_data.get('content_type', 'Blogs'),
             topic_category_label="AI News & Updates",
-            keywords=scraped_data.get('tags', []),
+            keywords=', '.join(scraped_data.get('tags', ['AI', 'Technology'])) if isinstance(scraped_data.get('tags'), list) else scraped_data.get('tags', 'AI, Technology'),
             llm_processed=llm_model,
             image_url=scraped_data.get('image_url'),
             image_source=scraped_data.get('image_source')
@@ -2192,25 +2608,121 @@ Respond with JSON only."""
         return article
     
     async def scrape_multiple_sources(self, source_urls: List[str]) -> List[ScrapedArticle]:
-        """Scrape multiple sources concurrently"""
-        logger.info(f"🔄 Scraping {len(source_urls)} sources with Claude processing...")
+        """Scrape multiple sources sequentially with resource monitoring"""
+        logger.info(f"🔄 Scraping {len(source_urls)} sources SEQUENTIALLY with Claude processing...")
         
-        tasks = [self.scrape_article(url, llm_model='claude') for url in source_urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        articles = []
+        for i, url in enumerate(source_urls, 1):
+            try:
+                # Check for ABORT condition first
+                if self.resource_monitor and self.resource_monitor.should_abort():
+                    logger.error(f"🛑 ABORTING scraping at article {i}/{len(source_urls)} due to resource constraints")
+                    logger.error(f"🛑 Successfully processed {len(articles)} articles before abort")
+                    break
+                
+                # Check resources before each scrape
+                if self.resource_monitor:
+                    if self.resource_monitor.should_throttle():
+                        logger.warning(f"⏳ Resources constrained, waiting before article {i}/{len(source_urls)}...")
+                        await self.resource_monitor.wait_for_resources(timeout=120)
+                    
+                    if i % 5 == 0:  # Log every 5 articles
+                        self.resource_monitor.log_status()
+                
+                logger.info(f"📰 Processing article {i}/{len(source_urls)}: {url}")
+                article = await self.scrape_article(url, llm_model='claude')
+                if article:
+                    articles.append(article)
+                    logger.info(f"✅ Article {i}/{len(source_urls)} complete: {article.title[:50]}...")
+                else:
+                    logger.warning(f"⚠️ Article {i}/{len(source_urls)} returned None")
+                
+                # Small delay between scrapes to prevent overwhelming the system
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to process article {i}/{len(source_urls)} ({url}): {str(e)}")
+                continue
         
-        articles = [r for r in results if isinstance(r, ScrapedArticle)]
-        logger.info(f"🎉 PROCESSING COMPLETE: {len(articles)} articles processed")
+        logger.info(f"🎉 PROCESSING COMPLETE: {len(articles)}/{len(source_urls)} articles processed")
         return articles
     
-    async def scrape_multiple_sources_with_publisher_id(self, article_data: List[Dict], llm_model: str = 'claude') -> List[ScrapedArticle]:
-        """Scrape multiple sources with publisher_id and source_category mapping"""
-        logger.info(f"🔄 Scraping {len(article_data)} sources with LLM: {llm_model}...")
+    async def scrape_multiple_sources_with_publisher_id(self, article_data: List[Dict], llm_model: str = 'claude', batch_size: int = 3) -> List[ScrapedArticle]:
+        """Scrape multiple sources with publisher_id using small batches for controlled resource usage"""
+        total = len(article_data)
+        logger.info(f"🔄 Scraping {total} sources SEQUENTIALLY with LLM: {llm_model} (batch_size={batch_size})...")
         
-        tasks = [self.scrape_article_with_publisher_id(data['url'], data['publisher_id'], data.get('source_category', 'general'), llm_model) for data in article_data]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if self.resource_monitor:
+            self.resource_monitor.log_status()
+            logger.info(f"💡 Using batch size of {batch_size} to control resource usage")
         
-        articles = [r for r in results if isinstance(r, ScrapedArticle)]
-        logger.info(f"🎉 LLM PROCESSING COMPLETE: {len(articles)} articles processed using {llm_model}")
+        articles = []
+        
+        # Process in small batches to control resource usage
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch = article_data[batch_start:batch_end]
+            batch_num = (batch_start // batch_size) + 1
+            total_batches = (total + batch_size - 1) // batch_size
+            
+            # Check for ABORT condition before starting batch
+            if self.resource_monitor and self.resource_monitor.should_abort():
+                logger.error(f"🛑 ABORTING scraping at batch {batch_num}/{total_batches} due to resource constraints")
+                logger.error(f"🛑 Successfully processed {len(articles)} articles before abort")
+                break
+            
+            logger.info(f"📦 Processing batch {batch_num}/{total_batches} (articles {batch_start+1}-{batch_end}/{total})")
+            
+            # Check resources before each batch
+            if self.resource_monitor:
+                if self.resource_monitor.should_throttle():
+                    logger.warning(f"⏳ Resources constrained before batch {batch_num}, waiting...")
+                    await self.resource_monitor.wait_for_resources(timeout=180)
+                self.resource_monitor.log_status()
+            
+            # Process batch sequentially (not in parallel)
+            for i, data in enumerate(batch, 1):
+                try:
+                    # Check for ABORT condition during batch processing
+                    if self.resource_monitor and self.resource_monitor.should_abort():
+                        logger.error(f"🛑 ABORTING during batch {batch_num} due to resource constraints")
+                        logger.error(f"🛑 Successfully processed {len(articles)} articles before abort")
+                        return articles  # Exit immediately
+                    
+                    article_num = batch_start + i
+                    url = data['url']
+                    publisher_id = data['publisher_id']
+                    source_category = data.get('source_category', 'general')
+                    
+                    logger.info(f"📰 Processing article {article_num}/{total}: {url}")
+                    
+                    article = await self.scrape_article_with_publisher_id(
+                        url, publisher_id, source_category, llm_model
+                    )
+                    
+                    if article:
+                        articles.append(article)
+                        logger.info(f"✅ Article {article_num}/{total} complete: {article.title[:50]}...")
+                    else:
+                        logger.warning(f"⚠️ Article {article_num}/{total} returned None")
+                    
+                    # Small delay between articles
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to process article {article_num}/{total}: {str(e)}")
+                    continue
+            
+            # Longer delay between batches
+            if batch_end < total:
+                logger.info(f"⏸️ Batch {batch_num} complete, pausing before next batch...")
+                await asyncio.sleep(2)
+        
+        logger.info(f"🎉 LLM PROCESSING COMPLETE: {len(articles)}/{total} articles processed using {llm_model}")
+        
+        if self.resource_monitor:
+            self.resource_monitor.log_status()
+        
         return articles
     
     async def scrape_article_with_publisher_id(self, url: str, publisher_id: int, source_category: str = 'general', llm_model: str = 'claude') -> Optional[ScrapedArticle]:
@@ -2242,27 +2754,280 @@ Respond with JSON only."""
             return "Unknown"
     
     async def parse_rss_feed(self, feed_url: str, max_articles: int = 10) -> List[str]:
-        """Parse RSS feed and extract article URLs with deduplication"""
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/rss+xml, application/xml, text/xml, */*'}
-            response = await asyncio.to_thread(requests.get, feed_url, headers=headers, timeout=15, allow_redirects=True)
-            response.raise_for_status()
-            
-            feed = feedparser.parse(response.content)
-            all_urls = [entry.get('link') or entry.get('id') for entry in feed.entries[:max_articles * 2] if (entry.get('link') or entry.get('id', '')).startswith('http')]
-            
-            if not all_urls:
+        """Parse RSS feed and extract article URLs with deduplication, with retry logic"""
+        import random
+        
+        # Try up to 3 times with different user agents
+        for attempt in range(3):
+            try:
+                headers = {
+                    'User-Agent': self._get_random_user_agent(),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Referer': 'https://www.google.com/',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'max-age=0'
+                }
+                
+                logger.info(f"🔄 Fetching RSS feed: {feed_url} (attempt {attempt + 1}/3)")
+                response = await asyncio.to_thread(requests.get, feed_url, headers=headers, timeout=20, allow_redirects=True)
+                
+                # Check if we got a 403 and should retry
+                if response.status_code == 403 and attempt < 2:
+                    wait_time = random.uniform(2, 4) * (1.5 ** attempt)
+                    logger.warning(f"⚠️ HTTP 403 for RSS feed {feed_url}, retrying after {wait_time:.1f}s (attempt {attempt + 1}/3)")
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                
+                logger.info(f"✅ RSS feed fetched successfully: {feed_url} (status: {response.status_code})")
+                
+                # Check if content type suggests HTML instead of RSS/XML
+                content_type = response.headers.get('content-type', '').lower()
+                is_likely_html = 'html' in content_type or (
+                    'xml' not in content_type and 
+                    'rss' not in content_type and
+                    response.text.strip().startswith('<!doctype html') or 
+                    response.text.strip().startswith('<html')
+                )
+                
+                feed = feedparser.parse(response.content)
+                
+                # Log feed parsing details
+                if hasattr(feed, 'bozo') and feed.bozo:
+                    logger.warning(f"⚠️ RSS feed has parsing issues: {feed_url}")
+                    if hasattr(feed, 'bozo_exception'):
+                        logger.warning(f"⚠️ Feed exception: {feed.bozo_exception}")
+                
+                logger.info(f"📰 Found {len(feed.entries)} entries in RSS feed: {feed_url}")
+                
+                # If RSS parsing failed and it looks like HTML, try scraping the page for article links
+                if len(feed.entries) == 0 and (is_likely_html or (hasattr(feed, 'bozo') and feed.bozo)):
+                    logger.info(f"🔄 RSS parsing failed, attempting to scrape HTML page for article links: {feed_url}")
+                    try:
+                        from bs4 import BeautifulSoup
+                        from urllib.parse import urljoin
+                        
+                        # Check if this URL requires browser rendering
+                        html_content = response.text
+                        if self._requires_browser_mode(feed_url):
+                            logger.info(f"🌐 Browser mode required for list page, using Playwright: {feed_url}")
+                            try:
+                                from playwright.async_api import async_playwright
+                                
+                                async with async_playwright() as p:
+                                    browser = await p.chromium.launch(headless=True)
+                                    context = await browser.new_context(
+                                        viewport={'width': 1920, 'height': 1080},
+                                        user_agent=self._get_random_user_agent()
+                                    )
+                                    page = await context.new_page()
+                                    
+                                    logger.info(f"🔄 Loading list page with Playwright: {feed_url}")
+                                    await page.goto(feed_url, wait_until='domcontentloaded', timeout=120000)
+                                    await asyncio.sleep(5)  # Wait for dynamic content
+                                    
+                                    html_content = await page.content()
+                                    await browser.close()
+                                    logger.info(f"✅ List page rendered with Playwright: {feed_url}")
+                            except Exception as pw_error:
+                                logger.warning(f"⚠️ Playwright rendering failed for list page, using basic HTML: {str(pw_error)}")
+                        
+                        soup = BeautifulSoup(html_content, 'html.parser')
+                        
+                        # Try to find article links - common patterns
+                        article_links = []
+                        
+                        # Exclusion patterns for non-article pages
+                        exclude_patterns = [
+                            '/team/', '/about/', '/careers/', '/contact/', '/privacy/', '/terms/',
+                            '/category/', '/tag/', '/author/', '/subscribe/', '/login/', '/signup/',
+                            '#', 'mailto:', 'tel:', 'javascript:',
+                            # ✅ Exclude RSS/XML feed files
+                            '.xml', '.rss', '/feed', '/feeds', '/rss'
+                        ]
+                        
+                        # Inclusion patterns for article-like URLs (these get priority)
+                        include_patterns = ['/index/', '/blog/', '/news/', '/article/', '/post/', '/research/']
+                        
+                        # Look for article links in common HTML structures
+                        for link in soup.find_all('a', href=True):
+                            href = link.get('href', '')
+                            # Make absolute URLs
+                            if href.startswith('/'):
+                                href = urljoin(feed_url, href)
+                            
+                            # Skip if URL doesn't start with http
+                            if not href.startswith('http'):
+                                continue
+                            
+                            # Skip if same as feed URL
+                            if href.rstrip('/') == feed_url.rstrip('/'):
+                                continue
+                            
+                            # Skip if URL contains excluded patterns
+                            if any(pattern in href.lower() for pattern in exclude_patterns):
+                                continue
+                            
+                            # ✅ CRITICAL: Skip category/root URLs first (before checking inclusion patterns)
+                            if self._is_category_or_root_url(href):
+                                continue
+                            
+                            # ✅ IMPROVED: Include if URL matches inclusion patterns OR if it doesn't match exclusions
+                            # This allows article URLs that don't follow standard patterns (like /research/paper-name)
+                            if any(pattern in href for pattern in include_patterns):
+                                article_links.append(href)
+                                continue
+                            
+                            # ✅ NEW: Also include URLs from the same domain that pass all filters
+                            # This catches article URLs that don't match standard patterns
+                            from urllib.parse import urlparse
+                            feed_domain = urlparse(feed_url).netloc
+                            href_domain = urlparse(href).netloc
+                            if feed_domain == href_domain:
+                                article_links.append(href)
+                                continue
+                            
+                            # For research pages, look for article indicators
+                            if '/research/' in href.lower() or '/paper/' in href.lower():
+                                # Check link text or parent elements for article indicators
+                                link_text = link.get_text(strip=True).lower()
+                                parent_classes = ' '.join(link.parent.get('class', [])).lower() if link.parent else ''
+                                
+                                # Look for article-like indicators in text or structure
+                                article_indicators = [
+                                    'read more', 'learn more', 'full paper', 'article', 'research paper',
+                                    'publication', 'paper', 'study', 'report', 'announcement'
+                                ]
+                                
+                                # If link text suggests it's an article, or parent suggests it's in article list
+                                if (any(indicator in link_text for indicator in article_indicators) or
+                                    'article' in parent_classes or 'post' in parent_classes or 
+                                    'card' in parent_classes or 'item' in parent_classes):
+                                    article_links.append(href)
+                        
+                        # Remove duplicates while preserving order
+                        article_links = list(dict.fromkeys(article_links))
+                        
+                        # ✅ CRITICAL: For browser-mode domains (especially openai.com), filter out category URLs
+                        if self._requires_browser_mode(feed_url):
+                            initial_count = len(article_links)
+                            article_links = [url for url in article_links if not self._is_category_or_root_url(url)]
+                            filtered_count = initial_count - len(article_links)
+                            if filtered_count > 0:
+                                logger.info(f"🚫 Filtered {filtered_count} category/root URLs from browser-mode domain: {feed_url}")
+                        
+                        logger.info(f"🔗 Extracted {len(article_links)} article links from HTML page: {feed_url}")
+                        
+                        if article_links:
+                            # Check all extracted links against database (no artificial limit)
+                            from db_service import get_database_service
+                            url_existence = get_database_service().check_multiple_urls_exist(article_links)
+                            new_urls = [url for url in article_links if not url_existence.get(url, False)]
+                            
+                            logger.info(f"✅ URL Deduplication (from HTML): {len(new_urls)} new, {len(article_links) - len(new_urls)} existing")
+                            return new_urls  # Return all new URLs, no limit
+                    except Exception as scrape_error:
+                        logger.error(f"❌ Failed to scrape HTML page for article links: {str(scrape_error)}")
+                
+                # Extract all RSS entries (no limit)
+                all_urls = [entry.get('link') or entry.get('id') for entry in feed.entries if (entry.get('link') or entry.get('id', '')).startswith('http')]
+                
+                # ✅ NEW: For browser-mode domains, scrape pagination/category pages for article links
+                if self._requires_browser_mode(feed_url) and all_urls:
+                    pagination_urls = [url for url in all_urls if self._is_category_or_root_url(url)]
+                    if pagination_urls:
+                        logger.info(f"🔍 Found {len(pagination_urls)} pagination/category pages to scrape for article links")
+                        extracted_article_links = []
+                        
+                        for pagination_url in pagination_urls[:5]:  # Limit to first 5 pagination pages
+                            try:
+                                logger.info(f"📄 Scraping pagination page for articles: {pagination_url}")
+                                from playwright.async_api import async_playwright
+                                
+                                async with async_playwright() as p:
+                                    browser = await p.chromium.launch(headless=True)
+                                    context = await browser.new_context(
+                                        viewport={'width': 1920, 'height': 1080},
+                                        user_agent=self._get_random_user_agent()
+                                    )
+                                    page = await context.new_page()
+                                    
+                                    await page.goto(pagination_url, wait_until='domcontentloaded', timeout=60000)
+                                    await asyncio.sleep(3)  # Wait for dynamic content
+                                    
+                                    html_content = await page.content()
+                                    await browser.close()
+                                    
+                                    # Extract article links from pagination page
+                                    from bs4 import BeautifulSoup
+                                    from urllib.parse import urljoin
+                                    soup = BeautifulSoup(html_content, 'html.parser')
+                                    
+                                    for link in soup.find_all('a', href=True):
+                                        href = link.get('href', '')
+                                        if href.startswith('/'):
+                                            href = urljoin(pagination_url, href)
+                                        
+                                        if not href.startswith('http'):
+                                            continue
+                                        
+                                        # Only include article-like URLs, not more category/pagination URLs
+                                        if not self._is_category_or_root_url(href):
+                                            if any(pattern in href for pattern in ['/index/', '/blog/', '/news/', '/article/', '/post/', '/research/']):
+                                                extracted_article_links.append(href)
+                                    
+                                    logger.info(f"✅ Extracted {len(extracted_article_links)} article links from {pagination_url}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to scrape pagination page {pagination_url}: {str(e)}")
+                        
+                        # Add extracted article links to all_urls
+                        if extracted_article_links:
+                            extracted_article_links = list(dict.fromkeys(extracted_article_links))  # Remove duplicates
+                            all_urls.extend(extracted_article_links)
+                            logger.info(f"📝 Added {len(extracted_article_links)} article links from pagination pages")
+                
+                # ✅ CRITICAL: Filter out category/root URLs (especially important for browser-mode domains)
+                initial_count = len(all_urls)
+                all_urls = [url for url in all_urls if not self._is_category_or_root_url(url)]
+                filtered_count = initial_count - len(all_urls)
+                
+                if filtered_count > 0:
+                    logger.info(f"🚫 Filtered {filtered_count} category/root URLs from RSS feed: {feed_url}")
+                    if self._requires_browser_mode(feed_url):
+                        logger.info(f"   ↳ Browser-mode domain detected - category filtering is critical")
+                
+                if not all_urls:
+                    logger.warning(f"⚠️ No valid article URLs found in RSS feed: {feed_url}")
+                    return []
+                
+                logger.info(f"🔗 Extracted {len(all_urls)} URLs from RSS feed (after category filter): {feed_url}")
+                
+                from db_service import get_database_service
+                url_existence = get_database_service().check_multiple_urls_exist(all_urls)
+                new_urls = [url for url in all_urls if not url_existence.get(url, False)]
+                
+                logger.info(f"✅ URL Deduplication: {len(new_urls)} new, {len(all_urls) - len(new_urls)} existing")
+                return new_urls  # Return all new URLs, no limit
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Request error parsing RSS feed {feed_url} (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    wait_time = random.uniform(2, 4) * (1.5 ** attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
                 return []
-            
-            from db_service import get_database_service
-            url_existence = get_database_service().check_multiple_urls_exist(all_urls)
-            new_urls = [url for url in all_urls if not url_existence.get(url, False)]
-            
-            logger.info(f"✅ URL Deduplication: {len(new_urls)} new, {len(all_urls) - len(new_urls)} existing")
-            return new_urls[:max_articles]
-        except Exception as e:
-            logger.error(f"❌ Error parsing RSS feed {feed_url}: {str(e)}")
-            return []
+            except Exception as e:
+                logger.error(f"❌ Error parsing RSS feed {feed_url}: {str(e)}")
+                logger.debug(f"📋 RSS parse error traceback: {traceback.format_exc()}")
+                return []
+        
+        # If all attempts failed
+        logger.error(f"❌ All {3} attempts failed for RSS feed: {feed_url}")
+        return []
     
     def _fix_json_formatting(self, json_str: str) -> Optional[str]:
         """Attempt to fix common JSON formatting issues"""
@@ -2613,6 +3378,15 @@ class AdminScrapingInterface:
                             domain_mapping[urlparse(url).netloc.lower()] = publisher_id
                         except:
                             pass
+            
+            # ✅ Limit to 100 URLs per run to prevent resource exhaustion
+            total_urls = len(all_article_data)
+            if total_urls > 100:
+                logger.warning(f"⚠️ Found {total_urls} URLs, limiting to 100 per run")
+                logger.info(f"💡 Run the scraper again to process remaining {total_urls - 100} URLs")
+                all_article_data = all_article_data[:100]
+            else:
+                logger.info(f"📊 Processing all {total_urls} URLs (within 100 limit)")
             
             articles = await self.scraper.scrape_multiple_sources_with_publisher_id(all_article_data, llm_model)
             

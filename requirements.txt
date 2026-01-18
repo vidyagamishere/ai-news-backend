@@ -43,6 +43,7 @@ markdownify>=0.11.6
 numpy>=1.24.0
 textstat>=0.7.3
 langdetect>=1.0.9
+psutil>=5.9.0
 
 # HTTP and network utilities
 httpx>=0.25.0

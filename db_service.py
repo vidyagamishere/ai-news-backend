@@ -454,7 +454,41 @@ class PostgreSQLService:
             
             logger.info(f"🏷️ Final category assignment: ID {final_ai_topic_id} from {category_source}")
 
-            # --- 4. ✅ FIX: Convert string "null" to None for all date fields ---
+            # --- 4. ✅ ENSURE KEYWORDS: Add category name as fallback if keywords are missing ---
+            keywords = article_data.get('keywords', [])
+            
+            # Handle various empty keyword scenarios
+            if not keywords or \
+               (isinstance(keywords, list) and len(keywords) == 0) or \
+               (isinstance(keywords, str) and keywords.strip() == ''):
+                # Get category name from database to use as keyword
+                category_query = "SELECT name FROM ai_categories_master WHERE id = %s"
+                category_result = self.execute_query(category_query, (final_ai_topic_id,), fetch_one=True)
+                
+                if category_result:
+                    category_name = category_result['name'] if isinstance(category_result, dict) else category_result[0]
+                    keywords = [category_name, 'AI', 'Technology']
+                    logger.info(f"🔑 Added category '{category_name}' as fallback keyword for article: {article_data.get('title', url)[:50]}...")
+                else:
+                    keywords = ['Artificial Intelligence', 'Technology']
+                    logger.info(f"🔑 Added generic keywords as fallback for article: {article_data.get('title', url)[:50]}...")
+                
+                # Convert to comma-separated string immediately
+                article_data['keywords'] = ', '.join(keywords)
+            elif isinstance(keywords, str):
+                # Convert comma-separated string to list
+                keywords = [k.strip() for k in keywords.split(',') if k.strip()]
+                article_data['keywords'] = keywords
+            
+            # Convert keywords list to comma-separated string for database
+            if isinstance(keywords, list):
+                keywords_str = ', '.join(keywords)
+                article_data['keywords'] = keywords_str
+                logger.debug(f"🔑 Final keywords for article: {keywords_str}")
+            else:
+                logger.debug(f"🔑 Final keywords for article: {keywords}")
+
+            # --- 5. ✅ FIX: Convert string "null" to None for all date fields ---
             date_fields = ['published_date', 'scraped_date', 'created_date', 'updated_date']
             for field in date_fields:
                 if field in article_data:
@@ -478,7 +512,7 @@ class PostgreSQLService:
                 article_data['published_date'] = article_data['created_date']
                 logger.debug(f"📅 Using created_date as published_date fallback for: {article_data.get('title', url)[:50]}...")
             
-             # --- 5. ✅ NEW: Extract image data ---
+             # --- 6. ✅ NEW: Extract image data ---
             image_url = article_data.get('image_url')
             image_source = article_data.get('image_source', 'scraped' if image_url else None)
             
@@ -490,7 +524,7 @@ class PostgreSQLService:
                 article_data['image_url'] = None
                 article_data['image_source'] = None
 
-            # --- 6. ✅ NEW: Get or Create Publisher if Missing ---
+            # --- 7. ✅ NEW: Get or Create Publisher if Missing ---
             publisher_id_val = article_data.get('publisher_id')
             
             if not publisher_id_val:
@@ -509,7 +543,7 @@ class PostgreSQLService:
             else:
                 logger.debug(f"📎 Using provided publisher_id {publisher_id_val} for article")
 
-            # --- 7. ✅ UPDATED: Insert New Article with Images ---
+            # --- 8. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
@@ -559,7 +593,7 @@ class PostgreSQLService:
                 article_data.get('complexity_level', 'Medium'),
                 article_data.get('updated_date', datetime.now(timezone.utc)),
                 article_data.get('created_date', datetime.now(timezone.utc)),
-                article_data.get('keywords', ['generative AI']),
+                article_data.get('keywords', 'Generative AI, Technology'),  # Now a string instead of list
                 article_data.get('publisher_id'),  # Will be the created/found publisher_id
                 image_url,      # ✅ ADDED
                 image_source    # ✅ ADDED

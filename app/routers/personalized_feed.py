@@ -436,7 +436,7 @@ async def get_personalized_feed(
             # Request has content type IDs - use them (handle "all" case)
             content_type_ids = filter_request.content_type_ids
             if "all" in content_type_ids:
-                all_content_types = db.execute_query("SELECT id FROM content_types WHERE is_active = TRUE ORDER BY name")
+                all_content_types = db.execute_query("SELECT id FROM content_types WHERE is_active = TRUE ORDER BY display_order ASC")
                 content_type_ids = [ct['id'] for ct in all_content_types]
                 logger.info(f"🔍 Request: Expanded 'all' content types to {len(content_type_ids)} content type IDs")
         elif user_content_type_ids:
@@ -673,13 +673,20 @@ async def get_personalized_feed(
 async def get_available_categories(
     db: DatabaseService = Depends(get_database_service)
 ):
-    """Get list of available categories with IDs for onboarding"""
+    """Get list of available categories with IDs and article counts"""
     try:
         query = """
-            SELECT id, name, description, priority 
-            FROM ai_categories_master 
-            WHERE name IS NOT NULL AND name != ''
-            ORDER BY priority ASC, name ASC
+            SELECT 
+                c.id, 
+                c.name, 
+                c.description, 
+                c.priority,
+                COUNT(a.id) as article_count
+            FROM ai_categories_master c
+            LEFT JOIN articles a ON a.category_id = c.id
+            WHERE c.name IS NOT NULL AND c.name != ''
+            GROUP BY c.id, c.name, c.description, c.priority
+            ORDER BY c.priority ASC, c.name ASC
         """
         results = db.execute_query(query)
         categories = []
@@ -690,7 +697,8 @@ async def get_available_categories(
                     "id": int(row['id']) if row['id'] is not None else 0,
                     "name": str(row['name']).strip() if row['name'] else "Unknown Category",
                     "description": str(row.get('description', '')).strip(),
-                    "priority": int(row.get('priority', 999)) if row.get('priority') is not None else 999
+                    "priority": int(row.get('priority', 999)) if row.get('priority') is not None else 999,
+                    "count": int(row.get('article_count', 0))
                 })
             except (ValueError, TypeError) as val_error:
                 logger.warning(f"⚠️ Skipping invalid category: {row} - {str(val_error)}")
@@ -772,7 +780,7 @@ async def get_available_content_types(
             SELECT id, name, display_name, description, is_active
             FROM content_types 
             WHERE is_active = TRUE
-            ORDER BY name
+            ORDER BY display_order ASC, name ASC
         """
         results = db.execute_query(query)
         content_types = []
