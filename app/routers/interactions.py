@@ -9,7 +9,7 @@ from datetime import datetime
 import logging
 import uuid
 
-from app.dependencies.auth import get_current_user
+from app.dependencies.auth import get_current_user, get_current_user_optional
 from app.models.interactions import (
     ArticleInteractionCreate, ArticleInteractionResponse,
     ArticleStatsResponse, ReadingProgressUpdate, ReadingHistoryResponse,
@@ -17,7 +17,7 @@ from app.models.interactions import (
     SwipeableArticle, SwipeableFeedResponse,
     UserActionCreate, UserActionResponse
 )
-from db_service import get_db_connection
+from db_service import get_database_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/interactions", tags=["interactions"])
@@ -25,6 +25,10 @@ router = APIRouter(prefix="/api/v1/interactions", tags=["interactions"])
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
+
+def get_db():
+    """Get database service"""
+    return get_database_service()
 
 def award_points(user_id: int, action_type: str, cursor, conn) -> int:
     """Award points for user actions and update user_points table"""
@@ -146,64 +150,76 @@ def update_reading_streak(user_id: int, cursor, conn):
 @router.post("/article", response_model=dict)
 async def create_article_interaction(
     interaction: ArticleInteractionCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """
     Create article interaction (like, bookmark, share, view)
     Inserts into article_interactions table
+    Optional authentication - view tracking works for anonymous users
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        db = get_db()
+        user_id = current_user['id'] if current_user else None
         
-        # Check if interaction already exists
-        cursor.execute(
-            """
-            SELECT id FROM article_interactions 
-            WHERE user_id = %s AND article_id = %s AND interaction_type = %s
-            """,
-            (user_id, interaction.article_id, interaction.interaction_type.value)
-        )
+        # For authenticated users, check if interaction already exists
+        if user_id:
+            existing = db.execute_query(
+                """
+                SELECT id FROM article_interactions 
+                WHERE user_id = %s AND article_id = %s AND interaction_type = %s
+                """,
+                (user_id, interaction.article_id, interaction.interaction_type.value),
+                fetch_one=True
+            )
+            
+            if existing:
+                return {"success": True, "message": f"Article already {interaction.interaction_type.value}d"}
         
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return {"success": True, "message": f"Article already {interaction.interaction_type.value}d"}
-        
-        # Create interaction
-        cursor.execute(
+        # Create interaction (user_id can be NULL for anonymous views)
+        db.execute_query(
             """
             INSERT INTO article_interactions 
             (user_id, article_id, interaction_type, metadata, created_at)
             VALUES (%s, %s, %s, %s, %s)
-            RETURNING id
             """,
             (user_id, interaction.article_id, interaction.interaction_type.value, 
-             None if not interaction.metadata else str(interaction.metadata), datetime.now())
+             None if not interaction.metadata else str(interaction.metadata), datetime.now()),
+            fetch_all=False
         )
         
-        # Award points via user_actions
-        points = award_points(user_id, interaction.interaction_type.value, cursor, conn)
+        # Award points only for authenticated users
+        points = 0
+        if user_id:
+            points_map = {
+                'read': 10, 'bookmark': 5, 'like': 3, 'share': 15,
+                'comment': 20, 'follow': 5, 'view': 1
+            }
+            points = points_map.get(interaction.interaction_type.value, 0)
+            
+            if points > 0:
+                db.execute_query(
+                    """
+                    INSERT INTO user_actions 
+                    (user_id, article_id, action_type, points_earned, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (user_id, interaction.article_id, interaction.interaction_type.value, points, datetime.now()),
+                    fetch_all=False
+                )
         
-        cursor.execute(
-            """
-            INSERT INTO user_actions 
-            (user_id, article_id, action_type, points_earned, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (user_id, interaction.article_id, interaction.interaction_type.value, points, datetime.now())
-        )
-        
-        # Update reading streak if read
+        # Update view_count in articles table if interaction is 'view'
         if interaction.interaction_type.value == 'view':
-            update_reading_streak(user_id, cursor, conn)
+            db.execute_query(
+                """
+                UPDATE articles 
+                SET view_count = COALESCE(view_count, 0) + 1
+                WHERE id = %s
+                """,
+                (interaction.article_id,),
+                fetch_all=False
+            )
         
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        logger.info(f"User {user_id} {interaction.interaction_type.value}d article {interaction.article_id}")
+        logger.info(f"User {user_id or 'anonymous'} {interaction.interaction_type.value}d article {interaction.article_id}")
         return {
             "success": True, 
             "message": f"Article {interaction.interaction_type.value}d successfully",
