@@ -47,7 +47,7 @@ else:
 
 # Import modular components
 from app.routers import health, content, admin, personalized_feed
-from app.routers import enhanced_auth, search_suggestions, interactions
+from app.routers import enhanced_auth, search_suggestions, interactions, social
 from db_service import initialize_database, close_database_service
 from scheduler_service import start_auto_scheduler, stop_auto_scheduler, get_scheduler
 
@@ -139,6 +139,7 @@ app.include_router(admin.router, tags=["admin"])
 app.include_router(personalized_feed.router, prefix="/api/v1", tags=["personalized-feed"])
 app.include_router(search_suggestions.router, tags=["search-suggestions"])  # Enhanced search system
 app.include_router(interactions.router, tags=["interactions"])  # Article interactions and bookmarks
+app.include_router(social.router, tags=["social"])  # Comments, follows, collections, notifications
 
 # Additional endpoints for compatibility
 @app.get("/sources")

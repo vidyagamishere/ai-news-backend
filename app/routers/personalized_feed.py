@@ -495,10 +495,11 @@ async def get_personalized_feed(
             time_filter=filter_request.time_filter or "Last Week",
             search_query=filter_request.search_query or "",
             limit=filter_request.limit or 50,
-            user_id=current_user.get('id') if current_user else None
+            user_id=str(current_user.get('id')) if current_user else None
         )
         
-        logger.info(f"📱 Personalized feed criteria:")
+        logger.info(f"� User ID for interactions: {criteria.user_id}")
+        logger.info(f"�📱 Personalized feed criteria:")
         logger.info(f"   📂 Categories: {criteria.interests} (IDs: {criteria.category_ids})")
         logger.info(f"   📄 Content Types: {criteria.content_types} (IDs: {criteria.content_type_ids})")
         logger.info(f"   📰 Publishers: {criteria.publishers} (IDs: {criteria.publisher_ids})")
@@ -613,7 +614,18 @@ async def get_personalized_feed(
                     content_type_id=item.get('content_type_id'),
                     content_type_label=item.get('content_type_label'),
                     category_id=item.get('category_id'),
-                    category_label=item.get('category_label')
+                    category_label=item.get('category_label'),
+                    # ✅ Include user interaction states from database query
+                    has_liked=item.get('has_liked', False),
+                    has_bookmarked=item.get('has_bookmarked', False),
+                    has_viewed=item.get('has_viewed', False),
+                    # ✅ Include total counts from article_stats (visible to all users)
+                    total_likes=item.get('total_likes', 0),
+                    total_bookmarks=item.get('total_bookmarks', 0),
+                    total_views=item.get('total_views', 0),
+                    total_shares=item.get('total_shares', 0),
+                    total_comments=item.get('total_comments', 0),
+                    engagement_score=item.get('engagement_score', 0.0)
                 )
                 article_objects.append(article)
             

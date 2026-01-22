@@ -16,7 +16,10 @@ from app.models.interactions import (
     CollectionCreate, CollectionUpdate, CollectionResponse,
     CollectionArticleAdd, CollectionArticleResponse
 )
-from db_service import get_db_connection
+
+from app.routers.interactions import award_points, ActionTypeId
+from app.dependencies.database import get_database_service
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/social", tags=["social"])
@@ -26,18 +29,17 @@ router = APIRouter(prefix="/api/v1/social", tags=["social"])
 # ==========================================
 
 @router.post("/comments", response_model=CommentResponse)
-async def create_comment(
+def create_comment(
     comment: CommentCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Create a comment on an article"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
         # Insert comment
-        cursor.execute(
+        result = db.execute_query(
             """
             INSERT INTO comments (user_id, article_id, parent_comment_id, content, created_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -46,47 +48,22 @@ async def create_comment(
             (user_id, comment.article_id, comment.parent_comment_id, 
              comment.content, datetime.now(), datetime.now())
         )
-        row = cursor.fetchone()
-        comment_id = row[0]
+        comment_id = result[0]['id']
         
-        # Award points
-        cursor.execute(
-            """
-            INSERT INTO user_actions (user_id, article_id, action_type, points_earned, created_at)
-            VALUES (%s, %s, 'comment', 20, %s)
-            """,
-            (user_id, comment.article_id, datetime.now())
-        )
-        
-        cursor.execute(
-            """
-            UPDATE user_points 
-            SET total_points = total_points + 20,
-                current_level_points = current_level_points + 20,
-                lifetime_points = lifetime_points + 20,
-                updated_at = %s
-            WHERE user_id = %s
-            """,
-            (datetime.now(), user_id)
-        )
-        
-        conn.commit()
+        award_points(user_id, ActionTypeId.COMMENT, db)
         
         # Get user details
-        cursor.execute(
-            "SELECT username, avatar_url FROM users WHERE id = %s",
+        user_row = db.execute_query(
+            "SELECT first_name, last_name, profile_image FROM users WHERE id = %s",
             (user_id,)
         )
-        user_row = cursor.fetchone()
         
-        cursor.close()
-        conn.close()
         
         return CommentResponse(
             id=comment_id,
             user_id=user_id,
-            username=user_row[0],
-            user_avatar=user_row[1],
+            username=user_row[0]['first_name'] + ' ' + user_row[0]['last_name'],
+            user_avatar=user_row[0]['profile_image'].tobytes().decode('utf-8') if isinstance(user_row[0]['profile_image'], memoryview) else user_row[0].get('profile_image', ''),
             article_id=comment.article_id,
             parent_comment_id=comment.parent_comment_id,
             content=comment.content,
@@ -95,8 +72,8 @@ async def create_comment(
             is_edited=False,
             is_deleted=False,
             user_liked=False,
-            created_at=row[1],
-            updated_at=row[2]
+            created_at=result[0]['created_at'],
+            updated_at=result[0]['updated_at']
         )
         
     except Exception as e:
@@ -107,37 +84,35 @@ async def create_comment(
         )
 
 @router.get("/comments/article/{article_id}", response_model=CommentsListResponse)
-async def get_article_comments(
+def get_article_comments(
     article_id: int,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Get comments for an article"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         offset = (page - 1) * limit
         
-        # Get comments
-        cursor.execute(
+        # Get ALL comments (including nested replies) for the article
+        rows = db.execute_query(
             """
             SELECT 
-                c.id, c.user_id, u.username, u.avatar_url,
+                c.id, c.user_id, CONCAT(u.first_name, ' ', u.last_name) AS username, u.profile_image,
                 c.article_id, c.parent_comment_id, c.content,
                 c.likes_count, c.replies_count, c.is_edited, c.is_deleted,
                 EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = %s) as user_liked,
                 c.created_at, c.updated_at
             FROM comments c
             JOIN users u ON c.user_id = u.id
-            WHERE c.article_id = %s AND c.parent_comment_id IS NULL AND c.is_deleted = false
-            ORDER BY c.created_at DESC
+            WHERE c.article_id = %s AND c.is_deleted = false
+            ORDER BY COALESCE(c.parent_comment_id, c.id), c.created_at ASC
             LIMIT %s OFFSET %s
             """,
             (user_id, article_id, limit + 1, offset)
         )
-        rows = cursor.fetchall()
         
         has_more = len(rows) > limit
         comments_data = rows[:limit]
@@ -145,31 +120,28 @@ async def get_article_comments(
         comments = []
         for row in comments_data:
             comments.append(CommentResponse(
-                id=row[0],
-                user_id=row[1],
-                username=row[2],
-                user_avatar=row[3],
-                article_id=row[4],
-                parent_comment_id=row[5],
-                content=row[6],
-                likes_count=row[7],
-                replies_count=row[8],
-                is_edited=row[9],
-                is_deleted=row[10],
-                user_liked=row[11],
-                created_at=row[12],
-                updated_at=row[13]
+                id=row['id'],
+                user_id=row['user_id'],
+                username=row['username'],
+                user_avatar=row['profile_image'].tobytes().decode('utf-8') if isinstance(row['profile_image'], memoryview) else row.get('profile_image', ''),
+                article_id=row['article_id'],
+                parent_comment_id=row['parent_comment_id'],
+                content=row['content'],
+                likes_count=row['likes_count'],
+                replies_count=row['replies_count'],
+                is_edited=row['is_edited'],
+                is_deleted=row['is_deleted'],
+                user_liked=row['user_liked'],
+                created_at=row['created_at'],
+                updated_at=row['updated_at']
             ))
         
         # Get total count
-        cursor.execute(
+        total_count_row = db.execute_query(
             "SELECT COUNT(*) FROM comments WHERE article_id = %s AND parent_comment_id IS NULL AND is_deleted = false",
             (article_id,)
         )
-        total_count = cursor.fetchone()[0]
-        
-        cursor.close()
-        conn.close()
+        total_count = total_count_row[0]['count']
         
         return CommentsListResponse(
             comments=comments,
@@ -186,42 +158,37 @@ async def get_article_comments(
         )
 
 @router.put("/comments/{comment_id}", response_model=CommentResponse)
-async def update_comment(
+def update_comment(
     comment_id: int,
     comment_update: CommentUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Update a comment"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
         # Check ownership
-        cursor.execute(
+
+        row = db.execute_query(
             "SELECT user_id FROM comments WHERE id = %s",
             (comment_id,)
         )
-        row = cursor.fetchone()
         
         if not row:
-            cursor.close()
-            conn.close()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Comment not found"
             )
         
-        if row[0] != user_id:
-            cursor.close()
-            conn.close()
+        if row[0]['user_id'] != user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to edit this comment"
             )
         
         # Update comment
-        cursor.execute(
+        row = db.execute_query(
             """
             UPDATE comments 
             SET content = %s, is_edited = true, edited_at = %s, updated_at = %s
@@ -231,34 +198,28 @@ async def update_comment(
             """,
             (comment_update.content, datetime.now(), datetime.now(), comment_id)
         )
-        row = cursor.fetchone()
-        conn.commit()
         
         # Get user details
-        cursor.execute(
-            "SELECT username, avatar_url FROM users WHERE id = %s",
+        user_row = db.execute_query(
+            "SELECT first_name, last_name, profile_image FROM users WHERE id = %s",
             (user_id,)
         )
-        user_row = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
         
         return CommentResponse(
             id=comment_id,
             user_id=user_id,
-            username=user_row[0],
-            user_avatar=user_row[1],
-            article_id=row[1],
-            parent_comment_id=row[2],
+            username=user_row[0]['first_name'] + ' ' + user_row[0]['last_name'],
+            user_avatar=user_row[0]['profile_image'].tobytes().decode('utf-8') if isinstance(user_row[0]['profile_image'], memoryview) else user_row[0].get('profile_image', ''),
+            article_id=row[0]['article_id'],
+            parent_comment_id=row[0]['parent_comment_id'],
             content=comment_update.content,
-            likes_count=row[3],
-            replies_count=row[4],
+            likes_count=row[0]['likes_count'],
+            replies_count=row[0]['replies_count'],
             is_edited=True,
-            is_deleted=row[5],
+            is_deleted=row[0]['is_deleted'],
             user_liked=False,
-            created_at=row[6],
-            updated_at=row[7]
+            created_at=row[0]['created_at'],
+            updated_at=row[0]['updated_at']
         )
         
     except HTTPException:
@@ -271,41 +232,36 @@ async def update_comment(
         )
 
 @router.delete("/comments/{comment_id}", response_model=dict)
-async def delete_comment(
+def delete_comment(
     comment_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Delete a comment (soft delete)"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
         # Check ownership
-        cursor.execute(
+        row = db.execute_query(
             "SELECT user_id FROM comments WHERE id = %s",
             (comment_id,)
         )
-        row = cursor.fetchone()
+    
         
         if not row:
-            cursor.close()
-            conn.close()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Comment not found"
             )
         
-        if row[0] != user_id:
-            cursor.close()
-            conn.close()
+        if row[0]['user_id'] != user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to delete this comment"
             )
         
         # Soft delete
-        cursor.execute(
+        db.execute_query(
             """
             UPDATE comments 
             SET is_deleted = true, deleted_at = %s, updated_at = %s
@@ -313,10 +269,6 @@ async def delete_comment(
             """,
             (datetime.now(), datetime.now(), comment_id)
         )
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
         
         return {"success": True, "message": "Comment deleted successfully"}
         
@@ -330,37 +282,35 @@ async def delete_comment(
         )
 
 @router.post("/comments/{comment_id}/like", response_model=dict)
-async def like_comment(
+def like_comment(
     comment_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Like a comment"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
         # Check if already liked
-        cursor.execute(
+        result = db.execute_query(
             "SELECT id FROM comment_likes WHERE user_id = %s AND comment_id = %s",
             (user_id, comment_id)
         )
         
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
+        if result:
+            
             return {"success": True, "message": "Comment already liked"}
         
         # Add like
-        cursor.execute(
+        db.execute_query(
             "INSERT INTO comment_likes (user_id, comment_id, created_at) VALUES (%s, %s, %s)",
             (user_id, comment_id, datetime.now())
         )
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
+        # Update likes count
+        db.execute_query(
+            "UPDATE comments SET likes_count = likes_count + 1 WHERE id = %s",
+            (comment_id,)
+        )
         return {"success": True, "message": "Comment liked successfully"}
         
     except Exception as e:
@@ -371,27 +321,28 @@ async def like_comment(
         )
 
 @router.delete("/comments/{comment_id}/like", response_model=dict)
-async def unlike_comment(
+def unlike_comment(
     comment_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Unlike a comment"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
-        cursor.execute(
+        result = db.execute_query(
             "DELETE FROM comment_likes WHERE user_id = %s AND comment_id = %s",
             (user_id, comment_id)
         )
-        deleted = cursor.rowcount
-        conn.commit()
+        # Check if delete was successful and update count
+         
+        if result:
+            db.execute_query(
+                "UPDATE comments SET likes_count = likes_count - 1 WHERE id = %s",
+                (comment_id,)
+            )
         
-        cursor.close()
-        conn.close()
-        
-        if deleted == 0:
+        if not result:
             return {"success": False, "message": "Like not found"}
         
         return {"success": True, "message": "Comment unliked successfully"}
@@ -408,37 +359,33 @@ async def unlike_comment(
 # ==========================================
 
 @router.post("/follow", response_model=dict)
-async def follow_user(
+def follow_user(
     follow: UserFollowCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Follow a user"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
         if user_id == follow.following_id:
-            cursor.close()
-            conn.close()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot follow yourself"
             )
         
         # Check if already following
-        cursor.execute(
+        result = db.execute_query(
             "SELECT id FROM user_follows WHERE follower_id = %s AND following_id = %s",
             (user_id, follow.following_id)
         )
         
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
+        if result:
+            
             return {"success": True, "message": "Already following this user"}
         
         # Add follow
-        cursor.execute(
+        result = db.execute_query(
             """
             INSERT INTO user_follows (follower_id, following_id, followed_at, notification_enabled)
             VALUES (%s, %s, %s, true)
@@ -446,18 +393,9 @@ async def follow_user(
             (user_id, follow.following_id, datetime.now())
         )
         
-        # Award points
-        cursor.execute(
-            """
-            INSERT INTO user_actions (user_id, target_user_id, action_type, points_earned, created_at)
-            VALUES (%s, %s, 'follow', 5, %s)
-            """,
-            (user_id, follow.following_id, datetime.now())
-        )
+        # Award points        
+        award_points(user_id, ActionTypeId.FOLLOW, db)
         
-        conn.commit()
-        cursor.close()
-        conn.close()
         
         return {"success": True, "message": "User followed successfully", "points_earned": 5}
         
@@ -471,27 +409,21 @@ async def follow_user(
         )
 
 @router.delete("/follow/{following_id}", response_model=dict)
-async def unfollow_user(
+def unfollow_user(
     following_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Unfollow a user"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
-        
-        cursor.execute(
+        user_id = current_user.id
+
+        result = db.execute_query(
             "DELETE FROM user_follows WHERE follower_id = %s AND following_id = %s",
             (user_id, following_id)
         )
-        deleted = cursor.rowcount
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
-        if deleted == 0:
+
+        if not result:
             return {"success": False, "message": "Not following this user"}
         
         return {"success": True, "message": "User unfollowed successfully"}
@@ -504,21 +436,20 @@ async def unfollow_user(
         )
 
 @router.get("/profile/{user_id}", response_model=UserProfileResponse)
-async def get_user_profile(
+def get_user_profile(
     user_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Get user profile"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        current_user_id = current_user['id']
+        current_user_id = current_user.id
         
         # Get user details
-        cursor.execute(
+        row = db.execute_query(
             """
             SELECT 
-                u.id, u.username, u.email, u.avatar_url,
+                u.id, CONCAT(u.first_name, ' ', u.last_name) AS username, u.email, u.profile_image,
                 eu.bio,
                 COALESCE(up.total_points, 0) as total_points,
                 COALESCE(up.level, 1) as level,
@@ -536,10 +467,6 @@ async def get_user_profile(
             """,
             (current_user_id, user_id)
         )
-        row = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
         
         if not row:
             raise HTTPException(
@@ -548,19 +475,19 @@ async def get_user_profile(
             )
         
         return UserProfileResponse(
-            id=row[0],
-            username=row[1],
-            email=row[2],
-            avatar_url=row[3],
-            bio=row[4],
-            total_points=row[5],
-            level=row[6],
-            current_streak=row[7],
-            achievements_count=row[8],
-            followers_count=row[9],
-            following_count=row[10],
-            is_following=row[11],
-            is_expert=row[12]
+            id=row[0]['id'],
+            username=row[0]['first_name'] + ' ' + user_row[0]['last_name'],
+            email=row[0]['email'],
+            avatar_url=row[0]['profile_image'],
+            bio=row[0]['bio'],
+            total_points=row[0]['total_points'],
+            level=row[0]['level'],
+            current_streak=row[0]['current_streak'],
+            achievements_count=row[0]['achievements_count'],
+            followers_count=row[0]['followers_count'],
+            following_count=row[0]['following_count'],
+            is_following=row[0]['is_following'],
+            is_expert=row[0]['is_expert']
         )
         
     except HTTPException:
@@ -577,26 +504,25 @@ async def get_user_profile(
 # ==========================================
 
 @router.get("/notifications", response_model=NotificationsListResponse)
-async def get_notifications(
+def get_notifications(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     unread_only: bool = False,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Get user notifications"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         offset = (page - 1) * limit
         
         where_clause = "AND n.read = false" if unread_only else ""
         
-        cursor.execute(
+        rows = db.execute_query(
             f"""
             SELECT 
                 n.id, n.notification_type, n.title, n.message,
-                n.related_user_id, u.username as related_user_name,
+                n.related_user_id, CONCAT(u.first_name, ' ', u.last_name) AS username as related_user_name,
                 n.related_article_id, a.title as related_article_title,
                 n.read, n.action_url, n.created_at
             FROM user_notifications n
@@ -608,40 +534,38 @@ async def get_notifications(
             """,
             (user_id, limit, offset)
         )
-        rows = cursor.fetchall()
         
         notifications = []
         for row in rows:
             notifications.append(NotificationResponse(
-                id=row[0],
-                notification_type=row[1],
-                title=row[2],
-                message=row[3],
-                related_user_id=row[4],
-                related_user_name=row[5],
-                related_article_id=row[6],
-                related_article_title=row[7],
-                read=row[8],
-                action_url=row[9],
-                created_at=row[10]
+                id=row[0]['id'],
+                notification_type=row[0]['notification_type'],
+                title=row[0]['title'],
+                message=row[0]['message'],
+                related_user_id=row[0]['related_user_id'],
+                related_user_name=row[0]['related_user_name'],
+                related_article_id=row[0]['related_article_id'],
+                related_article_title=row[0]['related_article_title'],
+                read=row[0]['read'],
+                action_url=row[0]['action_url'],
+                created_at=row[0]['created_at']
             ))
         
         # Get unread count
-        cursor.execute(
+        rows = db.execute_query(
             "SELECT COUNT(*) FROM user_notifications WHERE user_id = %s AND read = false",
             (user_id,)
         )
-        unread_count = cursor.fetchone()[0]
+        unread_count = rows[0][0] if rows else 0
         
         # Get total count
-        cursor.execute(
+        rows = db.execute_query(
             "SELECT COUNT(*) FROM user_notifications WHERE user_id = %s",
             (user_id,)
         )
-        total_count = cursor.fetchone()[0]
+        total_count = rows[0][0] if rows else 0
         
-        cursor.close()
-        conn.close()
+        
         
         return NotificationsListResponse(
             notifications=notifications,
@@ -657,17 +581,16 @@ async def get_notifications(
         )
 
 @router.post("/notifications/{notification_id}/read", response_model=dict)
-async def mark_notification_read(
+def mark_notification_read(
     notification_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_database_service)
 ):
     """Mark notification as read"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
         
-        cursor.execute(
+        result = db.execute_query(
             """
             UPDATE user_notifications 
             SET read = true, read_at = %s
@@ -675,13 +598,8 @@ async def mark_notification_read(
             """,
             (datetime.now(), notification_id, user_id)
         )
-        updated = cursor.rowcount
-        conn.commit()
         
-        cursor.close()
-        conn.close()
-        
-        if updated == 0:
+        if not result:
             return {"success": False, "message": "Notification not found"}
         
         return {"success": True, "message": "Notification marked as read"}

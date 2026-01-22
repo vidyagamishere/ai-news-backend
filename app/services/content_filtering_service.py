@@ -353,6 +353,17 @@ class ContentFilteringService:
                     a.publisher_id,
                     ct.name as content_type_label,
                     c.name as category_label,
+                    -- User interaction flags (personal state)
+                    CASE WHEN ai_like.id IS NOT NULL THEN TRUE ELSE FALSE END as has_liked,
+                    CASE WHEN ai_bookmark.id IS NOT NULL THEN TRUE ELSE FALSE END as has_bookmarked,
+                    CASE WHEN ai_view.id IS NOT NULL THEN TRUE ELSE FALSE END as has_viewed,
+                    -- Total interaction counts from article_stats (visible to all users)
+                    COALESCE(ast.likes_count, 0) as total_likes,
+                    COALESCE(ast.bookmarks_count, 0) as total_bookmarks,
+                    COALESCE(ast.views_count, 0) as total_views,
+                    COALESCE(ast.shares_count, 0) as total_shares,
+                    COALESCE(ast.comments_count, 0) as total_comments,
+                    COALESCE(ast.engagement_score, 0) as engagement_score,
                     -- DYNAMIC RANKING SCORE (hybrid approach)
                         (
                             -- Static component (pre-computed publisher + significance)
@@ -373,10 +384,18 @@ class ContentFilteringService:
                 FROM articles a
                 LEFT JOIN content_types ct ON a.content_type_id = ct.id
                 LEFT JOIN ai_categories_master c ON a.category_id = c.id
+                LEFT JOIN article_stats ast ON a.id = ast.article_id
+                LEFT JOIN article_interactions ai_like ON a.id = ai_like.article_id AND ai_like.action_type_id = 1 AND ai_like.user_id = %s
+                LEFT JOIN article_interactions ai_bookmark ON a.id = ai_bookmark.article_id AND ai_bookmark.action_type_id = 3 AND ai_bookmark.user_id = %s
+                LEFT JOIN article_interactions ai_view ON a.id = ai_view.article_id AND ai_view.action_type_id = 4 AND ai_view.user_id = %s
                 WHERE 1=1
             """
             
             params = []
+            # Add user_id parameters for the JOINs (3 times for like, bookmark, view)
+            user_id_param = criteria.user_id if criteria.user_id else None
+            logger.info(f"👤 Filtering with user_id: {user_id_param} (type: {type(user_id_param).__name__})")
+            params.extend([user_id_param, user_id_param, user_id_param])
             
             # ✅ CRITICAL: Apply time filter FIRST and ALWAYS if provided
             if time_threshold:
@@ -464,6 +483,13 @@ class ContentFilteringService:
                         logger.warning(f"   Sample old dates: {[r.get('published_date').isoformat() if hasattr(r.get('published_date'), 'isoformat') else str(r.get('published_date')) for r in outside_filter[:3]]}")
                     else:
                         logger.info(f"✅ Time filter verified: ALL {len(results)} articles are after {time_threshold.isoformat()}")
+            
+            # ✅ Log interaction states for debugging
+            if results and criteria.user_id:
+                liked_count = sum(1 for r in results if r.get('has_liked'))
+                bookmarked_count = sum(1 for r in results if r.get('has_bookmarked'))
+                viewed_count = sum(1 for r in results if r.get('has_viewed'))
+                logger.info(f"💙 Interaction states for user {criteria.user_id}: {liked_count} liked, {bookmarked_count} bookmarked, {viewed_count} viewed out of {len(results)} articles")
         
             return [dict(row) for row in results]
         

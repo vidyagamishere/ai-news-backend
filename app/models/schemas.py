@@ -154,6 +154,16 @@ class Article(BaseModel):
     content_type_label: Optional[str] = None
     category_id: Optional[int] = None
     category_label: Optional[str] = None
+    has_liked: Optional[bool] = False
+    has_bookmarked: Optional[bool] = False
+    has_viewed: Optional[bool] = False
+    # Total counts from article_stats (visible to all users)
+    total_likes: Optional[int] = 0
+    total_bookmarks: Optional[int] = 0
+    total_views: Optional[int] = 0
+    total_shares: Optional[int] = 0
+    total_comments: Optional[int] = 0
+    engagement_score: Optional[float] = 0.0
 
     
 

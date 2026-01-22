@@ -9,27 +9,31 @@ Maps to existing database schema with tables:
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
-from enum import Enum
+from enum import Enum, IntEnum
 
 # ==========================================
 # ENUMS
 # ==========================================
 
-class InteractionType(str, Enum):
-    """Article interaction types"""
-    LIKE = "like"
-    BOOKMARK = "bookmark"
-    SHARE = "share"
-    VIEW = "view"
+# Action Type ID Enum (matches user_action_types table)
+class ActionTypeId(IntEnum):
+    LIKE = 1
+    COMMENT = 2
+    BOOKMARK = 3
+    VIEW = 4
+    SHARE = 5
+    FOLLOW = 6
+    READ = 7
 
 class ActionType(str, Enum):
     """User action types for points/tracking"""
     LIKE = "like"
     BOOKMARK = "bookmark"
     SHARE = "share"
-    READ = "read"
+    VIEW = "view"
     COMMENT = "comment"
     FOLLOW = "follow"
+    READ = "read"
 
 class NotificationType(str, Enum):
     """Notification types"""
@@ -61,17 +65,20 @@ class LeaderboardPeriod(str, Enum):
 class ArticleInteractionCreate(BaseModel):
     """Create article interaction (like, bookmark, share, view)"""
     article_id: int
-    interaction_type: InteractionType
+    action_type_id: int
     metadata: Optional[Dict[str, Any]] = None
+    target_user_id: Optional[int] = None
+    
+
 
 class ArticleInteractionResponse(BaseModel):
     """Article interaction response"""
     id: int
     user_id: int
     article_id: int
-    interaction_type: str
+    action_type_id: int
     created_at: datetime
-    
+    target_user_id: Optional[int] = None
     class Config:
         from_attributes = True
 
@@ -101,7 +108,7 @@ class UserActionResponse(BaseModel):
     """User action response"""
     id: int
     user_id: int
-    action_type: str
+    action_type_id: int
     article_id: Optional[int]
     points_earned: int
     created_at: datetime
@@ -265,12 +272,12 @@ class SwipeableFeedResponse(BaseModel):
 class CommentCreate(BaseModel):
     """Create comment"""
     article_id: int
-    content: str = Field(..., min_length=1, max_length=5000)
+    content: str = Field(..., min_length=1, max_length=500)
     parent_comment_id: Optional[int] = None
 
 class CommentUpdate(BaseModel):
     """Update comment"""
-    content: str = Field(..., min_length=1, max_length=5000)
+    content: str = Field(..., min_length=1, max_length=500)
 
 class CommentResponse(BaseModel):
     """Comment details"""

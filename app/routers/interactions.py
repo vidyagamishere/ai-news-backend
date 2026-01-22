@@ -8,8 +8,12 @@ from typing import List, Optional
 from datetime import datetime
 import logging
 import uuid
+from enum import IntEnum
+import json
+
 
 from app.dependencies.auth import get_current_user, get_current_user_optional
+from app.dependencies.database import get_db
 from app.models.interactions import (
     ArticleInteractionCreate, ArticleInteractionResponse,
     ArticleStatsResponse, ReadingProgressUpdate, ReadingHistoryResponse,
@@ -17,7 +21,16 @@ from app.models.interactions import (
     SwipeableArticle, SwipeableFeedResponse,
     UserActionCreate, UserActionResponse
 )
-from db_service import get_database_service
+from db_service import PostgreSQLService
+
+# Action Type ID Enum (matches user_action_types table)
+class ActionTypeId(IntEnum):
+    LIKE = 1
+    COMMENT = 2
+    BOOKMARK = 3
+    VIEW = 4
+    SHARE = 5
+    FOLLOW = 6
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/interactions", tags=["interactions"])
@@ -26,89 +39,98 @@ router = APIRouter(prefix="/api/v1/interactions", tags=["interactions"])
 # HELPER FUNCTIONS
 # ==========================================
 
-def get_db():
-    """Get database service"""
-    return get_database_service()
-
-def award_points(user_id: int, action_type: str, cursor, conn) -> int:
+def award_points(user_id: int, action_type_id: int, db: PostgreSQLService) -> int:
     """Award points for user actions and update user_points table"""
-    points_map = {
-        'read': 10,
-        'bookmark': 5,
-        'like': 3,
-        'share': 15,
-        'comment': 20,
-        'follow': 5,
-        'view': 1
-    }
+    # Fetch points from config table
+    points_query = """
+        SELECT points 
+        FROM action_points_config 
+        WHERE action_type_id = %s AND is_active = TRUE
+    """
+    result = db.execute_query(points_query, (action_type_id,))
     
-    points = points_map.get(action_type, 0)
+    if not result or len(result) == 0:
+        return 0 # No points configured for this action
     
-    if points > 0:
-        # Update user_points table
-        cursor.execute(
-            """
-            INSERT INTO user_points (user_id, total_points, current_level_points, lifetime_points)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET
-                total_points = user_points.total_points + EXCLUDED.total_points,
-                current_level_points = user_points.current_level_points + EXCLUDED.current_level_points,
-                lifetime_points = user_points.lifetime_points + EXCLUDED.lifetime_points,
-                updated_at = %s
-            """,
-            (user_id, points, points, points, datetime.now())
-        )
+    points = result[0]['points']
+    
+    # Insert into user_actions
+    action_query = """
+        INSERT INTO user_actions (user_id, action_type_id, points_earned, created_at)
+        VALUES (%s, %s, %s, NOW())
+        RETURNING id
+    """
+    db.execute_query(action_query, (user_id, action_type_id, points))
+    
+    # Update user_points
+    update_points_query = """
+        INSERT INTO user_points (user_id, total_points, current_level_points, lifetime_points, level, next_level_threshold)
+        VALUES (%s, %s, %s, %s, 1, 100)
+        ON CONFLICT (user_id) DO UPDATE SET
+            total_points = user_points.total_points + %s,
+            current_level_points = user_points.current_level_points + %s,
+            lifetime_points = user_points.lifetime_points + %s,
+            updated_at = NOW()
+        RETURNING user_id
+    """
+    db.execute_query(
+        update_points_query, 
+        (user_id, points, points, points, points, points, points)
+    )
         
-        # Check for level up
-        cursor.execute(
-            """
-            SELECT current_level_points, next_level_threshold, level 
-            FROM user_points WHERE user_id = %s
-            """,
-            (user_id,)
-        )
-        row = cursor.fetchone()
+    # Check for level up
+    level_check_query = """
+        SELECT current_level_points, next_level_threshold, level 
+        FROM user_points WHERE user_id = %s
+    """
+    level_result = db.execute_query(level_check_query, (user_id,))
+    
+    if level_result and len(level_result) > 0:
+        row = level_result[0]
+        current_level_points = row['current_level_points']
+        next_level_threshold = row['next_level_threshold']
+        level = row['level']
         
-        if row and row[0] >= row[1]:
-            new_level = row[2] + 1
-            new_threshold = int(row[1] * 1.5)
-            cursor.execute(
-                """
+        if current_level_points >= next_level_threshold:
+            new_level = level + 1
+            new_threshold = int(next_level_threshold * 1.5)
+            level_up_query = """
                 UPDATE user_points 
                 SET level = %s,
                     current_level_points = 0,
                     next_level_threshold = %s,
-                    updated_at = %s
+                    updated_at = NOW()
                 WHERE user_id = %s
-                """,
-                (new_level, new_threshold, datetime.now(), user_id)
-            )
-        
-        conn.commit()
+                RETURNING level
+            """
+            db.execute_query(level_up_query, (new_level, new_threshold, user_id))
     
     return points
 
-def update_reading_streak(user_id: int, cursor, conn):
+def update_reading_streak(user_id: int, db: PostgreSQLService):
     """Update user reading streak"""
-    today = datetime.now().date()
+    from datetime import date
+    today = date.today()
     
-    cursor.execute(
-        """
+    # Get current streak data
+    query = """
         SELECT current_streak, longest_streak, last_active_date, total_days_active 
         FROM user_streaks WHERE user_id = %s
-        """,
-        (user_id,)
-    )
-    row = cursor.fetchone()
+    """
+    result = db.execute_query(query, (user_id,))
     
-    if row:
-        current_streak, longest_streak, last_active_date, total_days = row
+    if result and len(result) > 0:
+        row = result[0]
+        current_streak = row['current_streak']
+        longest_streak = row['longest_streak']
+        last_active_date = row['last_active_date']
+        total_days = row['total_days_active']
         
         if last_active_date:
             days_diff = (today - last_active_date).days
             
             if days_diff == 0:
-                return
+                logger.info(f"User {user_id} already active today. No streak update.")
             elif days_diff == 1:
                 current_streak += 1
             else:
@@ -119,268 +141,180 @@ def update_reading_streak(user_id: int, cursor, conn):
         longest_streak = max(longest_streak, current_streak)
         total_days += 1
         
-        cursor.execute(
-            """
+        update_query = """
             UPDATE user_streaks 
             SET current_streak = %s,
                 longest_streak = %s,
                 last_active_date = %s,
                 total_days_active = %s,
-                updated_at = %s
+                updated_at = NOW()
             WHERE user_id = %s
-            """,
-            (current_streak, longest_streak, today, total_days, datetime.now(), user_id)
+        """
+        db.execute_query(
+            update_query, 
+            (current_streak, longest_streak, today, total_days, user_id)
         )
     else:
-        cursor.execute(
-            """
+        insert_query = """
             INSERT INTO user_streaks 
             (user_id, current_streak, longest_streak, last_active_date, total_days_active)
             VALUES (%s, 1, 1, %s, 1)
-            """,
-            (user_id, today)
-        )
-    
-    conn.commit()
+        """
+        db.execute_query(insert_query, (user_id, today))
 
 # ==========================================
 # ARTICLE INTERACTION ENDPOINTS
 # ==========================================
 
 @router.post("/article", response_model=dict)
-async def create_article_interaction(
-    interaction: ArticleInteractionCreate,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+def create_article_interaction(
+    interaction: dict,  # { article_id, action_type_id, metadata? }
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db: PostgreSQLService = Depends(get_db)
 ):
+    """Create article interaction using action_type_id"""
+    user_id = current_user.id if current_user else None
+    article_id = interaction.get('article_id')
+    action_type_id = interaction.get('action_type_id')  # Changed from interaction_type
+    metadata = interaction.get('metadata', {})
+    
+    logger.info(f"📥 CREATE INTERACTION - Request from frontend: user_id={user_id}, article_id={article_id}, action_type_id={action_type_id}, metadata={metadata}")
+
+    # Validate action_type_id
+    if action_type_id not in [1, 2, 3, 4, 5, 6]:
+        logger.error(f"❌ Invalid action_type_id: {action_type_id}")
+        raise HTTPException(status_code=400, detail="Invalid action_type_id")
+    
+    logger.info(f"🔄 Inserting interaction: user_id={user_id}, article_id={article_id}, action_type_id={action_type_id}")
+    
+    # Insert interaction
+    query = """
+        INSERT INTO article_interactions (user_id, article_id, action_type_id, metadata, created_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ON CONFLICT (user_id, article_id, action_type_id) DO NOTHING
+        RETURNING id
     """
-    Create article interaction (like, bookmark, share, view)
-    Inserts into article_interactions table
-    Optional authentication - view tracking works for anonymous users
-    """
-    try:
-        db = get_db()
-        user_id = current_user['id'] if current_user else None
-        
-        # For authenticated users, check if interaction already exists
-        if user_id:
-            existing = db.execute_query(
-                """
-                SELECT id FROM article_interactions 
-                WHERE user_id = %s AND article_id = %s AND interaction_type = %s
-                """,
-                (user_id, interaction.article_id, interaction.interaction_type.value),
-                fetch_one=True
-            )
-            
-            if existing:
-                return {"success": True, "message": f"Article already {interaction.interaction_type.value}d"}
-        
-        # Create interaction (user_id can be NULL for anonymous views)
-        db.execute_query(
-            """
-            INSERT INTO article_interactions 
-            (user_id, article_id, interaction_type, metadata, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (user_id, interaction.article_id, interaction.interaction_type.value, 
-             None if not interaction.metadata else str(interaction.metadata), datetime.now()),
-            fetch_all=False
-        )
-        
-        # Award points only for authenticated users
-        points = 0
-        if user_id:
-            points_map = {
-                'read': 10, 'bookmark': 5, 'like': 3, 'share': 15,
-                'comment': 20, 'follow': 5, 'view': 1
-            }
-            points = points_map.get(interaction.interaction_type.value, 0)
-            
-            if points > 0:
-                db.execute_query(
-                    """
-                    INSERT INTO user_actions 
-                    (user_id, article_id, action_type, points_earned, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (user_id, interaction.article_id, interaction.interaction_type.value, points, datetime.now()),
-                    fetch_all=False
-                )
-        
-        # Update view_count in articles table if interaction is 'view'
-        if interaction.interaction_type.value == 'view':
-            db.execute_query(
-                """
-                UPDATE articles 
-                SET view_count = COALESCE(view_count, 0) + 1
-                WHERE id = %s
-                """,
-                (interaction.article_id,),
-                fetch_all=False
-            )
-        
-        logger.info(f"User {user_id or 'anonymous'} {interaction.interaction_type.value}d article {interaction.article_id}")
-        return {
-            "success": True, 
-            "message": f"Article {interaction.interaction_type.value}d successfully",
-            "points_earned": points
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating interaction: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create interaction: {str(e)}"
-        )
+    result = db.execute_query(
+        query, 
+        (user_id, article_id, action_type_id, json.dumps(metadata))
+    )
+    logger.info(f"✅ Interaction inserted successfully: result={result}")
+    
+    # Note: article_stats are now automatically updated by the database trigger
+    # Award points if user is authenticated
+    if result and len(result) > 0 and user_id:
+        award_points(user_id, action_type_id, db)
+    
+    return {"success": True, "message": "Interaction created"}
 
 @router.delete("/article", response_model=dict)
-async def remove_article_interaction(
-    article_id: int = Query(...),
-    interaction_type: str = Query(..., regex="^(like|bookmark|share)$"),
-    current_user: dict = Depends(get_current_user)
+def remove_article_interaction(
+    article_id: int,
+    action_type_id: int,  # Changed from interaction_type
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
 ):
-    """Remove article interaction"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
-        
-        cursor.execute(
-            """
-            DELETE FROM article_interactions 
-            WHERE user_id = %s AND article_id = %s AND interaction_type = %s
-            """,
-            (user_id, article_id, interaction_type)
-        )
-        deleted = cursor.rowcount
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
-        if deleted == 0:
-            return {"success": False, "message": "Interaction not found"}
-        
-        return {"success": True, "message": f"{interaction_type} removed successfully"}
-        
-    except Exception as e:
-        logger.error(f"Error removing interaction: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to remove interaction: {str(e)}"
-        )
+    """Remove interaction using action_type_id"""
+    user_id = current_user.id
+    logger.info(f"🗑️ DELETE INTERACTION - Request from frontend: user_id={user_id}, article_id={article_id}, action_type_id={action_type_id}")
+    
+    query = """
+        DELETE FROM article_interactions 
+        WHERE user_id = %s AND article_id = %s AND action_type_id = %s
+        RETURNING id
+    """
+    result = db.execute_query(query, (user_id, article_id, action_type_id))
+    logger.info(f"✅ Interaction deleted: result={result}")
+    
+    # Note: article_stats are automatically updated by the database trigger on DELETE
+    return {"success": True, "message": "Interaction removed"}
 
 @router.get("/bookmarks", response_model=BookmarksListResponse)
-async def get_bookmarks(
-    current_user: dict = Depends(get_current_user)
+def get_bookmarks(
+    content_type: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
 ):
-    """Get all bookmarked articles"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
-        
-        cursor.execute(
-            """
-            SELECT 
-                a.id, a.title, a.summary, a.url,
-                s.name as source_name,
-                a.published_date,
-                ct.name as content_type_name,
-                a.thumbnail_url,
-                c.name as category_name,
-                a.significance,
-                ai.created_at as bookmarked_at,
-                COALESCE(ast.engagement_score, 0) as engagement_score
-            FROM article_interactions ai
-            JOIN articles a ON ai.article_id = a.id
-            LEFT JOIN sources s ON a.source_id = s.id
-            LEFT JOIN content_types ct ON a.content_type_id = ct.id
-            LEFT JOIN categories c ON a.category_id = c.id
-            LEFT JOIN article_stats ast ON a.id = ast.article_id
-            WHERE ai.user_id = %s AND ai.interaction_type = 'bookmark'
-            ORDER BY ai.created_at DESC
-            """,
-            (user_id,)
-        )
-        
-        rows = cursor.fetchall()
-        articles = []
-        
-        for row in rows:
-            articles.append(BookmarkArticle(
-                id=row[0],
-                title=row[1],
-                summary=row[2],
-                url=row[3],
-                source_name=row[4] or "Unknown",
-                published_date=str(row[5]) if row[5] else None,
-                content_type_name=row[6] or "BLOGS",
-                thumbnail_url=row[7],
-                category_name=row[8] or "AI News",
-                significance=row[9],
-                bookmarked_at=row[10],
-                engagement_score=float(row[11]) if row[11] else 0
-            ))
-        
-        cursor.close()
-        conn.close()
-        
-        return BookmarksListResponse(articles=articles, count=len(articles))
-        
-    except Exception as e:
-        logger.error(f"Error fetching bookmarks: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch bookmarks: {str(e)}"
-        )
-
+    """Get user's bookmarked articles (action_type_id = 3)"""
+    user_id = current_user.id
+    logger.info(f"📚 GET BOOKMARKS - Request from frontend: user_id={user_id}, content_type={content_type}, limit={limit}, offset={offset}")
+    
+    content_type_filter = ""
+    params = [user_id, ActionTypeId.BOOKMARK]  # Use ID 3 for bookmark
+    
+    if content_type:
+        content_type_filter = "AND ct.name = %s"
+        params.append(content_type)
+    
+    query = f"""
+        SELECT 
+            a.id, a.title, a.url, a.summary, a.published_date,
+            a.thumbnail_url, a.source,
+            ct.name as content_type, ct.display_name as content_type_label,
+            cat.name as category_name,
+            ast.likes_count, ast.comments_count, ast.bookmarks_count, 
+            ast.shares_count  -- ✅ Correct column name
+        FROM article_interactions ai
+        JOIN articles a ON ai.article_id = a.id
+        LEFT JOIN content_types ct ON a.content_type_id = ct.id
+        LEFT JOIN ai_categories_master cat ON a.category_id = cat.id
+        LEFT JOIN article_stats ast ON a.id = ast.article_id
+        WHERE ai.user_id = %s 
+        AND ai.action_type_id = %s  -- Changed from interaction_type = 'bookmark'
+        {content_type_filter}
+        ORDER BY ai.created_at DESC
+        LIMIT %s OFFSET %s
+    """
+    params.extend([limit, offset])
+    
+    results = db.execute_query(query, tuple(params))
+    logger.info(f"✅ Bookmarks fetched: count={len(results)}")
+    
+    return {
+        "articles": results,
+        "total": len(results),
+        "content_type_filter": content_type
+    }
 # ==========================================
 # READING PROGRESS ENDPOINTS
 # ==========================================
-
 @router.post("/reading-progress", response_model=dict)
-async def update_reading_progress(
+def update_reading_progress(
     progress: ReadingProgressUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
 ):
     """Update reading progress for an article"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+        user_id = current_user.id
+        logger.info(f"📖 UPDATE READING PROGRESS - Request from frontend: user_id={user_id}, article_id={progress.article_id}, read_percentage={progress.read_percentage}, time_spent={progress.time_spent_seconds}, completed={progress.completed}")
         
-        cursor.execute(
+        # Insert/update reading progress
+        db.execute_query(
             """
             INSERT INTO user_reading_history 
             (user_id, article_id, read_percentage, time_spent_seconds, completed, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, NOW())
             ON CONFLICT (user_id, article_id) DO UPDATE SET
                 read_percentage = EXCLUDED.read_percentage,
                 time_spent_seconds = user_reading_history.time_spent_seconds + EXCLUDED.time_spent_seconds,
                 completed = EXCLUDED.completed,
-                updated_at = EXCLUDED.updated_at
+                updated_at = NOW()
             """,
             (user_id, progress.article_id, progress.read_percentage, 
-             progress.time_spent_seconds, progress.completed, datetime.now())
+             progress.time_spent_seconds, progress.completed)
         )
         
-        # If completed, track as read action
+        # If completed, award points and update streak
         if progress.completed:
-            cursor.execute(
-                """
-                INSERT INTO user_actions (user_id, article_id, action_type, points_earned, created_at)
-                VALUES (%s, %s, 'read', 10, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (user_id, progress.article_id, datetime.now())
-            )
-            award_points(user_id, 'read', cursor, conn)
-            update_reading_streak(user_id, cursor, conn)
+            # Award points for reading (use action_type_id = 4 for VIEW, or add 7 to database)
+            award_points(user_id, ActionTypeId.VIEW, db)
+            update_reading_streak(user_id, db)
         
-        conn.commit()
-        cursor.close()
-        conn.close()
+        # ❌ REMOVED: conn.commit(), cursor.close(), conn.close()
+        # These don't exist when using db.execute_query()
         
         return {"success": True, "message": "Reading progress updated"}
         
@@ -390,33 +324,32 @@ async def update_reading_progress(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update reading progress: {str(e)}"
         )
-
 # ==========================================
 # SWIPEABLE FEED ENDPOINT
 # ==========================================
 
 @router.get("/swipeable-feed", response_model=SwipeableFeedResponse)
-async def get_swipeable_feed(
+def get_swipeable_feed(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     feed_type: str = Query('personalized', regex="^(personalized|trending|following)$"),
     category: Optional[str] = None,
     content_type: Optional[str] = None,
     exclude_viewed: bool = Query(True),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
 ):
     """
     Get personalized swipeable feed
     Uses: user_recommendations, user_feed_state, article_interactions
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        user_id = current_user['id']
+     
+        user_id = current_user.id
         offset = (page - 1) * limit
         
         # Get or create session
-        cursor.execute(
+        db.execute_query(
             """
             SELECT session_id FROM user_feed_state 
             WHERE user_id = %s AND feed_type = %s
@@ -424,20 +357,21 @@ async def get_swipeable_feed(
             """,
             (user_id, feed_type)
         )
-        row = cursor.fetchone()
+        row = db.fetchone()
         session_id = str(row[0]) if row else str(uuid.uuid4())
         
         # Build exclusion list
         exclude_ids = []
         if exclude_viewed:
-            cursor.execute(
+            db.execute_query(
                 """
                 SELECT DISTINCT article_id FROM article_interactions 
-                WHERE user_id = %s AND interaction_type IN ('view', 'read')
+                WHERE user_id = %s AND action_type_id IN (4, 10)  -- 4=view, assuming 10=read
                 """,
                 (user_id,)
             )
-            exclude_ids = [row[0] for row in cursor.fetchall()]
+            rows = db.fetchall()
+            exclude_ids = [row[0] for row in rows]
         
         # Build query
         where_clauses = []
@@ -471,8 +405,8 @@ async def get_swipeable_feed(
                 a.read_time,
                 COALESCE(ast.engagement_score, 0) as engagement_score,
                 COALESCE(ur.recommendation_score, 0) as rec_score,
-                EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND interaction_type = 'bookmark') as is_bookmarked,
-                EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND interaction_type = 'like') as is_liked
+                EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND action_type_id = 3) as is_bookmarked,
+                EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND action_type_id = 1) as is_liked
             FROM articles a
             LEFT JOIN sources s ON a.source_id = s.id
             LEFT JOIN content_types ct ON a.content_type_id = ct.id
@@ -485,8 +419,8 @@ async def get_swipeable_feed(
         """
         
         params_query = [user_id, user_id, user_id] + params + [limit + 1, offset]
-        cursor.execute(query, params_query)
-        rows = cursor.fetchall()
+        db.execute_query(query, params_query)
+        rows = db.fetchall()
         
         has_more = len(rows) > limit
         articles_data = rows[:limit]
@@ -513,7 +447,7 @@ async def get_swipeable_feed(
         
         # Update feed state
         if articles:
-            cursor.execute(
+            db.execute_query(
                 """
                 INSERT INTO user_feed_state 
                 (user_id, feed_type, last_article_id, offset_position, session_id, updated_at)
@@ -526,15 +460,12 @@ async def get_swipeable_feed(
                 """,
                 (user_id, feed_type, articles[-1].id, offset + len(articles), session_id, datetime.now())
             )
-            conn.commit()
         
         # Get total count
         count_query = f"SELECT COUNT(*) FROM articles a WHERE {where_sql}"
-        cursor.execute(count_query, params)
-        total_count = cursor.fetchone()[0]
+        db.execute_query(count_query, params)
+        total_count = (db.fetchone())[0]
         
-        cursor.close()
-        conn.close()
         
         return SwipeableFeedResponse(
             articles=articles,
@@ -551,17 +482,118 @@ async def get_swipeable_feed(
             detail=f"Failed to fetch swipeable feed: {str(e)}"
         )
 
+# ✅ UPDATED: Share Tracking Endpoint
+@router.post("/share/track")
+def track_share_platform(
+    share_data: dict,  # { article_id, platform }
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
+):
+    """Track share with platform and update stats"""
+    user_id = current_user.id
+    article_id = share_data['article_id']
+    platform = share_data['platform']
+    
+    # Insert into share_tracking
+    query = """
+        INSERT INTO share_tracking (user_id, article_id, platform, created_at)
+        VALUES (%s, %s, %s, NOW())
+        ON CONFLICT (user_id, article_id, platform) DO NOTHING
+        RETURNING id
+    """
+    result = db.execute_query(query, (user_id, article_id, platform))
+    
+    # Update article_stats.shares_count (correct column name)
+    update_stats_query = """
+        UPDATE article_stats 
+        SET shares_count = (
+            SELECT COUNT(DISTINCT user_id) 
+            FROM share_tracking 
+            WHERE article_id = %s
+        ),
+        last_updated = NOW()
+        WHERE article_id = %s
+    """
+    db.execute_query(update_stats_query, (article_id, article_id))
+    
+    # Award points (action_type_id = 5 for share)
+    if result and len(result) > 0:
+        award_points(user_id, ActionTypeId.SHARE, db)
+    
+    return {"success": True, "message": "Share tracked"}
+
+
+# ✅ UPDATED: User Stats Endpoint
+@router.get("/user/stats")
+def get_user_stats(
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
+):
+    """Get user stats with points breakdown by action type"""
+    user_id = current_user.id
+    
+    # Get points and level
+    points_query = """
+        SELECT total_points, level, current_level_points, next_level_threshold
+        FROM user_points
+        WHERE user_id = %s
+    """
+    points_data = db.execute_query(points_query, (user_id,))
+    
+    # Get streak
+    streak_query = """
+        SELECT current_streak, longest_streak, total_days_active, last_active_date
+        FROM user_streaks
+        WHERE user_id = %s
+    """
+    streak_data = db.execute_query(streak_query, (user_id,))
+    
+    # Get actions breakdown with action type names
+    actions_query = """
+        SELECT 
+            uat.name as action_type,
+            COUNT(*) as count,
+            SUM(ua.points_earned) as total_points
+        FROM user_actions ua
+        JOIN user_action_types uat ON ua.action_type_id = uat.id
+        WHERE ua.user_id = %s
+        GROUP BY uat.name, uat.id
+        ORDER BY uat.id
+    """
+    actions_data = db.execute_query(actions_query, (user_id,))
+    
+    # Get points config
+    config_query = """
+        SELECT uat.name as action_type, apc.points
+        FROM action_points_config apc
+        JOIN user_action_types uat ON apc.action_type_id = uat.id
+        WHERE apc.is_active = TRUE
+    """
+    config_data = db.execute_query(config_query)
+    points_config = {row['action_type']: row['points'] for row in config_data}
+    
+    return {
+        "points": points_data[0] if points_data else {
+            "total_points": 0, "level": 1, "current_level_points": 0, "next_level_threshold": 100
+        },
+        "streak": streak_data[0] if streak_data else {
+            "current_streak": 0, "longest_streak": 0, "total_days_active": 0
+        },
+        "actions_breakdown": actions_data,
+        "points_config": points_config
+    }
+
+
 @router.get("/article-stats/{article_id}", response_model=ArticleStatsResponse)
-async def get_article_stats(
+def get_article_stats(
     article_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
 ):
     """Get statistics for an article"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
         
-        cursor.execute(
+        db.execute_query(
             """
             SELECT article_id, views_count, likes_count, bookmarks_count, 
                    shares_count, comments_count, engagement_score, last_updated
@@ -569,10 +601,7 @@ async def get_article_stats(
             """,
             (article_id,)
         )
-        row = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
+        row = db.fetchone()
         
         if not row:
             # Return zeros if no stats yet

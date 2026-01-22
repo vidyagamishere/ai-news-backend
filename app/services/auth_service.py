@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class AuthService:
     def __init__(self):
-        self.jwt_secret = os.getenv('JWT_SECRET', 'ai-news-jwt-secret-2025-default')
+        self.jwt_secret = os.getenv('JWT_SECRET_KEY', 'vidyagam-jwt-secret-2025')
         self.google_client_id = os.getenv('GOOGLE_CLIENT_ID', '')
         logger.info(f"🔐 AuthService initialized - JWT secret length: {len(self.jwt_secret)}, Google Client ID: {'✅' if self.google_client_id else '❌'}")
     
@@ -79,11 +79,13 @@ class AuthService:
         """Verify JWT token and extract user data"""
         try:
             logger.info("🔐 Verifying JWT token...")
+            logger.info(f"🔐 Token (first 50 chars): {token[:50]}...")
+            logger.info(f"🔐 JWT_SECRET (first 10 chars): {self.jwt_secret[:10]}...")
             
             # Split token into parts
             parts = token.split('.')
             if len(parts) != 3:
-                logger.warning("❌ Invalid JWT token format")
+                logger.warning(f"❌ Invalid JWT token format - expected 3 parts, got {len(parts)}")
                 return None
             
             header_encoded, payload_encoded, signature_encoded = parts
@@ -106,8 +108,12 @@ class AuthService:
             while len(expected_with_padding) % 4:
                 expected_with_padding += '='
             
+            logger.info(f"🔐 Received signature: {signature_to_verify[:20]}...")
+            logger.info(f"🔐 Expected signature: {expected_with_padding[:20]}...")
+            
             if signature_to_verify != expected_with_padding:
-                logger.warning("❌ JWT token signature verification failed")
+                logger.warning("❌ JWT token signature verification failed - signatures don't match")
+                logger.warning(f"❌ Received signature length: {len(signature_to_verify)}, Expected: {len(expected_with_padding)}")
                 return None
             
             # Decode payload
