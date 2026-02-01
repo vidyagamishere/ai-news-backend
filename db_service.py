@@ -476,18 +476,25 @@ class PostgreSQLService:
                 # Convert to comma-separated string immediately
                 article_data['keywords'] = ', '.join(keywords)
             elif isinstance(keywords, str):
-                # Convert comma-separated string to list
-                keywords = [k.strip() for k in keywords.split(',') if k.strip()]
-                article_data['keywords'] = keywords
-            
+                # If already a string, ensure it's properly formatted (not character-split)
+                # Check if it's already comma-separated properly
+                if ',' in keywords:
+                    # Split by comma and rejoin to normalize spacing
+                    keywords = [k.strip() for k in keywords.split(',') if k.strip()]
+                    article_data['keywords'] = ', '.join(keywords)
+                else:
+                    # Single keyword or space-separated - keep as is
+                    article_data['keywords'] = keywords.strip()
+                logger.debug(f"🔑 Processed string keywords: {article_data['keywords']}") 
             # Convert keywords list to comma-separated string for database
-            if isinstance(keywords, list):
+            elif isinstance(keywords, list):
                 keywords_str = ', '.join(keywords)
                 article_data['keywords'] = keywords_str
-                logger.debug(f"🔑 Final keywords for article: {keywords_str}")
+                logger.debug(f"🔑 Converted list to string keywords: {article_data['keywords']}")
             else:
+                article_data['keywords'] = str(keywords)
                 logger.debug(f"🔑 Final keywords for article: {keywords}")
-
+            logger.debug(f"🔑 Final keywords stored: {article_data['keywords']}")
             # --- 5. ✅ FIX: Convert string "null" to None for all date fields ---
             date_fields = ['published_date', 'scraped_date', 'created_date', 'updated_date']
             for field in date_fields:

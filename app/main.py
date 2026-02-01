@@ -9,6 +9,8 @@ import sys
 import logging
 import uvicorn
 from contextlib import asynccontextmanager
+
+import websocket
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -17,7 +19,7 @@ from dotenv import load_dotenv
 from app.routers import health, auth, content
 from db_service import initialize_database, close_database_service
 
-from app.routers import interactions, gamification, social
+from app.routers import interactions, gamification, social, websocket
 
 
 # Configure logging
@@ -98,6 +100,9 @@ app.include_router(interactions.router)
 app.include_router(gamification.router)
 app.include_router(social.router)
 
+
+# Include WebSocket router (add after other routers around line 143)
+app.include_router(websocket.router, tags=["websocket"])
 
 
 # Additional endpoints for admin and utilities

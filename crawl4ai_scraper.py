@@ -124,6 +124,15 @@ class Crawl4AIScraper:
         self.huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY', '')
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
 
+        # Tavily API configuration
+        self.tavily_api_key = os.getenv('TAVILY_API_KEY', '')
+        self.tavily_api_url = "https://api.tavily.com/search"
+
+        # Log Tavily API key status
+        logger.info(f"   - TAVILY_API_KEY: {'✅ Set' if self.tavily_api_key else '❌ Not set'}")
+        if not self.tavily_api_key:
+            logger.warning("⚠️ TAVILY_API_KEY not set - Tavily search will not work")
+
         # ✅ NEW: Resource Monitor for system health
         if RESOURCE_MONITOR_AVAILABLE:
             # Configure conservative thresholds for Mac to prevent crashes
@@ -3280,6 +3289,345 @@ Respond with JSON only."""
                 "videos_processed": 0
             }
 
+    async def search_and_insert_tavily_articles(
+        self, 
+        query: str, 
+        max_results: int = 10,
+        enrich_with_llm: bool = False,
+        llm_model: str = 'gemini',
+        include_domains: List[str] = None,
+        exclude_domains: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Search Tavily API for articles and insert them into the database.
+        Returns statistics about the operation.
+        
+        Args:
+            query: Search query string
+            max_results: Maximum number of results to fetch (1-50)
+            enrich_with_llm: Whether to enhance Tavily results with LLM processing
+            llm_model: Which LLM to use for enrichment ('claude', 'gemini', 'ollama')
+            include_domains: Optional list of domains to include in search
+            exclude_domains: Optional list of domains to exclude from search
+        
+        Returns:
+            Dict with success status, counts, and search metadata
+        """
+        try:
+            logger.info(f"🔍 TAVILY SEARCH: '{query}' (max_results={max_results}, enrich={enrich_with_llm})")
+            
+            if not self.tavily_api_key:
+                logger.error("❌ TAVILY_API_KEY not set")
+                return {
+                    "success": False,
+                    "message": "Tavily API key not configured",
+                    "articles_inserted": 0
+                }
+            
+            # Get database service
+            from db_service import get_database_service
+            db_service = get_database_service()
+            
+            # Create search record in tavily_searches table
+            search_params = {
+                "include_domains": include_domains or [],
+                "exclude_domains": exclude_domains or []
+            }
+            
+            try:
+                search_id = db_service.execute_query(
+                    """
+                    INSERT INTO tavily_searches 
+                    (query, max_results, enrich_with_llm, llm_model, search_params, created_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    RETURNING id
+                    """,
+                    (query, max_results, enrich_with_llm, llm_model, json.dumps(search_params))
+                )['id']
+                logger.info(f"📝 Created Tavily search record: ID {search_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to create search record: {e}")
+                search_id = None
+            
+            # Call Tavily API
+            payload = {
+                "api_key": self.tavily_api_key,
+                "query": query,
+                "max_results": min(max_results, 50),  # Tavily max is 50
+                "search_depth": "advanced",  # Use advanced search for better results
+                "include_answer": False,  # We don't need the AI-generated answer
+                "include_raw_content": False,  # We'll scrape full content ourselves if needed
+            }
+            
+            # Add domain filters if provided
+            if include_domains:
+                payload["include_domains"] = include_domains
+            if exclude_domains:
+                payload["exclude_domains"] = exclude_domains
+            
+            logger.info(f"🌐 Calling Tavily API: {self.tavily_api_url}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.tavily_api_url,
+                    json=payload,
+                    timeout=60
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"❌ Tavily API error {response.status}: {error_text}")
+                        
+                        # Update search record with error
+                        if search_id:
+                            try:
+                                db_service.execute_query(
+                                    """
+                                    UPDATE tavily_searches 
+                                    SET completed_at = NOW(), error_message = %s
+                                    WHERE id = %s
+                                    """,
+                                    (f"API error {response.status}: {error_text[:500]}", search_id)
+                                )
+                            except:
+                                pass
+                        
+                        return {
+                            "success": False,
+                            "message": f"Tavily API error: {response.status}",
+                            "articles_inserted": 0
+                        }
+                    
+                    tavily_results = await response.json()
+            
+            # Extract results array
+            results = tavily_results.get('results', [])
+            logger.info(f"✅ Tavily returned {len(results)} results")
+            
+            if not results:
+                logger.warning("⚠️ No results from Tavily")
+                
+                # Update search record
+                if search_id:
+                    try:
+                        db_service.execute_query(
+                            """
+                            UPDATE tavily_searches 
+                            SET articles_found = 0, articles_inserted = 0, articles_skipped = 0,
+                                completed_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (search_id,)
+                        )
+                    except:
+                        pass
+                
+                return {
+                    "success": True,
+                    "message": "No results found",
+                    "query": query,
+                    "articles_found": 0,
+                    "articles_inserted": 0,
+                    "articles_skipped": 0,
+                    "tavily_search_id": search_id
+                }
+            
+            # Check which URLs already exist
+            article_urls = [r.get('url') for r in results if r.get('url')]
+            url_existence = db_service.check_multiple_urls_exist(article_urls)
+            
+            articles_inserted = 0
+            articles_skipped = 0
+            
+            # Process each result
+            for i, result in enumerate(results, 1):
+                try:
+                    url = result.get('url')
+                    if not url:
+                        logger.warning(f"⚠️ Result {i}/{len(results)} has no URL, skipping")
+                        continue
+                    
+                    # Skip if URL already exists (deduplication)
+                    if url_existence.get(url, False):
+                        logger.debug(f"⏭️ Skipping existing URL: {url}")
+                        articles_skipped += 1
+                        continue
+                    
+                    logger.info(f"📰 Processing Tavily result {i}/{len(results)}: {url}")
+                    
+                    # Extract domain for source/publisher
+                    domain = self._extract_domain(url)
+                    
+                    # Detect content type from URL
+                    content_type = self._detect_content_type(
+                        url=url,
+                        html="",
+                        title=result.get('title', ''),
+                        content=result.get('content', ''),
+                        media=[]
+                    )
+                    
+                    # Prepare base article data from Tavily
+                    tavily_data = {
+                        'url': url,
+                        'title': result.get('title', 'Unknown Article'),
+                        'description': result.get('content', '')[:500],  # Use as summary
+                        'content': result.get('content', ''),
+                        'author': 'Tavily Search',  # Default author
+                        'date': result.get('published_date'),  # May be None
+                        'tags': [],
+                        'image_url': None,
+                        'image_source': None,
+                        'reading_time': max(1, len(result.get('content', '').split()) // 200),  # Estimate
+                        'content_type': content_type,
+                        'extraction_method': 'tavily-api'
+                    }
+                    
+                    # Optional: Enrich with LLM
+                    if enrich_with_llm:
+                        logger.info(f"🤖 Enriching with {llm_model.upper()}...")
+                        
+                        if llm_model == 'claude':
+                            enriched = await self.process_with_claude(tavily_data)
+                        elif llm_model == 'gemini':
+                            enriched = await self.process_with_gemini(tavily_data)
+                        elif llm_model == 'ollama':
+                            enriched = await self.process_with_ollama(tavily_data)
+                        else:
+                            logger.warning(f"⚠️ Unknown LLM {llm_model}, using Claude")
+                            enriched = await self.process_with_claude(tavily_data)
+                        
+                        if enriched:
+                            # Use enriched data
+                            article_data = {
+                                'title': enriched.title,
+                                'author': enriched.author or 'Tavily Search',
+                                'summary': enriched.summary,
+                                'content': enriched.content,
+                                'url': enriched.url,
+                                'source': enriched.source,
+                                'significance_score': enriched.significance_score,
+                                'complexity_level': enriched.complexity_level,
+                                'published_date': enriched.published_date,
+                                'reading_time': enriched.reading_time,
+                                'content_type_label': enriched.content_type_label,
+                                'topic_category_label': enriched.topic_category_label,
+                                'scraped_date': datetime.now(timezone.utc).isoformat(),
+                                'created_date': datetime.now(timezone.utc).isoformat(),
+                                'updated_date': datetime.now(timezone.utc).isoformat(),
+                                'llm_processed': enriched.llm_processed or f'tavily+{llm_model}',
+                                'keywords': enriched.keywords,
+                                'image_url': enriched.image_url,
+                                'image_source': enriched.image_source
+                            }
+                            logger.info(f"✅ LLM enrichment successful")
+                            logger.debug(f"   ↳ Enriched title: {enriched.title[:60]}...")
+                        else:
+                            logger.warning(f"⚠️ LLM enrichment failed, using basic Tavily data")
+                            enrich_with_llm = False  # Disable for remaining articles
+                    else:
+                        # Use basic Tavily data
+                        # Map Tavily score (0.0-1.0) to significance_score (1-10)
+                        tavily_score = result.get('score', 0.5)
+                        significance_score = max(1.0, min(10.0, tavily_score * 10))
+                        
+                        # Normalize date
+                        raw_date = result.get('published_date')
+                        normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+                        
+                        article_data = {
+                            'title': result.get('title', 'Unknown Article'),
+                            'author': 'Tavily Search',
+                            'summary': result.get('content', '')[:500] or 'No summary available',
+                            'content': result.get('content', ''),
+                            'url': url,
+                            'source': domain,
+                            'significance_score': significance_score,
+                            'complexity_level': 'Medium',
+                            'published_date': normalized_date,
+                            'reading_time': max(1, len(result.get('content', '').split()) // 200),
+                            'content_type_label': content_type,
+                            'topic_category_label': 'AI News & Updates',  # Default category
+                            'scraped_date': datetime.now(timezone.utc).isoformat(),
+                            'created_date': datetime.now(timezone.utc).isoformat(),
+                            'updated_date': datetime.now(timezone.utc).isoformat(),
+                            'llm_processed': 'tavily-only',
+                            'keywords': 'AI, Technology, Tavily Search',
+                            'image_url': None,
+                            'image_source': None
+                        }
+                    logger.info(f"📝 Prepared tavily article data for insertion: {article_data['title'][:60]}...")
+                    # Insert article (publisher will be auto-created from URL/source)
+                    success = db_service.insert_article(article_data)
+                    
+                    if success:
+                        articles_inserted += 1
+                        logger.info(f"✅ Inserted: {article_data['title'][:60]}...")
+                    else:
+                        articles_skipped += 1
+                        logger.debug(f"⏭️ Skipped (duplicate or error): {url}")
+                    
+                    # Small delay to avoid overwhelming the system
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing Tavily result {i}: {str(e)}")
+                    articles_skipped += 1
+                    continue
+            
+            # Update search record with final counts
+            if search_id:
+                try:
+                    db_service.execute_query(
+                        """
+                        UPDATE tavily_searches 
+                        SET articles_found = %s, articles_inserted = %s, articles_skipped = %s,
+                            completed_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (len(results), articles_inserted, articles_skipped, search_id)
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to update search record: {e}")
+            
+            logger.info(f"🎉 TAVILY SEARCH COMPLETE: {articles_inserted}/{len(results)} inserted, {articles_skipped} skipped")
+            
+            return {
+                "success": True,
+                "message": "Search completed successfully",
+                "query": query,
+                "articles_found": len(results),
+                "articles_inserted": articles_inserted,
+                "articles_skipped": articles_skipped,
+                "enrich_with_llm": enrich_with_llm,
+                "llm_model": llm_model if enrich_with_llm else None,
+                "tavily_search_id": search_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Tavily search failed: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+            # Update search record with error
+            if search_id:
+                try:
+                    db_service.execute_query(
+                        """
+                        UPDATE tavily_searches 
+                        SET completed_at = NOW(), error_message = %s
+                        WHERE id = %s
+                        """,
+                        (str(e)[:500], search_id)
+                    )
+                except:
+                    pass
+            
+            return {
+                "success": False,
+                "message": f"Search failed: {str(e)}",
+                "articles_inserted": 0,
+                "tavily_search_id": search_id
+            }
 
 
 # Admin interface
