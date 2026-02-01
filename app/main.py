@@ -90,8 +90,7 @@ app.add_middleware(
 # Note: Using include_router without prefix to maintain exact API paths
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, tags=["authentication"])
-app.include_router(content.router, tags=["content"])
-
+app.include_router(content.router, prefix="/content", tags=["content"])
 
 # Register router (around line 60-70)
 app.include_router(interactions.router)

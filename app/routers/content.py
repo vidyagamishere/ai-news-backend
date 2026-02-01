@@ -7,14 +7,17 @@ Maintains compatibility with existing frontend API endpoints
 import os
 import logging
 import re
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, Request,BackgroundTasks
+import hashlib
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, Body
+from pydantic import BaseModel
 
 from app.models.schemas import DigestResponse, ContentByTypeResponse, UserResponse
 from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
+from db_service import get_database_service
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -163,9 +166,341 @@ if DEBUG:
     logger.debug(f"📝 IS_SUMMARY environment variable: {IS_SUMMARY}")
 
 
+# ==========================================
+# PYDANTIC MODELS FOR ARTICLE CREATION
+# ==========================================
+
+class ArticleCreate(BaseModel):
+    """Model for creating a new article"""
+    title: str
+    subtitle: Optional[str] = None
+    content: str  # HTML content from editor
+    tags: List[str] = []
+    cover_image: Optional[str] = None  # Base64 or URL
+    status: str = "draft"  # draft or published
+    category_id: Optional[int] = None
+    content_type_id: int = 4  # Default to 'post' content type
+
+
+class ArticleUpdate(BaseModel):
+    """Model for updating an existing article"""
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    cover_image: Optional[str] = None
+    status: Optional[str] = None
+    category_id: Optional[int] = None
+
+
+class ArticleResponse(BaseModel):
+    """Response model for article operations"""
+    success: bool
+    message: str
+    article_id: Optional[int] = None
+    article: Optional[Dict[str, Any]] = None
+
+
 def get_content_service() -> ContentService:
     """Dependency to get ContentService instance"""
     return ContentService()
+
+
+# ==========================================
+# ARTICLE CRUD ENDPOINTS
+# ==========================================
+
+@router.post("/articles", response_model=ArticleResponse)
+async def create_article(
+    article: ArticleCreate,
+    current_user: UserResponse = Depends(get_current_user),
+    db = Depends(get_database_service)
+):
+    """
+    Create a new article (draft or published)
+    Requires authentication
+    
+    Endpoint: POST /articles
+    Headers: Authorization: Bearer {token}
+    Body: ArticleCreate model
+    """
+    try:
+        logger.info(f"📝 Creating article: {article.title[:50]}... by user {current_user.id}")
+        
+        # Calculate reading time (200 words per minute)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(article.content, 'html.parser')
+        text_content = soup.get_text()
+        words = len(text_content.split())
+        reading_time = max(1, round(words / 200))
+        
+        # Generate content hash from title + content
+        content_hash = hashlib.sha256(f"{article.title}{text_content}".encode()).hexdigest()
+        
+        # Generate unique URL from title
+        import re
+        url_slug = re.sub(r'[^a-zA-Z0-9\s-]', '', article.title.lower())
+        url_slug = re.sub(r'\s+', '-', url_slug)[:100]
+        article_url = f"/article/{url_slug}-{str(uuid.uuid4())[:8]}"
+        
+        # Prepare article data
+        now = datetime.now(timezone.utc)
+        article_data = {
+            'content_hash': content_hash,
+            'title': article.title,
+            'summary': article.subtitle or text_content[:300],
+            'url': article_url,
+            'source': f"User:{current_user.email or current_user.id}",
+            'significance_score': 5,
+            'published_date': now if article.status == 'published' else None,
+            'scraped_date': now,
+            'llm_processed': 'user_created',
+            'content_type_id': article.content_type_id,
+            'category_id': article.category_id or 1,  # Default to first category if none specified
+            'reading_time': reading_time,
+            'author': current_user.name or current_user.email or 'Anonymous',
+            'complexity_level': 'Medium',
+            'updated_date': now,
+            'created_date': now,
+            'keywords': article.tags,
+            'image_url': article.cover_image,
+            'image_source': 'user_upload',
+            'publisher_id': None,  # User articles don't have publisher
+        }
+        
+        # Insert article
+        insert_query = """
+            INSERT INTO articles (
+                content_hash, title, summary, url, source, significance_score, 
+                published_date, scraped_date, llm_processed, content_type_id, 
+                category_id, reading_time, author, complexity_level, 
+                updated_date, created_date, keywords, image_url, image_source,
+                publisher_id
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            ) RETURNING id
+        """
+        
+        values = (
+            article_data['content_hash'],
+            article_data['title'],
+            article_data['summary'],
+            article_data['url'],
+            article_data['source'],
+            article_data['significance_score'],
+            article_data['published_date'],
+            article_data['scraped_date'],
+            article_data['llm_processed'],
+            article_data['content_type_id'],
+            article_data['category_id'],
+            article_data['reading_time'],
+            article_data['author'],
+            article_data['complexity_level'],
+            article_data['updated_date'],
+            article_data['created_date'],
+            article_data['keywords'],
+            article_data['image_url'],
+            article_data['image_source'],
+            article_data['publisher_id']
+        )
+        
+        result = db.execute_query(insert_query, values)
+        article_id = result[0]['id'] if result else None
+        
+        if not article_id:
+            raise Exception("Failed to insert article - no ID returned")
+        
+        # Store full HTML content separately in a new table (if needed)
+        # For now, we'll just return success
+        
+        logger.info(f"✅ Article created successfully with ID: {article_id}, status: {article.status}")
+        
+        return ArticleResponse(
+            success=True,
+            message=f"Article {'published' if article.status == 'published' else 'saved as draft'} successfully",
+            article_id=article_id,
+            article={
+                'id': article_id,
+                'url': article_url,
+                'title': article.title,
+                'status': article.status,
+                'reading_time': reading_time
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create article: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to create article',
+                'message': str(e)
+            }
+        )
+
+
+@router.put("/articles/{article_id}", response_model=ArticleResponse)
+async def update_article(
+    article_id: int,
+    article: ArticleUpdate,
+    current_user: UserResponse = Depends(get_current_user),
+    db = Depends(get_database_service)
+):
+    """
+    Update an existing article
+    Only the article author can update their article
+    
+    Endpoint: PUT /articles/{article_id}
+    Headers: Authorization: Bearer {token}
+    Body: ArticleUpdate model
+    """
+    try:
+        logger.info(f"📝 Updating article ID: {article_id} by user {current_user.id}")
+        
+        # Check if article exists and belongs to user
+        check_query = """
+            SELECT id, source FROM articles WHERE id = %s
+        """
+        existing = db.execute_query(check_query, (article_id,))
+        
+        if not existing:
+            raise HTTPException(status_code=404, detail="Article not found")
+        
+        # Check ownership (source should contain user ID or email)
+        article_source = existing[0]['source']
+        user_identifier = current_user.email or str(current_user.id)
+        if user_identifier not in article_source:
+            raise HTTPException(status_code=403, detail="You can only update your own articles")
+        
+        # Build update query dynamically based on provided fields
+        update_fields = []
+        update_values = []
+        
+        if article.title is not None:
+            update_fields.append("title = %s")
+            update_values.append(article.title)
+        
+        if article.subtitle is not None:
+            update_fields.append("summary = %s")
+            update_values.append(article.subtitle)
+        
+        if article.content is not None:
+            # Recalculate reading time if content changed
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(article.content, 'html.parser')
+            text_content = soup.get_text()
+            words = len(text_content.split())
+            reading_time = max(1, round(words / 200))
+            
+            update_fields.append("reading_time = %s")
+            update_values.append(reading_time)
+        
+        if article.tags is not None:
+            update_fields.append("keywords = %s")
+            update_values.append(article.tags)
+        
+        if article.cover_image is not None:
+            update_fields.append("image_url = %s")
+            update_values.append(article.cover_image)
+        
+        if article.status is not None:
+            if article.status == 'published':
+                update_fields.append("published_date = %s")
+                update_values.append(datetime.now(timezone.utc))
+        
+        if article.category_id is not None:
+            update_fields.append("category_id = %s")
+            update_values.append(article.category_id)
+        
+        # Always update the updated_date
+        update_fields.append("updated_date = %s")
+        update_values.append(datetime.now(timezone.utc))
+        
+        if not update_fields:
+            return ArticleResponse(
+                success=True,
+                message="No changes to update",
+                article_id=article_id
+            )
+        
+        # Build and execute update query
+        update_query = f"""
+            UPDATE articles 
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+        """
+        update_values.append(article_id)
+        
+        db.execute_query(update_query, tuple(update_values), fetch_all=False)
+        
+        logger.info(f"✅ Article {article_id} updated successfully")
+        
+        return ArticleResponse(
+            success=True,
+            message="Article updated successfully",
+            article_id=article_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to update article: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to update article',
+                'message': str(e)
+            }
+        )
+
+
+@router.get("/articles/{article_id}")
+async def get_article(
+    article_id: int,
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional),
+    db = Depends(get_database_service)
+):
+    """
+    Get a specific article by ID
+    Public endpoint - no authentication required
+    
+    Endpoint: GET /articles/{article_id}
+    """
+    try:
+        query = """
+            SELECT 
+                a.*,
+                ct.name as content_type_label,
+                ac.name as category_label
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            LEFT JOIN ai_categories_master ac ON a.category_id = ac.id
+            WHERE a.id = %s
+        """
+        
+        result = db.execute_query(query, (article_id,))
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Article not found")
+        
+        article = result[0]
+        
+        return {
+            'success': True,
+            'article': article
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to get article: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                'error': 'Failed to get article',
+                'message': str(e)
+            }
+        )
 
 
 @router.get("/digest", response_model=DigestResponse)

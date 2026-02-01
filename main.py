@@ -134,7 +134,7 @@ app.add_middleware(
 # Include routers with exact same endpoints as before for frontend compatibility
 app.include_router(health.router, tags=["health"])
 app.include_router(enhanced_auth.router, prefix="/api/v2", tags=["enhanced-auth"])  # Enhanced auth endpoints with preferences
-app.include_router(content.router, tags=["content"])
+app.include_router(content.router, prefix="/content", tags=["content"])  # Article creation endpoints at /content/articles
 app.include_router(admin.router, tags=["admin"])
 app.include_router(personalized_feed.router, prefix="/api/v1", tags=["personalized-feed"])
 app.include_router(search_suggestions.router, tags=["search-suggestions"])  # Enhanced search system
