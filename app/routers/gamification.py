@@ -452,7 +452,7 @@ async def get_swipeable_feed(
                 a.thumbnail_url,
                 c.name as category_name,
                 a.significance,
-                a.read_time,
+                a.reading_time,
                 COALESCE(ast.engagement_score, 0) as engagement_score,
                 COALESCE(ur.recommendation_score, 0) as rec_score,
                 EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND interaction_type = 'bookmark') as is_bookmarked,

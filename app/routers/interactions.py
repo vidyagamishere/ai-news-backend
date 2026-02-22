@@ -251,18 +251,20 @@ def get_bookmarks(
     query = f"""
         SELECT 
             a.id, a.title, a.url, a.summary, a.published_date,
-            a.thumbnail_url, a.source,
+            a.image_url as thumbnail_url, a.source,
             ct.name as content_type, ct.display_name as content_type_label,
             cat.name as category_name,
-            ast.likes_count, ast.comments_count, ast.bookmarks_count, 
-            ast.shares_count  -- ✅ Correct column name
+            COALESCE(ast.likes_count, 0) as likes_count,
+            COALESCE(ast.comments_count, 0) as comments_count,
+            COALESCE(ast.bookmarks_count, 0) as bookmarks_count,
+            COALESCE(ast.shares_count, 0) as shares_count
         FROM article_interactions ai
         JOIN articles a ON ai.article_id = a.id
         LEFT JOIN content_types ct ON a.content_type_id = ct.id
         LEFT JOIN ai_categories_master cat ON a.category_id = cat.id
         LEFT JOIN article_stats ast ON a.id = ast.article_id
         WHERE ai.user_id = %s 
-        AND ai.action_type_id = %s  -- Changed from interaction_type = 'bookmark'
+        AND ai.action_type_id = %s
         {content_type_filter}
         ORDER BY ai.created_at DESC
         LIMIT %s OFFSET %s
@@ -274,6 +276,7 @@ def get_bookmarks(
     
     return {
         "articles": results,
+        "count": len(results),
         "total": len(results),
         "content_type_filter": content_type
     }
@@ -399,10 +402,10 @@ def get_swipeable_feed(
                 s.name as source_name,
                 a.published_date,
                 ct.name as content_type_name,
-                a.thumbnail_url,
+                a.image_url as thumbnail_url,
                 c.name as category_name,
                 a.significance,
-                a.read_time,
+                a.reading_time,
                 COALESCE(ast.engagement_score, 0) as engagement_score,
                 COALESCE(ur.recommendation_score, 0) as rec_score,
                 EXISTS(SELECT 1 FROM article_interactions WHERE user_id = %s AND article_id = a.id AND action_type_id = 3) as is_bookmarked,
@@ -524,6 +527,114 @@ def track_share_platform(
 
 
 # ✅ UPDATED: User Stats Endpoint
+@router.get("/user/reading-stats")
+def get_user_reading_stats(
+    current_user: dict = Depends(get_current_user),
+    db: PostgreSQLService = Depends(get_db)
+):
+    """Get user reading stats: article counts, estimated read time, weekly/monthly activity"""
+    user_id = current_user.id
+
+    # Total articles viewed
+    total_query = """
+        SELECT COUNT(*) as total_viewed
+        FROM article_interactions
+        WHERE user_id = %s AND action_type_id = %s
+    """
+    total_result = db.execute_query(total_query, (user_id, ActionTypeId.VIEW))
+    total_viewed = total_result[0]['total_viewed'] if total_result else 0
+
+    # Estimated total reading time from read_time field on clicked articles
+    # read_time is stored like "5 min", "10 min", etc.
+    time_query = """
+        SELECT COALESCE(SUM(COALESCE(a.reading_time, 5)), 0) as total_minutes
+        FROM article_interactions ai
+        JOIN articles a ON ai.article_id = a.id
+        WHERE ai.user_id = %s AND ai.action_type_id = %s
+    """
+    time_result = db.execute_query(time_query, (user_id, ActionTypeId.VIEW))
+    total_minutes = int(time_result[0]['total_minutes']) if time_result else 0
+
+    # Last 7 days: articles per day
+    daily_query = """
+        SELECT 
+            DATE(created_at) as day,
+            COUNT(*) as articles_read,
+            COALESCE(SUM(COALESCE(a.reading_time, 5)), 0) as minutes_read
+        FROM article_interactions ai
+        JOIN articles a ON ai.article_id = a.id
+        WHERE ai.user_id = %s 
+          AND ai.action_type_id = %s
+          AND ai.created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC
+    """
+    daily_result = db.execute_query(daily_query, (user_id, ActionTypeId.VIEW))
+
+    # Fill in missing days with 0
+    from datetime import date, timedelta
+    today = date.today()
+    daily_map = {str(row['day']): {'articles_read': row['articles_read'], 'minutes_read': int(row['minutes_read'])} for row in daily_result}
+    daily_stats = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        key = str(d)
+        daily_stats.append({
+            'date': key,
+            'day_label': d.strftime('%a'),
+            'articles_read': daily_map.get(key, {}).get('articles_read', 0),
+            'minutes_read': daily_map.get(key, {}).get('minutes_read', 0),
+        })
+
+    # Last 8 weeks: articles per week
+    weekly_query = """
+        SELECT 
+            DATE_TRUNC('week', created_at)::date as week_start,
+            COUNT(*) as articles_read,
+            COALESCE(SUM(COALESCE(a.reading_time, 5)), 0) as minutes_read
+        FROM article_interactions ai
+        JOIN articles a ON ai.article_id = a.id
+        WHERE ai.user_id = %s 
+          AND ai.action_type_id = %s
+          AND ai.created_at >= NOW() - INTERVAL '8 weeks'
+        GROUP BY DATE_TRUNC('week', created_at)
+        ORDER BY week_start ASC
+    """
+    weekly_result = db.execute_query(weekly_query, (user_id, ActionTypeId.VIEW))
+    weekly_stats = [
+        {
+            'week_start': str(row['week_start']),
+            'week_label': row['week_start'].strftime('W%V') if hasattr(row['week_start'], 'strftime') else str(row['week_start']),
+            'articles_read': row['articles_read'],
+            'minutes_read': int(row['minutes_read']),
+        }
+        for row in weekly_result
+    ]
+
+    # Avg per day (over last 30 days active)
+    avg_query = """
+        SELECT 
+            COUNT(DISTINCT DATE(created_at)) as active_days,
+            COUNT(*) as total_in_period
+        FROM article_interactions
+        WHERE user_id = %s AND action_type_id = %s
+          AND created_at >= NOW() - INTERVAL '30 days'
+    """
+    avg_result = db.execute_query(avg_query, (user_id, ActionTypeId.VIEW))
+    active_days = avg_result[0]['active_days'] if avg_result else 0
+    total_in_period = avg_result[0]['total_in_period'] if avg_result else 0
+    avg_per_active_day = round(total_in_period / active_days, 1) if active_days > 0 else 0
+
+    return {
+        "total_articles_read": total_viewed,
+        "total_minutes_read": total_minutes,
+        "avg_articles_per_active_day": avg_per_active_day,
+        "active_days_last_30": active_days,
+        "daily_stats": daily_stats,
+        "weekly_stats": weekly_stats,
+    }
+
+
 @router.get("/user/stats")
 def get_user_stats(
     current_user: dict = Depends(get_current_user),
@@ -551,20 +662,20 @@ def get_user_stats(
     # Get actions breakdown with action type names
     actions_query = """
         SELECT 
-            uat.name as action_type,
+            uat.action_type as action_type,
             COUNT(*) as count,
             SUM(ua.points_earned) as total_points
         FROM user_actions ua
         JOIN user_action_types uat ON ua.action_type_id = uat.id
         WHERE ua.user_id = %s
-        GROUP BY uat.name, uat.id
+        GROUP BY uat.action_type, uat.id
         ORDER BY uat.id
     """
     actions_data = db.execute_query(actions_query, (user_id,))
     
     # Get points config
     config_query = """
-        SELECT uat.name as action_type, apc.points
+        SELECT uat.action_type as action_type, apc.points
         FROM action_points_config apc
         JOIN user_action_types uat ON apc.action_type_id = uat.id
         WHERE apc.is_active = TRUE

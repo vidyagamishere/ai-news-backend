@@ -75,14 +75,10 @@ class PostgreSQLService:
         
         if DEBUG:
             logger.debug(f"🔍 Executing query: {query[:200]}{'...' if len(query) > 200 else ''}")
-            if params:
-                logger.debug(f"🔍 Query parameters: {params}")
         
         try:
             with self.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    if DEBUG:
-                        logger.debug(f"🔍 Cursor type: {type(cursor)}")
                     try:
                         cursor.execute(query, params)
                         conn.commit()

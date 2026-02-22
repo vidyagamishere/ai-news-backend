@@ -449,7 +449,6 @@ class ContentFilteringService:
             # ✅ LOG FINAL QUERY
             logger.info(f"🔍 FINAL SQL QUERY:")
             logger.info(f"   Query: {query}...")
-            logger.info(f"   Params: {params}")
         
             # Execute query
             db = get_database_service()

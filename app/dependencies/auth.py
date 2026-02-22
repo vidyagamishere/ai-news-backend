@@ -82,8 +82,6 @@ async def get_current_user_optional(
             is_admin = user_data.get('is_admin', False)
             email = user_data.get('email', '')
             
-            logger.info(f"🔐 Token verified for: {email} (Admin: {is_admin})")
-            
             user_response_data = {
                 'id': user_data.get('sub', ''),
                 'email': email,
