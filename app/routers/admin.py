@@ -7,6 +7,9 @@ Handles admin-only endpoints for source management and system control
 import os
 import sys
 import logging
+import asyncio
+import uuid
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import Body, APIRouter, Depends, HTTPException, Request, Query, Header
 
@@ -25,6 +28,9 @@ from crawl4ai_scraper import Crawl4AIScraper
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin")
+
+# Global job tracker for background scraping jobs
+scraping_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 def get_content_service() -> ContentService:
@@ -462,6 +468,79 @@ async def get_scheduler_status(
         )
 
 
+@router.post("/scraping/trigger")
+async def trigger_content_scraping(
+    content_type: str = Body(..., description="Content type: blog, podcast, or video"),
+    llm_model: str = Body('gemini', description="LLM model to use: claude, gemini, huggingface, or ollama"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Trigger scraping for specific content type with LLM model selection
+    Frontend endpoint for ScrapingControls component
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    logger.info(f"🔧 Admin scraping triggered - Type: {content_type}, Model: {llm_model}")
+    
+    # Validate LLM model parameter
+    if llm_model not in ['claude', 'gemini', 'huggingface', 'ollama']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid llm_model. Must be 'claude', 'gemini', 'huggingface', or 'ollama'"
+        )
+    
+    # Validate content type
+    if content_type not in ['blog', 'podcast', 'video']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid content_type. Must be 'blog', 'podcast', or 'video'"
+        )
+    
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+        scraper = Crawl4AIScraper()
+        
+        # Route to appropriate scraping function based on content type
+        if content_type == 'blog':
+            # RSS feed scraping
+            result = await scraper.scrape_rss_feeds(llm_model=llm_model, scrape_frequency=1)
+            return {
+                "success": True,
+                "message": f"RSS feed scraping completed with {llm_model}",
+                "content_type": "blog",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+        elif content_type == 'podcast':
+            # Podcast scraping
+            result = await scraper.scrape_podcasts(llm_model=llm_model)
+            return {
+                "success": True,
+                "message": f"Podcast scraping completed with {llm_model}",
+                "content_type": "podcast",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+        elif content_type == 'video':
+            # Video scraping
+            result = await scraper.scrape_videos(llm_model=llm_model)
+            return {
+                "success": True,
+                "message": f"Video scraping completed with {llm_model}",
+                "content_type": "video",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ Admin scraping failed for {content_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/scrape")
 async def trigger_scraping(
     llm_model: str = Query('claude', description="LLM model to use: claude, gemini, or huggingface"),
@@ -469,14 +548,12 @@ async def trigger_scraping(
     admin_access: bool = Depends(require_admin_access)
 ):
     """
-    Trigger admin-initiated scraping with LLM model selection and frequency filtering
+    Trigger admin-initiated scraping as background job (returns immediately with job_id)
+    Use /scrape/status/{job_id} to check progress
     """
     # Validate admin authentication
-    ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
     if not admin_access:
         raise HTTPException(status_code=401, detail="Invalid admin API key")
-    
-    logger.info(f"🔧 Admin scraping triggered with model: {llm_model}, frequency: {scrape_frequency} days")
     
     # Validate frequency parameter
     if scrape_frequency not in [1, 7, 30]:
@@ -492,7 +569,44 @@ async def trigger_scraping(
             detail="Invalid llm_model. Must be 'claude', 'gemini', 'huggingface', or 'ollama'"
         )
     
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
+    
+    # Initialize job status
+    scraping_jobs[job_id] = {
+        'job_id': job_id,
+        'status': 'started',
+        'llm_model': llm_model,
+        'scrape_frequency': scrape_frequency,
+        'started_at': datetime.utcnow().isoformat(),
+        'progress': 'Initializing scraping...',
+        'articles_found': 0,
+        'articles_inserted': 0,
+        'sources_scraped': 0,
+        'error': None
+    }
+    
+    logger.info(f"🔧 Admin scraping job {job_id} created with model: {llm_model}, frequency: {scrape_frequency} days")
+    
+    # Start scraping in background (non-blocking)
+    asyncio.create_task(_run_scraping_job(job_id, llm_model, scrape_frequency))
+    
+    # Return immediately with job ID
+    return {
+        'success': True,
+        'message': 'Scraping job started in background',
+        'job_id': job_id,
+        'status_endpoint': f'/admin/scrape/status/{job_id}',
+        'estimated_duration': '5-15 minutes depending on sources'
+    }
+
+
+async def _run_scraping_job(job_id: str, llm_model: str, scrape_frequency: int):
+    """Background task to run scraping job"""
     try:
+        scraping_jobs[job_id]['status'] = 'running'
+        scraping_jobs[job_id]['progress'] = 'Fetching sources...'
+        
         # Get database service
         from db_service import get_database_service
         db = get_database_service()
@@ -501,6 +615,9 @@ async def trigger_scraping(
         from crawl4ai_scraper import AdminScrapingInterface
         admin_interface = AdminScrapingInterface(db)
         
+        logger.info(f"🚀 Job {job_id}: Starting scraping process...")
+        scraping_jobs[job_id]['progress'] = 'Scraping articles with LLM...'
+        
         # Run scraping with selected model and frequency
         result = await admin_interface.initiate_scraping(
             admin_email="admin@vidyagam.com",
@@ -508,11 +625,61 @@ async def trigger_scraping(
             scrape_frequency=scrape_frequency
         )
         
-        return result
+        # Update job with results
+        scraping_jobs[job_id]['status'] = 'completed'
+        scraping_jobs[job_id]['completed_at'] = datetime.utcnow().isoformat()
+        scraping_jobs[job_id]['progress'] = 'Completed successfully'
+        scraping_jobs[job_id]['articles_found'] = result.get('articles_found', 0)
+        scraping_jobs[job_id]['articles_inserted'] = result.get('articles_inserted', 0)
+        scraping_jobs[job_id]['sources_scraped'] = result.get('sources_scraped', 0)
+        scraping_jobs[job_id]['result'] = result
+        
+        logger.info(f"✅ Job {job_id}: Completed successfully - {result.get('articles_inserted', 0)} articles inserted")
         
     except Exception as e:
-        logger.error(f"❌ Admin scraping failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Job {job_id}: Failed - {str(e)}")
+        scraping_jobs[job_id]['status'] = 'failed'
+        scraping_jobs[job_id]['completed_at'] = datetime.utcnow().isoformat()
+        scraping_jobs[job_id]['progress'] = f'Failed: {str(e)}'
+        scraping_jobs[job_id]['error'] = str(e)
+
+
+@router.get("/scrape/status/{job_id}")
+async def get_scraping_status(
+    job_id: str,
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get status of a scraping job
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    if job_id not in scraping_jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    return scraping_jobs[job_id]
+
+
+@router.get("/scrape/jobs")
+async def list_scraping_jobs(
+    admin_access: bool = Depends(require_admin_access),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    List recent scraping jobs
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    # Return most recent jobs
+    jobs_list = list(scraping_jobs.values())
+    jobs_list.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+    
+    return {
+        'jobs': jobs_list[:limit],
+        'total': len(jobs_list)
+    }
 
 # ==================== ENHANCED ARTICLE MANAGEMENT (NEW) ====================
 
@@ -644,7 +811,7 @@ async def delete_article(
         
         # Delete article
         delete_query = "DELETE FROM articles WHERE id = %s"
-        db.execute_query(delete_query, (article_id,), fetch_all=True)
+        db.execute_query(delete_query, (article_id,), fetch_all=False)
         
         logger.info(f"✅ Article {article_id} deleted by admin")
         

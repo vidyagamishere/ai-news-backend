@@ -379,7 +379,7 @@ class PostgreSQLService:
         # Define fallback IDs in case the LLM returns an invalid label
         # These should correspond to 'Articles/Blogs' and 'AI News & Updates' in your master tables.
         FALLBACK_CONTENT_TYPE_ID = 1  
-        FALLBACK_TOPIC_ID = 21       
+        FALLBACK_TOPIC_ID = 5       
 
         try:
             url = article_data.get('url')
@@ -422,8 +422,8 @@ class PostgreSQLService:
             
             # Priority 1: Try Claude AI category first
             if topic_category_label:
-                topic_query = "SELECT id FROM ai_categories_master WHERE name = %s"
-                ai_topic_result = self.execute_query(topic_query, (topic_category_label,), fetch_one=True)
+                topic_query = "SELECT id FROM ai_categories_master WHERE name = %s OR LOWER(name) = LOWER(%s)"
+                ai_topic_result = self.execute_query(topic_query, (topic_category_label, topic_category_label.lower()), fetch_one=True)
                 
                 if ai_topic_result:
                     final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
@@ -435,7 +435,7 @@ class PostgreSQLService:
             # Priority 2: If Claude AI failed, try RSS source category
             if category_source == "hardcoded_fallback" and source_category and source_category != 'general':
                 source_topic_query = "SELECT id FROM ai_categories_master WHERE name = %s OR LOWER(name) = LOWER(%s)"
-                source_topic_result = self.execute_query(source_topic_query, (source_category, source_category), fetch_one=True)
+                source_topic_result = self.execute_query(source_topic_query, (source_category, source_category.lower()), fetch_one=True)
                 
                 if source_topic_result:
                     final_ai_topic_id = source_topic_result['id'] if isinstance(source_topic_result, dict) else source_topic_result[0]

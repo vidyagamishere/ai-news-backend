@@ -476,7 +476,7 @@ def get_user_profile(
         
         return UserProfileResponse(
             id=row[0]['id'],
-            username=row[0]['first_name'] + ' ' + user_row[0]['last_name'],
+            username=row[0]['username'],
             email=row[0]['email'],
             avatar_url=row[0]['profile_image'],
             bio=row[0]['bio'],
@@ -522,7 +522,7 @@ def get_notifications(
             f"""
             SELECT 
                 n.id, n.notification_type, n.title, n.message,
-                n.related_user_id, CONCAT(u.first_name, ' ', u.last_name) AS username as related_user_name,
+                n.related_user_id, CONCAT(u.first_name, ' ', u.last_name) AS related_user_name,
                 n.related_article_id, a.title as related_article_title,
                 n.read, n.action_url, n.created_at
             FROM user_notifications n
@@ -538,34 +538,32 @@ def get_notifications(
         notifications = []
         for row in rows:
             notifications.append(NotificationResponse(
-                id=row[0]['id'],
-                notification_type=row[0]['notification_type'],
-                title=row[0]['title'],
-                message=row[0]['message'],
-                related_user_id=row[0]['related_user_id'],
-                related_user_name=row[0]['related_user_name'],
-                related_article_id=row[0]['related_article_id'],
-                related_article_title=row[0]['related_article_title'],
-                read=row[0]['read'],
-                action_url=row[0]['action_url'],
-                created_at=row[0]['created_at']
+                id=row['id'],
+                notification_type=row['notification_type'],
+                title=row['title'],
+                message=row['message'],
+                related_user_id=row['related_user_id'],
+                related_user_name=row['related_user_name'],
+                related_article_id=row['related_article_id'],
+                related_article_title=row['related_article_title'],
+                read=row['read'],
+                action_url=row['action_url'],
+                created_at=row['created_at']
             ))
         
         # Get unread count
-        rows = db.execute_query(
-            "SELECT COUNT(*) FROM user_notifications WHERE user_id = %s AND read = false",
+        unread_rows = db.execute_query(
+            "SELECT COUNT(*) as count FROM user_notifications WHERE user_id = %s AND read = false",
             (user_id,)
         )
-        unread_count = rows[0][0] if rows else 0
+        unread_count = unread_rows[0]['count'] if unread_rows else 0
         
         # Get total count
-        rows = db.execute_query(
-            "SELECT COUNT(*) FROM user_notifications WHERE user_id = %s",
+        total_rows = db.execute_query(
+            "SELECT COUNT(*) as count FROM user_notifications WHERE user_id = %s",
             (user_id,)
         )
-        total_count = rows[0][0] if rows else 0
-        
-        
+        total_count = total_rows[0]['count'] if total_rows else 0
         
         return NotificationsListResponse(
             notifications=notifications,

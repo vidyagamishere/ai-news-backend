@@ -3690,24 +3690,32 @@ class AdminScrapingInterface:
         
         # Validate API keys
         if llm_model == 'gemini' and not self.scraper.google_api_key:
+            logger.error(f"❌ Gemini API key not configured")
             return {"success": False, "message": "Gemini API key not configured", "articles_processed": 0}
         
         elif llm_model == 'ollama':
             # Test Ollama connection
             if not self.scraper._test_ollama_connection():
+                logger.error(f"❌ Ollama not available")
                 return {
                     "success": False, 
                     "message": f"Ollama not available. Make sure it's running: 'ollama serve' and model is installed: 'ollama pull {self.scraper.ollama_model}'", 
                     "articles_processed": 0
                 }
         elif llm_model == 'huggingface' and not self.scraper.huggingface_api_key:
+            logger.error(f"❌ HuggingFace API key not configured")
             return {"success": False, "message": "HuggingFace API key not configured", "articles_processed": 0}
         elif llm_model == 'claude' and not self.scraper.anthropic_api_key:
+            logger.error(f"❌ Claude API key not configured")
             return {"success": False, "message": "Claude API key not configured", "articles_processed": 0}
 
         try:
+            logger.info(f"📊 Fetching sources for {scrape_frequency}-day frequency...")
             sources = self.db_service.get_ai_sources_by_frequency(scrape_frequency)
+            logger.info(f"✅ Found {len(sources) if sources else 0} sources")
+            
             if not sources:
+                logger.warning(f"⚠️ No sources found for {scrape_frequency}-day frequency")
                 return {"success": False, "message": f"No sources for {scrape_frequency}-day frequency", "articles_processed": 0}
             
             all_article_data = []
@@ -3766,7 +3774,7 @@ class AdminScrapingInterface:
                         'publisher_id': self._get_publisher_id_for_article(article.url, domain_mapping),
                         'content_type_id': self.map_content_type_to_id(article.content_type_label, article.url),
                         'ai_topic_id': self.map_ai_topic_to_id(article.content_type_label, article.summary),
-                        'keywords': ', '.join(str(k) for k in article.keywords if k) if article.keywords else None,
+                        'keywords': article.keywords if isinstance(article.keywords, str) else (', '.join(str(k) for k in article.keywords if k) if article.keywords else None),
                         'image_url': article.image_url,
                         'image_source': article.image_source
                     }
@@ -3788,6 +3796,7 @@ class AdminScrapingInterface:
                 "message": f"Scraping completed for {scrape_frequency}-day frequency sources",
                 "sources_scraped": len(sources),
                 "articles_found": len(articles),
+                "articles_inserted": articles_inserted,
                 "articles_processed": articles_inserted,
                 "initiated_by": admin_email,
                 "timestamp": datetime.now(timezone.utc).isoformat()
