@@ -111,8 +111,13 @@ class ScrapedArticle:
     keywords: Optional[str] = None  # Changed from List[str] to str for comma-separated format
     publisher_id: Optional[int] = None
     llm_processed: Optional[str] = None
-    image_url: Optional[str] = None          # ✅ ADD THIS
-    image_source: Optional[str] = None       # ✅ ADD THIS
+    image_url: Optional[str] = None          
+    image_source: Optional[str] = None
+    country: Optional[str] = None       # "USA", "India", "Remote"
+    region: Optional[str] = None        # "California", "Bangalore"
+    city: Optional[str] = None          # "San Francisco", "Bangalore"
+    is_remote: Optional[bool] = False   # True for remote jobs/online courses
+    metadata: Optional[Dict[str, Any]] = None # Content-specific metadata
 
 class Crawl4AIScraper:
     """AI News Scraper using Crawl4AI and Claude LLM with resource management"""
@@ -1175,16 +1180,16 @@ class Crawl4AIScraper:
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
+                    'Referer': 'https://www.google.com/',
                     'Upgrade-Insecure-Requests': '1',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Cache-Control': 'max-age=0',
-                    'Referer': 'https://www.google.com/'
+                    'Sec-Fetch-Site': 'cross-site',
+                    'Sec-Fetch-User': '?1'
                 }
                 
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                    async with session.get(url, headers=headers) as response:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(url, timeout=30, allow_redirects=True) as response:
                         if response.status == 200:
                             logger.debug(f"✅ Success with user agent attempt {attempt + 1} for {url}")
                             return await response.text()
@@ -1396,8 +1401,7 @@ class Crawl4AIScraper:
                             "content_type": content_type,  # Add detected content type
                             "image_url": image_data.get('image_url'),  # ✅ ADD THIS
                             "image_source": image_data.get('image_source')  # ✅ ADD THIS
-                        }
-                        
+                        }   
             except Exception as e:
                 if attempt < 2:
                     logger.warning(f"⚠️ Fallback scraping attempt {attempt + 1} failed for {url}: {str(e)}, retrying...")
@@ -3327,15 +3331,32 @@ Respond with JSON only."""
             # Get database service
             from db_service import get_database_service
             db_service = get_database_service()
+
+            is_trending_query = query.lower().startswith("trending |")
+            trending_keyword = None
+            
+            if is_trending_query:
+                # Extract keyword from "trending | AI agents" -> "AI agents"
+                trending_keyword = query.split("|", 1)[1].strip()
+                logger.info(f"🔥 TRENDING SEARCH DETECTED: '{trending_keyword}'")
+                # Use the actual keyword for the Tavily search
+                search_query = trending_keyword
+            else:
+                search_query = query
+                logger.info(f"🔍 REGULAR TAVILY SEARCH: '{query}'")
+            
+            logger.info(f"🔍 TAVILY SEARCH: '{search_query}' (max_results={max_results}, enrich={enrich_with_llm}, trending={is_trending_query})")
             
             # Create search record in tavily_searches table
             search_params = {
                 "include_domains": include_domains or [],
-                "exclude_domains": exclude_domains or []
+                "exclude_domains": exclude_domains or [],
+                "is_trending": is_trending_query,  
+                "trending_keyword": trending_keyword
             }
             
             try:
-                search_id = db_service.execute_query(
+                search_result = db_service.execute_query(
                     """
                     INSERT INTO tavily_searches 
                     (query, max_results, enrich_with_llm, llm_model, search_params, created_at)
@@ -3343,7 +3364,9 @@ Respond with JSON only."""
                     RETURNING id
                     """,
                     (query, max_results, enrich_with_llm, llm_model, json.dumps(search_params))
-                )['id']
+                )
+                # ✅ FIX: Access RealDictRow as dictionary, not list
+                search_id = search_result['id'] if search_result else None
                 logger.info(f"📝 Created Tavily search record: ID {search_id}")
             except Exception as e:
                 logger.error(f"❌ Failed to create search record: {e}")
@@ -3479,7 +3502,14 @@ Respond with JSON only."""
                         'image_source': None,
                         'reading_time': max(1, len(result.get('content', '').split()) // 200),  # Estimate
                         'content_type': content_type,
-                        'extraction_method': 'tavily-api'
+                        'extraction_method': 'tavily-api',
+                        'is_trending': is_trending_query,  
+                        'trending_keyword': trending_keyword,
+                        'country': None,
+                        'region': None,
+                        'city': None,
+                        'is_remote': False,
+                        'metadata': {}          
                     }
                     
                     # Optional: Enrich with LLM
@@ -3497,10 +3527,21 @@ Respond with JSON only."""
                             enriched = await self.process_with_claude(tavily_data)
                         
                         if enriched:
+                            # ✅ FIXED: Only use trending keyword if it's a trending search
+                            keywords_to_store = enriched.keywords
+                            
+                            if is_trending_query and trending_keyword:
+                                # Add trending keyword to existing LLM-generated keywords
+                                if keywords_to_store:
+                                    keywords_to_store = f"{trending_keyword}, {keywords_to_store}"
+                                else:
+                                    keywords_to_store = trending_keyword
+                                logger.info(f"🔥 Added trending keyword to LLM keywords: {trending_keyword}")
+                            
                             # Use enriched data
                             article_data = {
                                 'title': enriched.title,
-                                'author': enriched.author or 'Tavily Search',
+                                'author': enriched.author or 'Unknown',  # ✅ FIXED: Remove "Tavily Search"
                                 'summary': enriched.summary,
                                 'content': enriched.content,
                                 'url': enriched.url,
@@ -3515,9 +3556,15 @@ Respond with JSON only."""
                                 'created_date': datetime.now(timezone.utc).isoformat(),
                                 'updated_date': datetime.now(timezone.utc).isoformat(),
                                 'llm_processed': enriched.llm_processed or f'tavily+{llm_model}',
-                                'keywords': enriched.keywords,
+                                'keywords': keywords_to_store,  # ✅ FIXED: Use LLM keywords + trending keyword only
                                 'image_url': enriched.image_url,
-                                'image_source': enriched.image_source
+                                'image_source': enriched.image_source,
+                                'is_trending': is_trending_query,
+                                'country': None,
+                                'region': None,
+                                'city': None,
+                                'is_remote': False,
+                                'metadata': {}
                             }
                             logger.info(f"✅ LLM enrichment successful")
                             logger.debug(f"   ↳ Enriched title: {enriched.title[:60]}...")
@@ -3533,10 +3580,53 @@ Respond with JSON only."""
                         # Normalize date
                         raw_date = result.get('published_date')
                         normalized_date = self._normalize_date(raw_date) or datetime.now(timezone.utc).isoformat()
+
+                        # ✅ FIXED: Extract keywords from article content, not generic "Tavily Search"
+                        # Try to extract meaningful keywords from title and content
+                        keywords_list = []
+                        
+                        # Extract keywords from title
+                        title_words = result.get('title', '').split()
+                        important_words = [word.strip('.,!?') for word in title_words 
+                                         if len(word) > 4 and word[0].isupper()]
+                        keywords_list.extend(important_words[:3])  # Take up to 3 keywords from title
+                        
+                        # Extract keywords from content (if available)
+                        content_text = result.get('content', '')
+                        if content_text:
+                            # Look for technical terms and proper nouns
+                            import re
+                            tech_terms = re.findall(r'\b(?:AI|ML|GPU|API|LLM|GPT|robot|algorithm|neural|machine learning|deep learning)\b', 
+                                                   content_text, re.IGNORECASE)
+                            keywords_list.extend([term.title() for term in set(tech_terms)][:3])
+                        
+                        # Add domain as a keyword source
+                        if domain and domain not in ['Unknown', 'unknown']:
+                            domain_name = domain.split('.')[0].title()
+                            if len(domain_name) > 2:
+                                keywords_list.append(domain_name)
+                        
+                        # Add trending keyword if applicable
+                        if is_trending_query and trending_keyword:
+                            keywords_list.insert(0, trending_keyword)  # Put trending keyword first
+                        
+                        # Fallback to generic AI/Tech keywords only if nothing else found
+                        if not keywords_list:
+                            keywords_list = ['Artificial Intelligence', 'Technology']
+                        
+                        # Remove duplicates while preserving order
+                        seen = set()
+                        unique_keywords = []
+                        for kw in keywords_list:
+                            if kw.lower() not in seen:
+                                seen.add(kw.lower())
+                                unique_keywords.append(kw)
+                        
+                        logger.info(f"🏷️ Extracted keywords from article: {unique_keywords}")
                         
                         article_data = {
                             'title': result.get('title', 'Unknown Article'),
-                            'author': 'Tavily Search',
+                            'author': 'Unknown',  # ✅ FIXED: Use "Unknown" instead of "Tavily Search"
                             'summary': result.get('content', '')[:500] or 'No summary available',
                             'content': result.get('content', ''),
                             'url': url,
@@ -3551,11 +3641,23 @@ Respond with JSON only."""
                             'created_date': datetime.now(timezone.utc).isoformat(),
                             'updated_date': datetime.now(timezone.utc).isoformat(),
                             'llm_processed': 'tavily-only',
-                            'keywords': 'AI, Technology, Tavily Search',
+                            'keywords': ', '.join(unique_keywords),  # ✅ FIXED: Use extracted keywords from article
                             'image_url': None,
-                            'image_source': None
+                            'image_source': None,
+                            'is_trending': is_trending_query,
+                            'country': None,
+                            'region': None,
+                            'city': None,
+                            'is_remote': False,
+                            'metadata': {}
                         }
+                    
                     logger.info(f"📝 Prepared tavily article data for insertion: {article_data['title'][:60]}...")
+                    logger.info(f"🏷️ Final keywords: {article_data['keywords']}")
+                    
+                    # ✅ REMOVED: No longer adding trending keyword twice
+                    # The keywords are already set correctly above
+                    
                     # Insert article (publisher will be auto-created from URL/source)
                     success = db_service.insert_article(article_data)
                     
@@ -3804,4 +3906,4 @@ class AdminScrapingInterface:
         except Exception as e:
             logger.error(f"❌ Admin scraping failed: {str(e)}")
             return {"success": False, "message": f"Scraping failed: {str(e)}", "articles_processed": 0}
-    
+

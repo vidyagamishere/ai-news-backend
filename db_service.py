@@ -546,17 +546,30 @@ class PostgreSQLService:
             else:
                 logger.debug(f"📎 Using provided publisher_id {publisher_id_val} for article")
 
+            is_trending = article_data.get('is_trending', False)
+            if is_trending: 
+                logger.info(f"🔥 Article marked as trending: {article_data.get('title', url)[:50]}...")
+
+            country = article_data.get('country')
+            region = article_data.get('region')
+            city = article_data.get('city')
+            is_remote = article_data.get('is_remote', False)
+            
+            # ✅ Extract metadata (missing in your code)
+            metadata = article_data.get('metadata', {})
+            metadata_json = json.dumps(metadata) if metadata else None
+
             # --- 8. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
                     llm_processed, content_type_id, category_id, reading_time, author, complexity_level, 
                     updated_date, created_date, keywords, publisher_id,
-                    image_url, image_source
+                    image_url, image_source, is_trending, country, region, city, is_remote, metadata
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, 
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                    %s, %s, %s, %s, %s, %s
                 ) ON CONFLICT (url) DO UPDATE SET
                     content_hash = EXCLUDED.content_hash,
                     title = EXCLUDED.title,
@@ -576,7 +589,13 @@ class PostgreSQLService:
                     keywords = EXCLUDED.keywords,
                     publisher_id = EXCLUDED.publisher_id,
                     image_url = COALESCE(EXCLUDED.image_url, articles.image_url),
-                    image_source = COALESCE(EXCLUDED.image_source, articles.image_source)
+                    image_source = COALESCE(EXCLUDED.image_source, articles.image_source),
+                    is_trending = COALESCE(EXCLUDED.is_trending, articles.is_trending),
+                    country = COALESCE(EXCLUDED.country, articles.country),
+                    region = COALESCE(EXCLUDED.region, articles.region),
+                    city = COALESCE(EXCLUDED.city, articles.city),
+                    is_remote = COALESCE(EXCLUDED.is_remote, articles.is_remote),
+                    metadata = COALESCE(EXCLUDED.metadata, articles.metadata)
             """
             
             values = (
@@ -598,8 +617,14 @@ class PostgreSQLService:
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', 'Generative AI, Technology'),  # Now a string instead of list
                 article_data.get('publisher_id'),  # Will be the created/found publisher_id
-                image_url,      # ✅ ADDED
-                image_source    # ✅ ADDED
+                image_url,      
+                image_source,
+                is_trending,
+                country,
+                region,
+                city,
+                is_remote,
+                metadata_json
             )            
             # Debug logging for LLM model used
             llm_model_used = article_data.get('llm_processed')
@@ -813,6 +838,87 @@ class PostgreSQLService:
             logger.error(f"❌ Error checking multiple URLs: {str(e)}")
             # Default all to False (allow scraping) on error
             return {url: False for url in urls}
+
+    def get_trending_keywords(self, days: int = 1, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get trending keywords from articles marked as is_trending=TRUE in the last N days.
+        Extracts keywords from articles.keywords column (comma-separated format).
+        
+        Args:
+            days: Number of days to look back (default: 1 for today)
+            limit: Maximum number of keywords to return (default: 10)
+        
+        Returns:
+            List of dicts with 'id', 'label', 'count' fields
+        """
+        try:
+            logger.info(f"🔥 Fetching trending keywords for last {days} day(s), limit: {limit}")
+            
+            query = """
+                WITH trending_articles AS (
+                    -- Get articles marked as trending within the time window
+                    SELECT 
+                        id,
+                        keywords,
+                        created_date
+                    FROM articles
+                    WHERE is_trending = TRUE
+                      AND created_date >= NOW() - INTERVAL '%s days'
+                      AND keywords IS NOT NULL
+                      AND keywords != ''
+                ),
+                keyword_splits AS (
+                    -- Split comma-separated keywords into individual rows
+                    SELECT 
+                        id,
+                        TRIM(unnest(string_to_array(keywords, ','))) as keyword
+                    FROM trending_articles
+                ),
+                keyword_stats AS (
+                    -- Count occurrences of each keyword
+                    SELECT 
+                        keyword,
+                        COUNT(*) as article_count,
+                        COUNT(DISTINCT id) as unique_articles
+                    FROM keyword_splits
+                    WHERE LENGTH(keyword) > 2  -- Filter out very short keywords
+                      AND keyword != ''
+                      AND keyword NOT IN ('AI', 'Technology', 'Tech')  -- Filter common generic terms
+                    GROUP BY keyword
+                )
+                SELECT 
+                    keyword as label,
+                    article_count as count
+                FROM keyword_stats
+                WHERE article_count >= 1  -- At least 1 article
+                ORDER BY article_count DESC, keyword ASC
+                LIMIT %s
+            """
+            
+            results = self.execute_query(query, (days, limit), fetch_all=True)
+            
+            if not results:
+                logger.info(f"ℹ️ No trending keywords found for last {days} day(s)")
+                return []
+            
+            # Transform results into expected format
+            trending_keywords = []
+            for row in results:
+                trending_keywords.append({
+                    'id': row['label'].lower().replace(' ', '-').replace(',', ''),  # URL-safe ID
+                    'label': row['label'],
+                    'count': row['count']
+                })
+            
+            logger.info(f"✅ Found {len(trending_keywords)} trending keywords for last {days} day(s)")
+            logger.debug(f"🔥 Top trending keywords: {[k['label'] for k in trending_keywords[:5]]}")
+            
+            return trending_keywords
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching trending keywords: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
 
     def get_all_articles_pending_shorts(self):
         logger.info("Fetching articles pending shorts/reels")

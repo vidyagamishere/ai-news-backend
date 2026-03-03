@@ -858,6 +858,62 @@ async def get_trending_topics(
         return {"trending_topics": [], "count": 0}
 
 
+@router.get("/trending-keywords")
+async def get_trending_keywords(
+    days: int = Query(1, ge=1, le=30, description="Number of days to look back (1-30)"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of keywords to return"),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """
+    Get trending keywords from articles marked as is_trending=TRUE.
+    Extracts keywords from articles.keywords column (comma-separated format).
+    
+    Args:
+        days: Number of days to look back (default: 1 for today)
+        limit: Maximum keywords to return (default: 10)
+    
+    Returns:
+        JSON with trending_keywords array and timestamp
+    """
+    try:
+        logger.info(f"🔥 Trending keywords request: days={days}, limit={limit}")
+        
+        # Call the database service method
+        trending_keywords = db.get_trending_keywords(days=days, limit=limit)
+        
+        if not trending_keywords:
+            logger.info(f"ℹ️ No trending keywords found for last {days} day(s)")
+            return {
+                "trending_keywords": [],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "days": days,
+                "limit": limit,
+                "message": f"No trending keywords found for last {days} day(s)"
+            }
+        
+        logger.info(f"✅ Returning {len(trending_keywords)} trending keywords")
+        
+        return {
+            "trending_keywords": trending_keywords,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "days": days,
+            "limit": limit,
+            "count": len(trending_keywords)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting trending keywords: {str(e)}")
+        # Return empty result instead of raising exception for better UX
+        return {
+            "trending_keywords": [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "days": days,
+            "limit": limit,
+            "error": str(e),
+            "message": "Failed to fetch trending keywords"
+        }
+
+
 @router.get("/metadata")
 async def get_filtering_metadata(
     db: DatabaseService = Depends(get_database_service)

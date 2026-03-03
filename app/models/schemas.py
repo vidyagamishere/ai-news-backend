@@ -164,7 +164,12 @@ class Article(BaseModel):
     total_shares: Optional[int] = 0
     total_comments: Optional[int] = 0
     engagement_score: Optional[float] = 0.0
-
+    is_trending: Optional[bool] = False
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    is_remote: Optional[bool] = False
+    metadata: Optional[Dict[str, Any]] = {}
     
 
 class ContentFilterRequest(BaseModel):
