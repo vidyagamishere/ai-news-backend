@@ -1151,6 +1151,287 @@ async def get_landing_content(
             }
         )
 
+
+@router.get("/posts")
+async def get_posts(
+    limit: int = Query(50, ge=1, le=100, description="Max number of posts to return"),
+    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    days_filter: int = Query(3650, ge=1, le=3650, description="Filter by published date (days back)")
+):
+    """
+    Get posts (content_type_id = 4) from articles table.
+    Returns community posts ordered by published_date desc.
+
+    Endpoint: GET /posts
+    """
+    try:
+        logger.info(f"📝 Posts requested - Limit: {limit}, Category: {category_id}, Days: {days_filter}")
+
+        from db_service import get_database_service
+        from datetime import datetime, timedelta, timezone
+        db = get_database_service()
+
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_filter)
+
+        category_filter = "AND a.category_id = %s" if category_id else ""
+
+        query = f"""
+            SELECT
+                a.id,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.significance_score,
+                a.published_date,
+                a.author,
+                a.keywords,
+                c.name as category,
+                c.category_label,
+                p.publisher_name
+            FROM articles a
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
+            LEFT JOIN publishers_master p ON a.publisher_id = p.id
+            WHERE a.content_type_id = 4
+              AND (a.published_date >= %s OR a.published_date IS NULL)
+              {category_filter}
+            ORDER BY a.published_date DESC
+            LIMIT %s
+        """
+
+        params: list = [cutoff_date]
+        if category_id:
+            params.append(category_id)
+        params.append(limit)
+
+        rows = db.execute_query(query, tuple(params), fetch_all=True)
+
+        posts = []
+        for r in rows:
+            posts.append({
+                'id': r['id'],
+                'title': r['title'],
+                'summary': r['summary'] or '',
+                'url': r['url'] or '',
+                'source': r['source'] or '',
+                'significance_score': float(r['significance_score']) if r['significance_score'] else 7.0,
+                'published_date': r['published_date'].isoformat() if r['published_date'] else None,
+                'author': r['author'] or '',
+                'keywords': r['keywords'] or '',
+                'category': r['category'] or 'General',
+                'category_label': r['category_label'] or 'general',
+                'content_type': 'posts',
+            })
+
+        logger.info(f"✅ Posts retrieved: {len(posts)}")
+        return {
+            'posts': posts,
+            'count': len(posts),
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Posts endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to get posts', 'message': str(e)}
+        )
+
+
+@router.post("/posts")
+async def create_post(
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Create a new post (any authenticated user).
+    Inserts a record into the articles table with content_type_id = 4.
+
+    Body (JSON):
+      - title: str (required)
+      - html_content: str  (rich HTML body, stored in summary field)
+      - author: str
+      - category_id: int
+      - significance_score: float
+      - url: str (optional external link)
+      - source: str (optional source label)
+      - keywords: str (comma-separated tags)
+
+    Endpoint: POST /posts
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        body = await request.json()
+        title = body.get('title', '').strip()
+        if not title:
+            raise HTTPException(status_code=400, detail='title is required')
+
+        html_content = body.get('html_content', '')
+        # Use authenticated user's name/email as author fallback
+        author = body.get('author', '') or current_user.name or current_user.email or 'Anonymous'
+        category_id = body.get('category_id', 1)
+        significance_score = float(body.get('significance_score', 7.0))
+        url = body.get('url', '')
+        source = body.get('source', 'Community Post')
+        keywords = body.get('keywords', '')
+
+        from db_service import get_database_service
+        from datetime import datetime, timezone
+        db = get_database_service()
+
+        insert_query = """
+            INSERT INTO articles
+                (title, summary, url, source, significance_score, published_date,
+                 author, keywords, content_type_id, category_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 4, %s)
+            RETURNING id
+        """
+        now = datetime.now(timezone.utc)
+        result = db.execute_query(
+            insert_query,
+            (title, html_content, url, source, significance_score, now,
+             author, keywords, category_id),
+            fetch_one=True
+        )
+
+        new_id = result['id'] if result else None
+        logger.info(f"✅ New post created - ID: {new_id}, Title: '{title}'")
+
+        return {
+            'success': True,
+            'id': new_id,
+            'title': title,
+            'message': 'Post created successfully',
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Create post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to create post', 'message': str(e)}
+        )
+
+
+@router.put("/posts/{post_id}")
+async def update_post(
+    post_id: int,
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Update a post. Only the original author can update their own post.
+
+    Endpoint: PUT /posts/{post_id}
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        body = await request.json()
+
+        from db_service import get_database_service
+        db = get_database_service()
+
+        # Verify post exists and check ownership
+        row = db.execute_query(
+            "SELECT author FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,), fetch_one=True
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail='Post not found')
+
+        stored_author = row['author'] or ''
+        user_name = current_user.name or ''
+        user_email = current_user.email or ''
+        is_owner = stored_author and (stored_author == user_name or stored_author == user_email)
+        if not is_owner:
+            raise HTTPException(status_code=403, detail='You can only edit your own posts')
+
+        title = body.get('title', '').strip()
+        if not title:
+            raise HTTPException(status_code=400, detail='title is required')
+
+        html_content = body.get('html_content', '')
+        author = body.get('author', stored_author) or stored_author
+        category_id = body.get('category_id', 1)
+        significance_score = float(body.get('significance_score', 7.0))
+        url = body.get('url', '')
+        source = body.get('source', 'Community Post')
+        keywords = body.get('keywords', '')
+
+        db.execute_query(
+            """UPDATE articles SET
+                title = %s, summary = %s, url = %s, source = %s,
+                significance_score = %s, author = %s, keywords = %s, category_id = %s
+               WHERE id = %s AND content_type_id = 4""",
+            (title, html_content, url, source, significance_score, author, keywords, category_id, post_id),
+            fetch_all=False
+        )
+
+        logger.info(f"✅ Post updated - ID: {post_id}, Title: '{title}'")
+        return {'success': True, 'id': post_id, 'message': 'Post updated successfully'}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Update post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to update post', 'message': str(e)}
+        )
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(
+    post_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Delete a post. Only the original author can delete their own post.
+
+    Endpoint: DELETE /posts/{post_id}
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+
+        # Verify post exists and check ownership
+        row = db.execute_query(
+            "SELECT author FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,), fetch_one=True
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail='Post not found')
+
+        stored_author = row['author'] or ''
+        user_name = current_user.name or ''
+        user_email = current_user.email or ''
+        is_owner = stored_author and (stored_author == user_name or stored_author == user_email)
+        if not is_owner:
+            raise HTTPException(status_code=403, detail='You can only delete your own posts')
+
+        db.execute_query(
+            "DELETE FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,),
+            fetch_all=False
+        )
+
+        logger.info(f"✅ Post deleted - ID: {post_id}")
+        return {'success': True, 'message': 'Post deleted successfully'}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Delete post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to delete post', 'message': str(e)}
+        )
+
+
 # Global scraping job tracker
 scraping_jobs = {}
 
