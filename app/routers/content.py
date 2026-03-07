@@ -290,7 +290,8 @@ async def search_content(
                 c.name as category,
                 c.category_label,
                 ct.name as content_type,
-                ct.display_name as content_type_display,
+                ct.display_name as content_type_label,
+                a.metadata,
                 p.publisher_name,
                 p.priority as publisher_priority,
                 ({relevance_score}) AS relevance_score,
@@ -385,39 +386,42 @@ async def search_content(
                 'category': r['category'] or 'General',
                 'category_label': r['category_label'] or 'general',
                 'content_type': r['content_type'],
-                'content_type_display': r['content_type_display'],
+                'content_type_label': r.get('content_type_label', ''),
+                'metadata': r.get('metadata') or {},
                 'relevance_score': float(r['relevance_score']),
                 'ranking_score': float(r['ranking_score']) if r.get('ranking_score') else 0.0
             } for r in results]
         
-        # Execute searches for each content type separately
-        blogs = execute_search_for_type(1, 'blogs')
-        podcasts = execute_search_for_type(3, 'podcasts')
-        videos = execute_search_for_type(2, 'videos')
-        
-        # Validate results - ensure each array only contains its own type
-        blogs = [b for b in blogs if b.get('content_type') == 'blogs']
-        podcasts = [p for p in podcasts if p.get('content_type') == 'podcasts']
-        videos = [v for v in videos if v.get('content_type') == 'videos']
-        
-        logger.info(f"✅ Search complete - Found: {len(blogs)} blogs, {len(podcasts)} podcasts, {len(videos)} videos")
-        
+        # Fetch all active content types from DB for generic search (covers all types including courses)
+        ct_query = "SELECT id, name, display_name FROM content_types WHERE is_active = TRUE ORDER BY display_order ASC"
+        active_content_types = db.execute_query(ct_query, fetch_all=True)
+        if not active_content_types:
+            active_content_types = [
+                {'id': 1, 'name': 'blogs', 'display_name': 'Blogs'},
+                {'id': 2, 'name': 'videos', 'display_name': 'Videos'},
+                {'id': 3, 'name': 'podcasts', 'display_name': 'Podcasts'},
+            ]
+
+        # Execute search for every active content type generically
+        results_by_type = {}
+        for ct in active_content_types:
+            type_results = execute_search_for_type(ct['id'], ct['name'])
+            # Validate: only keep articles matching their own type
+            results_by_type[ct['name']] = [r for r in type_results if r.get('content_type') == ct['name']]
+
+        total = sum(len(v) for v in results_by_type.values())
+        counts = {ct['name']: len(results_by_type[ct['name']]) for ct in active_content_types}
+        counts['total'] = total
+
+        logger.info(f"✅ Search complete - Types: {list(results_by_type.keys())}, Counts: {counts}")
+
         return {
             'query': query,
             'category': category_name,
             'category_id': category_id,
             'days_filter': days_filter,
-            'results': {
-                'blogs': blogs,
-                'podcasts': podcasts,
-                'videos': videos
-            },
-            'counts': {
-                'blogs': len(blogs),
-                'podcasts': len(podcasts),
-                'videos': len(videos),
-                'total': len(blogs) + len(podcasts) + len(videos)
-            },
+            'results': results_by_type,
+            'counts': counts,
             'metadata': {
                 'search_type': 'weighted_fulltext',
                 'filters_applied': {
@@ -975,18 +979,37 @@ async def get_landing_content(
     content_type_id: Optional[int] = Query(None, description="Filter by specific content type (1=blogs, 2=videos, 3=podcasts, 4=posts, 5=learning)")
 ):
     """
-    Get all categories and content types for landing page
-    Returns content organized by category (Generative AI, AI Applications, AI Startups)
-    Each category contains content types (blogs, podcasts, videos) with max 100 items per type
-    No authentication required - public endpoint for landing page
-    
-    Endpoint: GET /landing-content
-    Query params: 
-        - limit_per_type (default: 50, max: 100)
-        - days_filter (default: 7, filter by published date in last N days)
-        - category_id (optional: filter by specific category, None = all)
-        - content_type_id (optional: filter by specific content type, None = all)
-    """
+        Get landing page content with all content types including courses
+        
+        Returns:
+        {
+        "categories": [
+            {
+            "id": 1,
+            "name": "AI Research",
+            "category": "research",
+            "description": "Latest AI research papers and findings",
+            "priority": 1,
+            "content": {
+                "blogs": [Article, ...],      # Article[] with content_type_label = "Blogs"
+                "podcasts": [Article, ...],   # Article[] with content_type_label = "Podcasts"
+                "videos": [Article, ...],     # Article[] with content_type_label = "Videos"
+                "courses": [Article, ...]     # Article[] with content_type_label = "Courses" ✅ NEW
+            }
+            },
+            ...
+        ],
+        "total_categories": 8
+        }
+        
+        Each Article object includes:
+        - Common fields: id, title, summary, url, source, category_label, content_type_label
+        - Course-specific fields (when content_type_label = "Courses"):
+        - instructor, platform, difficulty, duration_hours, price, is_free
+        - rating, num_reviews, num_students
+        - topics_covered, learning_outcomes, prerequisites
+        - enrollment_url, has_certificate
+        """
     try:
         logger.info(f"🏠 Landing content requested - Limit: {limit_per_type}, Days: {days_filter}, Category: {category_id}, ContentType: {content_type_id}")
         
@@ -1050,18 +1073,20 @@ async def get_landing_content(
             'total_categories': len(categories)
         }
         
+        # Build all expected content-type keys from the DB list (plus ensure frontend-required ones are present)
+        all_content_keys = {ct['name'] for ct in content_types}
+        # Always include keys the frontend iterates over, even if not yet in DB
+        frontend_required_keys = {'blogs', 'podcasts', 'videos', 'courses', 'posts', 'events', 'jobs'}
+        all_content_keys.update(frontend_required_keys)
+
         for category in categories:
-            # Always initialize all three content type arrays for consistent response structure
+            # Dynamically initialize all content type arrays for consistent response structure
             category_data = {
                 'id': category['id'],
                 'name': category['name'],
                 'priority': category['priority'],
                 'description': category.get('description', ''),
-                'content': {
-                    'blogs': [],
-                    'podcasts': [],
-                    'videos': []
-                }
+                'content': {key: [] for key in all_content_keys}
             }
             logger.info(f"🔍 Processing category: {category['name']} (ID: {category['id']})")
             
@@ -1076,6 +1101,7 @@ async def get_landing_content(
                 
                 articles_query = """
                     SELECT 
+                        a.id,
                         a.title, 
                         a.summary, 
                         a.url, 
@@ -1084,10 +1110,11 @@ async def get_landing_content(
                         a.published_date, 
                         a.author, 
                         ct.name as content_type_name,
+                        ct.display_name as content_type_label,
                         cm.name as category_name,
                         p.publisher_name,
                         p.priority as publisher_priority,
-                        
+                        a.metadata,
                         -- DYNAMIC RANKING SCORE (hybrid approach)
                         (
                             -- Static component (pre-computed publisher + significance)
@@ -1122,6 +1149,7 @@ async def get_landing_content(
                 formatted_articles = []
                 for article in articles:
                     formatted_articles.append({
+                        'id': article.get('id'),
                         'title': article['title'],
                         'summary': (article['summary'] or '') if IS_SUMMARY else '',
                         'url': article['url'],
@@ -1131,7 +1159,9 @@ async def get_landing_content(
                         'author': article.get('author', ''),
                         'category': category['name'],
                         'content_type': content_type['name'],
-                        'ranking_score': float(article.get('ranking_score', 0.0))
+                        'content_type_label': article.get('content_type_label', content_type.get('display_name', '')),
+                        'ranking_score': float(article.get('ranking_score', 0.0)),
+                        'metadata': article.get('metadata', {})
                     })
                 logger.info(f"✅ Found {len(formatted_articles)} articles for type: {content_type['name']} in category: {category['name']}")
                 category_data['content'][content_type['name']] = formatted_articles

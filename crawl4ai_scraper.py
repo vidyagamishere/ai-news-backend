@@ -2010,7 +2010,7 @@ If this is not AI/tech related content, set significance_score to 1-3.
 
 Return ONLY the JSON object, nothing else."""
 
-    async def process_with_claude(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+    async def process_with_claude(self, scraped_data: Dict[str, Any], prompt_override: Optional[str] = None) -> Optional[ScrapedArticle]:
         """
         Feed the structured data from Crawl4AI to Claude for processing.
         Use standardized prompt to get structured output with key details.
@@ -2019,7 +2019,7 @@ Return ONLY the JSON object, nothing else."""
             logger.info(f"🤖 CLAUDE PROCESSING: {scraped_data.get('title', 'Unknown')[:60]}...")
             
             # Use standardized prompt
-            prompt = self._get_standardized_prompt(scraped_data)
+            prompt = prompt_override if prompt_override else self._get_standardized_prompt(scraped_data)
 
             # Call Claude API - using Claude 3 Haiku
             payload = {
@@ -2156,7 +2156,7 @@ Return ONLY the JSON object, nothing else."""
             logger.error(f"❌ CLAUDE PROCESSING FAILED: {str(e)}")
             return None
     
-    async def process_with_gemini(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+    async def process_with_gemini(self, scraped_data: Dict[str, Any], prompt_override: Optional[str] = None) -> Optional[ScrapedArticle]:
         """
         Feed the structured data to Google Gemini for processing.
         """
@@ -2169,7 +2169,7 @@ Return ONLY the JSON object, nothing else."""
                 return None
 
             # Use standardized prompt (same as Claude)
-            prompt = self._get_standardized_prompt(scraped_data)
+            prompt = prompt_override if prompt_override else self._get_standardized_prompt(scraped_data)
 
             gemini_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.google_api_key}"
             payload = {
@@ -2289,7 +2289,7 @@ Return ONLY the JSON object, nothing else."""
             logger.error(traceback.format_exc())  # ✅ NOW traceback IS IMPORTED
             return None
 
-    async def process_with_huggingface(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+    async def process_with_huggingface(self, scraped_data: Dict[str, Any], prompt_override: Optional[str] = None) -> Optional[ScrapedArticle]:
         """
         Feed the structured data to HuggingFace for processing.
         NOTE: Free tier HuggingFace Inference API has limited model availability.
@@ -2308,16 +2308,7 @@ Return ONLY the JSON object, nothing else."""
         
         try:
             logger.info(f"🤖 HUGGINGFACE PROCESSING ({simple_model}): {scraped_data.get('title', 'Unknown')[:60]}...")
-            
-            # Simplified prompt for smaller model
-            prompt = f"""Analyze this AI/tech article and extract: title, author (or null), 2-3 sentence summary, date (YYYY-MM-DD or null), content type (Videos/Podcasts/Blogs), importance score 1-10, complexity (Low/Medium/High), and main topic category.
-
-Title: {scraped_data.get('title', '')}
-Content: {scraped_data.get('content', '')[:2000]}
-URL: {scraped_data.get('url', '')}
-
-Respond with JSON only."""
-
+            prompt = prompt_override if prompt_override else self._get_standardized_prompt(scraped_data)
             headers = {
                 "Authorization": f"Bearer {self.huggingface_api_key}",
                 "Content-Type": "application/json"
@@ -2414,7 +2405,7 @@ Respond with JSON only."""
             logger.info("💡 Using basic extraction as fallback")
             return self._create_basic_article(scraped_data, "huggingface-error")
     
-    async def process_with_ollama(self, scraped_data: Dict[str, Any]) -> Optional[ScrapedArticle]:
+    async def process_with_ollama(self, scraped_data: Dict[str, Any], prompt_override: Optional[str] = None) -> Optional[ScrapedArticle]:
         """
         Feed the structured data to local Ollama model for processing.
         Works with any Ollama model (Llama 3.2, Mistral, Phi, etc.)
@@ -2428,7 +2419,7 @@ Respond with JSON only."""
             logger.info(f"🦙 OLLAMA PROCESSING ({self.ollama_model}): {scraped_data.get('title', 'Unknown')[:60]}...")
 
             # Use standardized prompt (same as Claude/Gemini)
-            prompt = self._get_standardized_prompt(scraped_data)
+            prompt = prompt_override if prompt_override else self._get_standardized_prompt(scraped_data)
 
             # Call Ollama API (synchronous, so we use asyncio.to_thread)
             response = await asyncio.to_thread(
@@ -3298,7 +3289,7 @@ Respond with JSON only."""
         query: str, 
         max_results: int = 10,
         enrich_with_llm: bool = False,
-        llm_model: str = 'gemini',
+        llm_model: str = 'ollama',
         include_domains: List[str] = None,
         exclude_domains: List[str] = None
     ) -> Dict[str, Any]:
@@ -3333,7 +3324,14 @@ Respond with JSON only."""
             db_service = get_database_service()
 
             is_trending_query = query.lower().startswith("trending |")
+            is_learning_query = query.lower().startswith("courses |")
+            is_jobs_query = query.lower().startswith("jobs |")
+            is_events_query = query.lower().startswith("events |")
+
             trending_keyword = None
+            learning_keyword = None
+            jobs_keyword = None
+            events_keyword = None
             
             if is_trending_query:
                 # Extract keyword from "trending | AI agents" -> "AI agents"
@@ -3341,7 +3339,80 @@ Respond with JSON only."""
                 logger.info(f"🔥 TRENDING SEARCH DETECTED: '{trending_keyword}'")
                 # Use the actual keyword for the Tavily search
                 search_query = trending_keyword
-            else:
+            elif is_learning_query:
+                learning_keyword = query.split("|", 1)[1].strip()
+                logger.info(f"📚 LEARNING SEARCH DETECTED: '{learning_keyword}'")
+                
+                # ✅ Optimize search query for courses
+                search_query = f"{learning_keyword} online courses tutorials certification"
+                content_type = "Courses"
+                
+                # ✅ Force LLM enrichment for learning content
+                if not enrich_with_llm:
+                    logger.warning("⚠️ LLM enrichment disabled but recommended for learning content")
+                    enrich_with_llm = True
+                    logger.info("✅ Auto-enabled LLM enrichment for learning content")
+                
+                # ✅ Add learning-specific domains if not provided
+                if not include_domains:
+                    include_domains = [
+                        "coursera.org",
+                        "udemy.com",
+                        "edx.org",
+                        "deeplearning.ai",
+                        "youtube.com",
+                        "pluralsight.com",
+                        "linkedin.com/learning",
+                        "udacity.com",
+                        "kaggle.com/learn",
+                        "fast.ai",
+                        "datacamp.com",
+                        "codecademy.com"
+                    ]
+                    logger.info(f"📚 Using learning-specific domains: {len(include_domains)} platforms")
+            elif is_jobs_query:
+                jobs_keyword = query.split("|", 1)[1].strip()
+                logger.info(f"💼 JOBS SEARCH DETECTED: '{jobs_keyword}'")
+
+                # Optimize search query for AI/ML job roles
+                search_query = f"{jobs_keyword} AI machine learning jobs hiring 2024 2025"
+                content_type = "Jobs"
+
+                # Force LLM enrichment for structured job metadata
+                if not enrich_with_llm:
+                    enrich_with_llm = True
+                    logger.info("✅ Auto-enabled LLM enrichment for jobs content")
+
+                # Use job-board domains focused on AI/ML roles
+                if not include_domains:
+                    include_domains = [
+                        "linkedin.com/jobs",
+                        "indeed.com",
+                        "greenhouse.io"
+                    ]
+                    logger.info(f"💼 Using job-specific domains: {include_domains}")
+            elif is_events_query:
+                events_keyword = query.split("|", 1)[1].strip()
+                logger.info(f"📅 EVENTS SEARCH DETECTED: '{events_keyword}'")
+
+                # Optimize search query for AI/ML events
+                search_query = f"{events_keyword} AI machine learning conference summit event 2024 2025"
+                content_type = "Events"
+
+                # Force LLM enrichment for structured event metadata
+                if not enrich_with_llm:
+                    enrich_with_llm = True
+                    logger.info("✅ Auto-enabled LLM enrichment for events content")
+
+                # Use event platform domains
+                if not include_domains:
+                    include_domains = [
+                        "eventbrite.com",
+                        "meetup.com",
+                        "lu.ma"
+                    ]
+                    logger.info(f"📅 Using event-specific domains: {include_domains}")
+            else:    
                 search_query = query
                 logger.info(f"🔍 REGULAR TAVILY SEARCH: '{query}'")
             
@@ -3351,8 +3422,18 @@ Respond with JSON only."""
             search_params = {
                 "include_domains": include_domains or [],
                 "exclude_domains": exclude_domains or [],
+                "query": search_query,
+                "max_results": max_results,
+                "enrich_with_llm": enrich_with_llm,
+                "llm_model": llm_model,
                 "is_trending": is_trending_query,  
-                "trending_keyword": trending_keyword
+                "trending_keyword": trending_keyword,
+                "is_learning": is_learning_query,
+                "learning_keyword": learning_keyword,
+                "is_jobs": is_jobs_query,
+                "jobs_keyword": jobs_keyword,
+                "is_events": is_events_query,
+                "events_keyword": events_keyword
             }
             
             try:
@@ -3363,10 +3444,10 @@ Respond with JSON only."""
                     VALUES (%s, %s, %s, %s, %s, NOW())
                     RETURNING id
                     """,
-                    (query, max_results, enrich_with_llm, llm_model, json.dumps(search_params))
+                    (query, max_results, enrich_with_llm, llm_model, json.dumps(search_params)),fetch_all=True
                 )
                 # ✅ FIX: Access RealDictRow as dictionary, not list
-                search_id = search_result['id'] if search_result else None
+                search_id = search_result[0]['id'] if search_result else None  # ✅ Access first row, then dict key
                 logger.info(f"📝 Created Tavily search record: ID {search_id}")
             except Exception as e:
                 logger.error(f"❌ Failed to create search record: {e}")
@@ -3380,6 +3461,7 @@ Respond with JSON only."""
                 "search_depth": "advanced",  # Use advanced search for better results
                 "include_answer": False,  # We don't need the AI-generated answer
                 "include_raw_content": False,  # We'll scrape full content ourselves if needed
+                "include_images": True,  # Get image URLs if available
             }
             
             # Add domain filters if provided
@@ -3403,7 +3485,7 @@ Respond with JSON only."""
                         # Update search record with error
                         if search_id:
                             try:
-                                db_service.execute_query(
+                                affected_rows = db_service.execute_query(
                                     """
                                     UPDATE tavily_searches 
                                     SET completed_at = NOW(), error_message = %s
@@ -3411,6 +3493,10 @@ Respond with JSON only."""
                                     """,
                                     (f"API error {response.status}: {error_text[:500]}", search_id)
                                 )
+                                if affected_rows and affected_rows > 0:
+                                    logger.info(f"✅ Updated Tavily search record ID {search_id}")
+                                else:
+                                    logger.warning(f"⚠️ No rows updated for search ID {search_id}")
                             except:
                                 pass
                         
@@ -3432,7 +3518,7 @@ Respond with JSON only."""
                 # Update search record
                 if search_id:
                     try:
-                        db_service.execute_query(
+                        affected_rows = db_service.execute_query(
                             """
                             UPDATE tavily_searches 
                             SET articles_found = 0, articles_inserted = 0, articles_skipped = 0,
@@ -3441,7 +3527,11 @@ Respond with JSON only."""
                             """,
                             (search_id,)
                         )
-                    except:
+                        if affected_rows and affected_rows > 0:
+                            logger.info(f"✅ Updated Tavily search record ID {search_id}")
+                        else:
+                            logger.warning(f"⚠️ No rows updated for search ID {search_id}")
+                    except Exception as e:
                         pass
                 
                 return {
@@ -3460,7 +3550,7 @@ Respond with JSON only."""
             
             articles_inserted = 0
             articles_skipped = 0
-            
+
             # Process each result
             for i, result in enumerate(results, 1):
                 try:
@@ -3475,20 +3565,26 @@ Respond with JSON only."""
                         articles_skipped += 1
                         continue
                     
-                    logger.info(f"📰 Processing Tavily result {i}/{len(results)}: {url}")
+                    logger.info(f"📰 [{i}/{len(results)}] Processing: {result.get('title', 'Untitled')[:60]}...")
                     
                     # Extract domain for source/publisher
                     domain = self._extract_domain(url)
                     
                     # Detect content type from URL
-                    content_type = self._detect_content_type(
-                        url=url,
-                        html="",
-                        title=result.get('title', ''),
-                        content=result.get('content', ''),
-                        media=[]
-                    )
-                    
+                    if is_learning_query:
+                        content_type = "Courses"  # Force content type for course-related searches
+                    elif is_jobs_query:
+                        content_type = "Jobs"  # Force content type for job searches
+                    elif is_events_query:
+                        content_type = "Events"  # Force content type for event searches
+                    else:
+                        content_type = self._detect_content_type(
+                            url=url,
+                            html="",
+                            title=result.get('title', ''),
+                            content=result.get('content', ''),
+                            media=[]
+                        )                    
                     # Prepare base article data from Tavily
                     tavily_data = {
                         'url': url,
@@ -3504,7 +3600,9 @@ Respond with JSON only."""
                         'content_type': content_type,
                         'extraction_method': 'tavily-api',
                         'is_trending': is_trending_query,  
-                        'trending_keyword': trending_keyword,
+                        'is_learning': is_learning_query,
+                        'is_jobs': is_jobs_query,
+                        'is_events': is_events_query,
                         'country': None,
                         'region': None,
                         'city': None,
@@ -3512,66 +3610,136 @@ Respond with JSON only."""
                         'metadata': {}          
                     }
                     
-                    # Optional: Enrich with LLM
+                    article_data = None  # This will hold the final article data to insert
+                    
                     if enrich_with_llm:
                         logger.info(f"🤖 Enriching with {llm_model.upper()}...")
-                        
-                        if llm_model == 'claude':
-                            enriched = await self.process_with_claude(tavily_data)
-                        elif llm_model == 'gemini':
-                            enriched = await self.process_with_gemini(tavily_data)
-                        elif llm_model == 'ollama':
-                            enriched = await self.process_with_ollama(tavily_data)
-                        else:
-                            logger.warning(f"⚠️ Unknown LLM {llm_model}, using Claude")
-                            enriched = await self.process_with_claude(tavily_data)
-                        
-                        if enriched:
-                            # ✅ FIXED: Only use trending keyword if it's a trending search
-                            keywords_to_store = enriched.keywords
-                            
-                            if is_trending_query and trending_keyword:
-                                # Add trending keyword to existing LLM-generated keywords
-                                if keywords_to_store:
-                                    keywords_to_store = f"{trending_keyword}, {keywords_to_store}"
-                                else:
-                                    keywords_to_store = trending_keyword
-                                logger.info(f"🔥 Added trending keyword to LLM keywords: {trending_keyword}")
-                            
-                            # Use enriched data
-                            article_data = {
-                                'title': enriched.title,
-                                'author': enriched.author or 'Unknown',  # ✅ FIXED: Remove "Tavily Search"
-                                'summary': enriched.summary,
-                                'content': enriched.content,
-                                'url': enriched.url,
-                                'source': enriched.source,
-                                'significance_score': enriched.significance_score,
-                                'complexity_level': enriched.complexity_level,
-                                'published_date': enriched.published_date,
-                                'reading_time': enriched.reading_time,
-                                'content_type_label': enriched.content_type_label,
-                                'topic_category_label': enriched.topic_category_label,
-                                'scraped_date': datetime.now(timezone.utc).isoformat(),
-                                'created_date': datetime.now(timezone.utc).isoformat(),
-                                'updated_date': datetime.now(timezone.utc).isoformat(),
-                                'llm_processed': enriched.llm_processed or f'tavily+{llm_model}',
-                                'keywords': keywords_to_store,  # ✅ FIXED: Use LLM keywords + trending keyword only
-                                'image_url': enriched.image_url,
-                                'image_source': enriched.image_source,
-                                'is_trending': is_trending_query,
-                                'country': None,
-                                'region': None,
-                                'city': None,
-                                'is_remote': False,
-                                'metadata': {}
-                            }
-                            logger.info(f"✅ LLM enrichment successful")
-                            logger.debug(f"   ↳ Enriched title: {enriched.title[:60]}...")
-                        else:
-                            logger.warning(f"⚠️ LLM enrichment failed, using basic Tavily data")
-                            enrich_with_llm = False  # Disable for remaining articles
-                    else:
+                        try:
+                            course_prompt = None
+                            if is_learning_query:
+                                course_prompt = self._get_course_prompt(tavily_data)
+                            elif is_jobs_query:
+                                course_prompt = self._get_job_prompt(tavily_data)
+                            elif is_events_query:
+                                course_prompt = self._get_event_prompt(tavily_data)
+
+                            if llm_model == 'claude':
+                                enriched = await self.process_with_claude(tavily_data, prompt_override=course_prompt)
+                            elif llm_model == 'gemini':
+                                enriched = await self.process_with_gemini(tavily_data, prompt_override=course_prompt)
+                            elif llm_model == 'ollama':
+                                enriched = await self.process_with_ollama(tavily_data, prompt_override=course_prompt)
+                            else:
+                                logger.warning(f"⚠️ Unknown LLM {llm_model}, using Claude")
+                                enriched = await self.process_with_claude(tavily_data, prompt_override=course_prompt)                        
+
+                            if enriched and enriched.metadata:
+                                    # ✅ Successful LLM enrichment
+                                    logger.info(f"✅ LLM enrichment successful for: {enriched.title[:60]}...")
+                                    
+                                    # Add relevant keyword to keywords
+                                    keywords_to_store = enriched.keywords or ""
+                                    if learning_keyword:
+                                        keywords_to_store = f"{learning_keyword}, {keywords_to_store}" if keywords_to_store else learning_keyword
+                                    elif jobs_keyword:
+                                        keywords_to_store = f"{jobs_keyword}, {keywords_to_store}" if keywords_to_store else jobs_keyword
+                                    elif events_keyword:
+                                        keywords_to_store = f"{events_keyword}, {keywords_to_store}" if keywords_to_store else events_keyword
+                                    
+                                    # Extract metadata
+                                    item_metadata = enriched.metadata
+
+                                    if is_learning_query:
+                                        # Ensure required course metadata fields
+                                        if not item_metadata.get('course_title'):
+                                            item_metadata['course_title'] = enriched.title
+                                        if not item_metadata.get('platform'):
+                                            item_metadata['platform'] = domain.split('.')[0].title()
+                                        if not item_metadata.get('course_url'):
+                                            item_metadata['course_url'] = url
+                                        forced_content_type = 'Courses'
+                                        is_remote_flag = True
+                                        log_prefix = "📚 Course"
+                                        logger.info(f"📚 Course Metadata Extracted:")
+                                        logger.info(f"   ↳ Platform: {item_metadata.get('platform')}")
+                                        logger.info(f"   ↳ Instructor: {item_metadata.get('instructor', 'Unknown')}")
+                                        logger.info(f"   ↳ Difficulty: {item_metadata.get('difficulty')}")
+                                        _price = 'Free' if item_metadata.get('is_free') else f"${item_metadata.get('price')}"
+                                        logger.info(f"   ↳ Price: {_price}")
+                                    elif is_jobs_query:
+                                        # Ensure required job metadata fields
+                                        if not item_metadata.get('job_title'):
+                                            item_metadata['job_title'] = enriched.title
+                                        if not item_metadata.get('company'):
+                                            item_metadata['company'] = domain.split('.')[0].title()
+                                        if not item_metadata.get('application_url'):
+                                            item_metadata['application_url'] = url
+                                        forced_content_type = 'Jobs'
+                                        is_remote_flag = item_metadata.get('is_remote', False)
+                                        logger.info(f"💼 Job Metadata Extracted:")
+                                        logger.info(f"   ↳ Title: {item_metadata.get('job_title')}")
+                                        logger.info(f"   ↳ Company: {item_metadata.get('company')}")
+                                        logger.info(f"   ↳ Location: {item_metadata.get('job_location', 'Unknown')}")
+                                        logger.info(f"   ↳ Remote: {item_metadata.get('is_remote')}")
+                                        logger.info(f"   ↳ Salary: {item_metadata.get('salary_range', 'Not disclosed')}")
+                                    elif is_events_query:
+                                        # Ensure required event metadata fields
+                                        if not item_metadata.get('event_name'):
+                                            item_metadata['event_name'] = enriched.title
+                                        if not item_metadata.get('registration_url'):
+                                            item_metadata['registration_url'] = url
+                                        forced_content_type = 'Events'
+                                        is_remote_flag = item_metadata.get('is_virtual', False)
+                                        logger.info(f"📅 Event Metadata Extracted:")
+                                        logger.info(f"   ↳ Event: {item_metadata.get('event_name')}")
+                                        logger.info(f"   ↳ Date: {item_metadata.get('event_date', 'Unknown')}")
+                                        logger.info(f"   ↳ Location: {item_metadata.get('event_location', 'Unknown')}")
+                                        logger.info(f"   ↳ Virtual: {item_metadata.get('is_virtual')}")
+                                        logger.info(f"   ↳ Type: {item_metadata.get('event_type', 'Unknown')}")
+                                    else:
+                                        forced_content_type = content_type
+                                        is_remote_flag = False
+                                        item_metadata = enriched.metadata
+
+                                    article_data = {
+                                        'title': enriched.title,
+                                        'author': enriched.author or item_metadata.get('instructor') or item_metadata.get('company') or 'Unknown',
+                                        'summary': enriched.summary,
+                                        'content': enriched.content,
+                                        'url': enriched.url,
+                                        'source': enriched.source,
+                                        'significance_score': enriched.significance_score,
+                                        'complexity_level': enriched.complexity_level,
+                                        'published_date': enriched.published_date,
+                                        'reading_time': enriched.reading_time or item_metadata.get('duration_hours', 5),
+                                        'content_type_label': forced_content_type,
+                                        'topic_category_label': enriched.topic_category_label or 'Machine Learning',
+                                        'scraped_date': datetime.now(timezone.utc).isoformat(),
+                                        'created_date': datetime.now(timezone.utc).isoformat(),
+                                        'updated_date': datetime.now(timezone.utc).isoformat(),
+                                        'llm_processed': f'tavily+{llm_model}+{forced_content_type.lower()}',
+                                        'keywords': keywords_to_store,
+                                        'image_url': enriched.image_url,
+                                        'image_source': enriched.image_source,
+                                        'is_trending': False,
+                                        'country': enriched.country if hasattr(enriched, 'country') else None,
+                                        'region': enriched.region if hasattr(enriched, 'region') else None,
+                                        'city': enriched.city if hasattr(enriched, 'city') else None,
+                                        'is_remote': is_remote_flag,
+                                        'metadata': item_metadata
+                                    }
+                                    
+                                    logger.info(f"✅ Article prepared with LLM-enriched {forced_content_type} metadata")
+                            else:
+                                logger.warning(f"⚠️ LLM enrichment returned no metadata, using basic data")
+                                raise Exception("LLM returned no metadata") 
+                        except Exception as llm_error:
+                            logger.error(f"❌ LLM enrichment failed: {llm_error}")
+                            logger.warning(f"⚠️ Falling back to basic Tavily data for this {content_type} item")
+                            article_data = None  # Will use fallback below                          
+
+                    if not article_data:
+                        logger.info(f"📊 Using basic Tavily data (no LLM enrichment)")
                         # Use basic Tavily data
                         # Map Tavily score (0.0-1.0) to significance_score (1-10)
                         tavily_score = result.get('score', 0.5)
@@ -3606,9 +3774,15 @@ Respond with JSON only."""
                             if len(domain_name) > 2:
                                 keywords_list.append(domain_name)
                         
-                        # Add trending keyword if applicable
+                        # Add trending/special keyword if applicable
                         if is_trending_query and trending_keyword:
                             keywords_list.insert(0, trending_keyword)  # Put trending keyword first
+                        elif is_jobs_query and jobs_keyword:
+                            keywords_list.insert(0, jobs_keyword)
+                        elif is_events_query and events_keyword:
+                            keywords_list.insert(0, events_keyword)
+                        elif is_learning_query and learning_keyword:
+                            keywords_list.insert(0, learning_keyword)
                         
                         # Fallback to generic AI/Tech keywords only if nothing else found
                         if not keywords_list:
@@ -3624,9 +3798,56 @@ Respond with JSON only."""
                         
                         logger.info(f"🏷️ Extracted keywords from article: {unique_keywords}")
                         
+                        if content_type == "Learning" or is_learning_query:
+                            basic_metadata = {
+                                'course_title': result.get('title', 'Unknown Course'),
+                                'platform': domain.split('.')[0].title(),
+                                'course_url': url,
+                                'is_free': 'free' in result.get('content', '').lower(),
+                                'difficulty': 'Intermediate',
+                                'is_self_paced': True,
+                                'enrollment_open': True,
+                                'instructor': None,
+                                'duration_hours': None,
+                                'price': None,
+                                'rating': None
+                            }
+                        elif is_jobs_query:
+                            content_text_lower = result.get('content', '').lower()
+                            basic_metadata = {
+                                'job_title': result.get('title', 'Unknown Job'),
+                                'company': domain.split('.')[0].title(),
+                                'job_location': 'Remote' if 'remote' in content_text_lower else None,
+                                'is_remote': 'remote' in content_text_lower or 'hybrid' in content_text_lower,
+                                'employment_type': 'Full-time',
+                                'job_type': 'Engineering',
+                                'salary_range': None,
+                                'experience_level': 'Mid',
+                                'skills_required': None,
+                                'application_url': url,
+                                'ai_domain': jobs_keyword or 'Machine Learning'
+                            }
+                        elif is_events_query:
+                            content_text_lower = result.get('content', '').lower()
+                            basic_metadata = {
+                                'event_name': result.get('title', 'Unknown Event'),
+                                'event_date': None,
+                                'event_end_date': None,
+                                'event_location': 'Online' if any(k in content_text_lower for k in ['online', 'virtual', 'webinar']) else None,
+                                'is_virtual': any(k in content_text_lower for k in ['online', 'virtual', 'webinar']),
+                                'event_type': 'Conference',
+                                'event_format': 'Virtual' if any(k in content_text_lower for k in ['online', 'virtual']) else 'In-person',
+                                'event_hosts': None,
+                                'registration_url': url,
+                                'ticket_price': 'Free' if 'free' in content_text_lower else None,
+                                'ai_topics': [events_keyword] if events_keyword else None
+                            }
+                        else:
+                            basic_metadata = {}
+
                         article_data = {
                             'title': result.get('title', 'Unknown Article'),
-                            'author': 'Unknown',  # ✅ FIXED: Use "Unknown" instead of "Tavily Search"
+                            'author': 'Unknown',
                             'summary': result.get('content', '')[:500] or 'No summary available',
                             'content': result.get('content', ''),
                             'url': url,
@@ -3641,15 +3862,15 @@ Respond with JSON only."""
                             'created_date': datetime.now(timezone.utc).isoformat(),
                             'updated_date': datetime.now(timezone.utc).isoformat(),
                             'llm_processed': 'tavily-only',
-                            'keywords': ', '.join(unique_keywords),  # ✅ FIXED: Use extracted keywords from article
+                            'keywords': ', '.join(unique_keywords),
                             'image_url': None,
                             'image_source': None,
                             'is_trending': is_trending_query,
                             'country': None,
                             'region': None,
                             'city': None,
-                            'is_remote': False,
-                            'metadata': {}
+                            'is_remote': is_learning_query or is_jobs_query or is_events_query,
+                            'metadata': basic_metadata
                         }
                     
                     logger.info(f"📝 Prepared tavily article data for insertion: {article_data['title'][:60]}...")
@@ -3730,6 +3951,239 @@ Respond with JSON only."""
                 "articles_inserted": 0,
                 "tavily_search_id": search_id
             }
+
+    def _get_course_prompt(self, scraped_data: Dict[str, Any]) -> str:
+        """
+        Generate optimized LLM prompt for course/learning content extraction.
+        Designed for Ollama models (Mistral, Llama3, DeepSeek, etc.)
+        
+        This prompt extracts comprehensive course metadata including:
+        - Basic course info (title, instructor, platform)
+        - Pricing and certification details
+        - Course structure (modules, prerequisites, outcomes)
+        - Ratings and enrollment statistics
+        - AI-specific categorization
+        """
+        return f"""You are an AI education data extraction specialist. Extract comprehensive course information from the provided content and return ONLY valid JSON.
+
+**Source Content:**
+Title: {scraped_data.get('title', 'Unknown')}
+URL: {scraped_data.get('url', '')}
+Platform: {scraped_data.get('source', '')}
+Content: {scraped_data.get('content', '')[:4000]}
+
+**CRITICAL INSTRUCTIONS:**
+1. Extract ALL course details accurately from the content
+2. Do NOT make up or hallucinate information
+3. If a field is not found, set it to null
+4. Be conservative with pricing - only set if explicitly stated
+5. Extract difficulty from common terms: beginner/intro/basics=Beginner, intermediate/advanced=Intermediate, expert/master=Advanced
+6. Parse ratings as float (4.8/5 → 4.8)
+7. Parse enrollment numbers (500K → 500000, 1M → 1000000)
+
+**REQUIRED JSON FORMAT (copy this structure exactly):**
+{{
+    "title": "Concise course title (max 100 chars)",
+    "author": "Instructor name or 'Platform Name' if unknown",
+    "summary": "3-4 sentence course description with key learning outcomes and target audience",
+    "content": "Detailed course description including modules, topics, what students will learn, and why it matters",
+    "content_type_label": "Courses",
+    "significance_score": 1-10 (8-10 for top universities/platforms like Stanford/MIT/Google, 5-7 for quality paid content, 3-5 for free tutorials, 1-2 for basic content),
+    "complexity_level": "Low" for Beginner, "Medium" for Intermediate, "High" for Advanced,
+    "topic_category_label": "One of: Machine Learning|Deep Learning|Computer Vision|Natural Language Processing|Reinforcement Learning|AI Ethics|Generative AI|Data Science|Neural Networks",
+    "keywords": "comma-separated: platform, instructor, key topics, technologies (e.g., Coursera, Andrew Ng, Neural Networks, TensorFlow, Deep Learning)",
+    "reading_time": estimated_course_duration_in_hours_as_integer,
+    "published_date": "YYYY-MM-DD or null if not found",
+    "image_url": "course thumbnail URL or null",
+    "image_source": "platform name or null",
+    
+    "country": null,
+    "region": null,
+    "city": null,
+    "is_remote": true,
+    
+    "metadata": {{
+        "course_title": "Full official course name",
+        "platform": "Exact platform name: Coursera|Udemy|DeepLearning.AI|edX|YouTube|Pluralsight|LinkedIn Learning|Udacity|Kaggle|Fast.ai",
+        "instructor": "Full instructor name or null if unknown",
+        "provider": "University/Company name (e.g., Stanford, Google, MIT, DeepLearning.AI) or null",
+        "course_url": "Direct course page URL",
+        
+        "duration_hours": estimated_total_hours_as_float_or_null,
+        "duration_weeks": estimated_weeks_to_complete_as_integer_or_null,
+        "difficulty": "Beginner|Intermediate|Advanced",
+        
+        "price": price_in_USD_as_float_or_null (ONLY if explicitly mentioned),
+        "currency": "USD",
+        "is_free": true if free/audit mentioned, false if paid/price mentioned,
+        "has_certificate": true if certificate/certification mentioned, false otherwise,
+        "course_type": "Free" if is_free=true, "Certification" if has_certificate=true and paid, "Paid" if paid but no cert, "Audit" if free with paid cert option,
+        
+        "modules": ["Module 1", "Module 2", ...] or null if not found,
+        "prerequisites": ["Prerequisite 1", "Prerequisite 2", ...] or null if not found,
+        "learning_outcomes": ["Outcome 1", "Outcome 2", ...] or null if not found,
+        "topics_covered": ["Topic 1", "Topic 2", ...] or null if not found,
+        
+        "rating": rating_as_float_0_to_5_or_null (e.g., 4.8),
+        "num_reviews": number_of_reviews_as_integer_or_null,
+        "num_students": enrolled_students_as_integer_or_null,
+        "completion_rate": percentage_as_float_or_null,
+        
+        "enrollment_url": "Direct enrollment URL or same as course_url",
+        "start_date": "YYYY-MM-DD or null for self-paced",
+        "is_self_paced": true for on-demand courses, false for scheduled,
+        "enrollment_open": true if currently enrolling, false if closed,
+        
+        "ai_topics": ["Deep Learning", "Computer Vision", ...] or null,
+        "recommended_for": "Target audience: ML Engineers|Data Scientists|Students|Beginners|Professionals|etc or null",
+        "skill_level_required": "Prerequisites summary: Basic Python|Advanced Math|No prerequisites|etc or null"
+    }}
+}}
+
+**EXTRACTION RULES:**
+- duration_hours: If "4 weeks" → estimate 40 hours (10h/week), "20 hours" → 20, "3 months" → 120 hours
+- price: ONLY set if you see "$", "USD", "EUR", or explicit price mention. If "free" → null
+- rating: Extract from "4.8/5", "4.9 stars", "Rating: 4.7" → 4.8, 4.9, 4.7
+- num_students: "500K enrolled" → 500000, "1.2M students" → 1200000
+- difficulty: "beginner" or "intro" → Beginner, "intermediate" → Intermediate, "advanced" or "expert" → Advanced
+- is_free: true ONLY if explicitly says "free", "no cost", "audit", "$0"
+- has_certificate: true if mentions "certificate", "certification", "credential" upon completion
+
+**IMPORTANT:**
+- Return ONLY the JSON object, no additional text
+- Ensure all fields are present even if null
+- Use null for missing data, not empty strings
+- Keep content and summary factual and informative
+- significance_score: Rate course quality and reputation (Stanford/MIT/Google = 8-10, Udemy = 5-7)
+
+Return the JSON now:"""
+
+    def _get_job_prompt(self, scraped_data: Dict[str, Any]) -> str:
+        """
+        Generate optimized LLM prompt for AI/ML job listing extraction.
+        Only processes Gen AI, Machine Learning, Deep Learning, Neural Networks,
+        Cloud Computing, Quantum Computing, and AI Infrastructure roles.
+        """
+        return f"""You are an AI recruitment data extraction specialist. Extract job listing details from the provided content and return ONLY valid JSON.
+IMPORTANT: Only process jobs in these domains: Generative AI, Machine Learning, Deep Learning, Neural Networks, Cloud AI, Quantum Computing, AI Infrastructure, MLOps, LLMs, Computer Vision, NLP, Data Science (AI-focused). Reject generic software engineering or unrelated roles by setting significance_score to 1.
+
+**Source Content:**
+Title: {scraped_data.get('title', 'Unknown')}
+URL: {scraped_data.get('url', '')}
+Site: {scraped_data.get('source', '')}
+Content: {scraped_data.get('content', '')[:4000]}
+
+**REQUIRED JSON FORMAT:**
+{{
+    "title": "Job title - Company name (max 100 chars)",
+    "author": "Company name",
+    "summary": "2-3 sentence job description covering role, requirements, and what makes this AI role unique",
+    "content": "Full job description including responsibilities, requirements, benefits, and company info",
+    "content_type_label": "Jobs",
+    "significance_score": 1-10 (9-10 for top AI labs like OpenAI/DeepMind/Google Brain, 7-8 for FAANG AI teams, 5-6 for AI startups, 3-4 for regular companies with AI roles, 1-2 if not an AI/ML role),
+    "complexity_level": "Low" for entry-level, "Medium" for mid-level, "High" for senior/staff/principal,
+    "topic_category_label": "One of: Generative AI|Machine Learning|Deep Learning|Computer Vision|NLP|MLOps|AI Infrastructure|Data Science|Reinforcement Learning|Quantum Computing",
+    "keywords": "comma-separated: company, job title, key skills, location (e.g., OpenAI, ML Engineer, Python, PyTorch, San Francisco)",
+    "reading_time": 5,
+    "published_date": "YYYY-MM-DD or null",
+    "image_url": null,
+    "image_source": null,
+
+    "country": null,
+    "region": null,
+    "city": city_extracted_from_location_or_null,
+    "is_remote": true if remote/hybrid mentioned else false,
+
+    "metadata": {{
+        "job_title": "Exact job title",
+        "company": "Company name",
+        "job_location": "City, State/Country or 'Remote' or 'Hybrid - City' or null",
+        "is_remote": true if remote/hybrid, false if on-site,
+        "employment_type": "Full-time|Part-time|Contract|Internship",
+        "job_type": "Engineering|Research|Data Science|Infrastructure|Product|Other",
+        "salary_range": "$120K - $180K" or null if not disclosed,
+        "currency": "USD",
+        "experience_level": "Entry|Mid|Senior|Staff|Principal|Director or null",
+        "skills_required": ["Python", "PyTorch", "LLMs", ...] or null,
+        "education_required": "BS/MS in CS" or null,
+        "application_url": "Direct apply link or same as URL",
+        "application_deadline": "YYYY-MM-DD or null",
+        "ai_domain": "Primary AI domain: Generative AI|Machine Learning|MLOps|AI Infrastructure|Computer Vision|NLP|Data Science",
+        "company_size": "Startup|Series A|Series B|Series C|Public|Enterprise or null",
+        "posted_date": "YYYY-MM-DD or null"
+    }}
+}}
+
+**RULES:**
+- If this is NOT an AI/ML/GenAI related role, set significance_score to 1 and still return valid JSON
+- is_remote: true if title/content mentions "remote", "hybrid", "work from home", "distributed"
+- salary_range: ONLY set if explicitly stated with $ amount. Do NOT guess.
+- skills_required: extract specific technologies, frameworks, tools mentioned
+- experience_level: "Entry" for 0-2 years, "Mid" for 2-5 years, "Senior" for 5+ years
+
+Return ONLY the JSON object, no additional text:"""
+
+    def _get_event_prompt(self, scraped_data: Dict[str, Any]) -> str:
+        """
+        Generate optimized LLM prompt for AI/ML/Cloud event extraction.
+        Only processes AI, cloud computing, and machine learning related events globally.
+        """
+        return f"""You are an AI events data extraction specialist. Extract event details from the provided content and return ONLY valid JSON.
+IMPORTANT: Only process events related to: AI, Machine Learning, Deep Learning, Generative AI, LLMs, Cloud Computing, MLOps, Data Science, Quantum Computing, Computer Vision, NLP, Robotics. Reject unrelated events by setting significance_score to 1.
+
+**Source Content:**
+Title: {scraped_data.get('title', 'Unknown')}
+URL: {scraped_data.get('url', '')}
+Site: {scraped_data.get('source', '')}
+Content: {scraped_data.get('content', '')[:4000]}
+
+**REQUIRED JSON FORMAT:**
+{{
+    "title": "Event name (max 100 chars)",
+    "author": "Primary organizer/host name",
+    "summary": "2-3 sentence event description covering what it is, who should attend, and key highlights",
+    "content": "Full event description including agenda highlights, speakers, topics, and why to attend",
+    "content_type_label": "Events",
+    "significance_score": 1-10 (9-10 for NeurIPS/ICML/ICLR/Google I/O scale, 7-8 for major industry conferences, 5-6 for regional summits, 3-4 for local meetups, 1-2 if not AI/ML related),
+    "complexity_level": "Low" for beginner/general audience, "Medium" for practitioners, "High" for researchers,
+    "topic_category_label": "One of: Generative AI|Machine Learning|Deep Learning|Computer Vision|NLP|MLOps|AI Infrastructure|Data Science|Robotics|Quantum Computing",
+    "keywords": "comma-separated: event name, organizers, key topics, location (e.g., NeurIPS, Montreal, Deep Learning, AI Research, 2025)",
+    "reading_time": 3,
+    "published_date": "YYYY-MM-DD (event start date) or null",
+    "image_url": "event banner/thumbnail URL or null",
+    "image_source": "organizer name or null",
+
+    "country": country_extracted_or_null,
+    "region": state_extracted_or_null,
+    "city": city_extracted_or_null,
+    "is_remote": true if virtual/online, false if in-person or hybrid,
+
+    "metadata": {{
+        "event_name": "Full official event name",
+        "event_date": "YYYY-MM-DD start date or null",
+        "event_end_date": "YYYY-MM-DD end date or null if single day",
+        "event_location": "City, Country or 'Online' or 'Hybrid - City, Country'",
+        "is_virtual": true if online/virtual/webinar, false if in-person,
+        "event_type": "Conference|Summit|Workshop|Meetup|Hackathon|Webinar|Symposium|Expo",
+        "event_format": "In-person|Virtual|Hybrid",
+        "event_hosts": ["Organizer1", "Organizer2"] or null,
+        "speakers": ["Speaker Name 1", "Speaker Name 2"] or null (up to 5 notable speakers),
+        "registration_url": "Direct registration link or same as URL",
+        "ticket_price": "Free" or "$299" or "$299 - $999" or null if unknown,
+        "registration_deadline": "YYYY-MM-DD or null",
+        "ai_topics": ["LLMs", "Computer Vision", "MLOps", ...] or null,
+        "target_audience": "Researchers|Practitioners|Developers|Students|Everyone|Business Leaders or null"
+    }}
+}}
+
+**RULES:**
+- If NOT an AI/ML/cloud event, set significance_score to 1 and still return valid JSON
+- event_date: Use the earliest/start date. Format as YYYY-MM-DD
+- is_virtual: true for webinar/online/virtual, false for in-person venues
+- speakers: Only include names explicitly mentioned in the content
+- ticket_price: "Free" if free registration, dollar amount if priced, null if not mentioned
+
+Return ONLY the JSON object, no additional text:"""
 
 
 # Admin interface

@@ -9,7 +9,8 @@ import sys
 import logging
 import asyncio
 import uuid
-from datetime import datetime
+import traceback
+from datetime import datetime,timezone
 from typing import Optional, List, Dict, Any
 from fastapi import Body, APIRouter, Depends, HTTPException, Request, Query, Header
 
@@ -1262,4 +1263,186 @@ async def get_tavily_search_history(
         
     except Exception as e:
         logger.error(f"❌ Failed to fetch search history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tavily/search/courses")
+async def search_learning_content(
+    request: Request,
+    query: str = Query(..., description="Learning search query (e.g., 'Generative AI courses')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for courses)"),
+    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI learning content (courses, tutorials) using Tavily API.
+    Automatically formats query as "learning | {query}" for optimal results.
+    
+    Example: 
+        POST /admin/tavily/search/courses?query=Generative AI&max_results=20
+        
+    Returns structured course data with metadata (difficulty, price, ratings, etc.)
+    """
+    try:
+        # Verify admin API key
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+        
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+        
+        logger.info(f"📚 Admin learning search: '{query}' (max_results={max_results}, llm={llm_model})")
+        
+        # Format query for learning content
+        formatted_query = f"learning | {query}"
+        
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+        
+        # Perform learning search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+        
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Courses",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Learning search error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tavily/search/jobs")
+async def search_jobs_content(
+    request: Request,
+    query: str = Query(..., description="Job search query (e.g., 'ML Engineer Generative AI')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for jobs)"),
+    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI/ML job listings using Tavily API.
+    Searches linkedin.com/jobs, indeed.com, greenhouse.io.
+    Only retrieves Gen AI, Machine Learning, Deep Learning, Neural Networks,
+    Cloud Computing, Quantum Computing, AI Infrastructure roles.
+
+    Example:
+        POST /admin/tavily/search/jobs?query=ML Engineer Generative AI&max_results=20
+    """
+    try:
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+        logger.info(f"💼 Admin jobs search: '{query}' (max_results={max_results}, llm={llm_model})")
+
+        # Format query for jobs content
+        formatted_query = f"jobs | {query}"
+
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+
+        # Perform jobs search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Jobs",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Jobs search error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tavily/search/events")
+async def search_events_content(
+    request: Request,
+    query: str = Query(..., description="Event search query (e.g., 'AI Summit 2025')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for events)"),
+    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI/ML/Cloud events using Tavily API.
+    Searches eventbrite.com, meetup.com, lu.ma.
+    Only retrieves AI, cloud computing, and machine learning related events globally.
+
+    Example:
+        POST /admin/tavily/search/events?query=NeurIPS 2025&max_results=20
+    """
+    try:
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+        logger.info(f"📅 Admin events search: '{query}' (max_results={max_results}, llm={llm_model})")
+
+        # Format query for events content
+        formatted_query = f"events | {query}"
+
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+
+        # Perform events search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Events",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Events search error: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))

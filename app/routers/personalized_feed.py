@@ -282,7 +282,41 @@ async def get_personalized_feed(
     db: DatabaseService = Depends(get_database_service),
     current_user: Optional[Dict] = Depends(get_current_user)
 ):
-    """Get enhanced personalized content feed with advanced filtering"""
+    """
+    Get personalized content feed with all content types including courses
+    
+    Request Body:
+    {
+      "interests": [1, 2, 3],           # Category IDs
+      "content_types": [1, 2, 3, 5],    # Content type IDs (5 = Courses) ✅
+      "publishers": ["OpenAI", "Google"],
+      "time_filter": "7d",
+      "search_query": "",
+      "limit": 50
+    }
+    
+    Returns:
+    {
+      "grouped_content": [
+        {
+          "category": "AI Research",
+          "category_id": 1,
+          "items": [Article, Article, ...]  # Mixed content types including courses ✅
+        },
+        ...
+      ],
+      "total_items": 127,
+      "filters_applied": {
+        "interests": ["AI Research", "ML Platforms"],
+        "content_types": ["Blogs", "Podcasts", "Courses"],  # ✅ Includes Courses
+        "publishers": ["OpenAI"],
+        "time_filter": "7d",
+        "search_query": ""
+      }
+    }
+    
+    Each Article in items[] includes course-specific fields when content_type_label = "Courses"
+    """
     
     try:
         # Extract and validate user preferences with enhanced error handling
@@ -625,7 +659,9 @@ async def get_personalized_feed(
                     total_views=item.get('total_views', 0),
                     total_shares=item.get('total_shares', 0),
                     total_comments=item.get('total_comments', 0),
-                    engagement_score=item.get('engagement_score', 0.0)
+                    engagement_score=item.get('engagement_score', 0.0),
+                    metadata=item.get('metadata', {})
+
                 )
                 article_objects.append(article)
             
@@ -1042,7 +1078,6 @@ async def get_filtering_metadata(
             }
         }
 
-
 @router.get("/publishers")
 async def get_publishers(
     category_id: Optional[int] = Query(None, description="Filter publishers by category_id"),
@@ -1200,3 +1235,168 @@ async def get_content_stats(
     except Exception as e:
         logger.error(f"Error getting content stats: {str(e)}")
         return {"overall": {}, "by_content_type": [], "time_filter": time_filter}
+
+@router.get("/courses")
+async def get_learning_courses(
+    topic: Optional[str] = Query(None, description="Filter by AI topic"),
+    difficulty: Optional[str] = Query(None, description="Filter by difficulty: Beginner/Intermediate/Advanced"),
+    is_free: Optional[bool] = Query(None, description="Filter free courses only"),
+    platform: Optional[str] = Query(None, description="Filter by platform (Coursera, Udemy, etc.)"),
+    min_rating: Optional[float] = Query(None, ge=0.0, le=5.0, description="Minimum rating (0-5)"),
+    limit: int = Query(50, ge=1, le=200, description="Max courses to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """
+    Get AI learning courses/tutorials filtered by various criteria.
+    Returns structured course data with metadata.
+    
+    Query Parameters:
+        - topic: AI topic (e.g., "Machine Learning", "Computer Vision")
+        - difficulty: Course difficulty level
+        - is_free: Filter free courses only
+        - platform: Learning platform name
+        - min_rating: Minimum course rating
+        - limit: Max courses to return (default 50)
+        - offset: Pagination offset
+    
+    Returns:
+        JSON with courses array and metadata
+    """
+    try:
+        logger.info(f"📚 Learning courses request: topic={topic}, difficulty={difficulty}, free={is_free}, platform={platform}")
+        
+        # Build dynamic query with filters
+        filters = ["content_type_id = 5"]  # Courses content type
+        params = []
+        
+        if topic:
+            filters.append("(topic_category_label ILIKE %s OR keywords ILIKE %s)")
+            params.extend([f"%{topic}%", f"%{topic}%"])
+        
+        if difficulty:
+            filters.append("metadata->>'difficulty' = %s")
+            params.append(difficulty)
+        
+        if is_free is not None:
+            filters.append("(metadata->>'is_free')::boolean = %s")
+            params.append(is_free)
+        
+        if platform:
+            filters.append("metadata->>'platform' ILIKE %s")
+            params.append(f"%{platform}%")
+        
+        if min_rating is not None:
+            filters.append("(metadata->>'rating')::float >= %s")
+            params.append(min_rating)
+        
+        where_clause = " AND ".join(filters)
+        
+        query = f"""
+            SELECT 
+                id,
+                title,
+                author,
+                summary,
+                content,
+                url,
+                source,
+                significance_score,
+                complexity_level,
+                published_date,
+                reading_time,
+                topic_category_label,
+                keywords,
+                image_url,
+                metadata,
+                created_date,
+                updated_date
+            FROM articles
+            WHERE {where_clause}
+            ORDER BY 
+                significance_score DESC,
+                COALESCE((metadata->>'rating')::float, 0) DESC,
+                COALESCE((metadata->>'num_students')::int, 0) DESC,
+                published_date DESC
+            LIMIT %s OFFSET %s
+        """
+        
+        params.extend([limit, offset])
+        
+        courses = db.execute_query(query, tuple(params), fetch_all=True)
+        
+        if not courses:
+            return {
+                "courses": [],
+                "count": 0,
+                "filters": {
+                    "topic": topic,
+                    "difficulty": difficulty,
+                    "is_free": is_free,
+                    "platform": platform,
+                    "min_rating": min_rating
+                },
+                "pagination": {"limit": limit, "offset": offset}
+            }
+        
+        # Transform courses with metadata
+        transformed_courses = []
+        for course in courses:
+            course_dict = dict(course)
+            
+            # Parse metadata JSONB
+            metadata = course_dict.get('metadata', {})
+            if isinstance(metadata, str):
+                import json
+                metadata = json.loads(metadata)
+            
+            transformed_courses.append({
+                "id": course_dict['id'],
+                "title": course_dict['title'],
+                "instructor": course_dict['author'],
+                "summary": course_dict['summary'],
+                "url": course_dict['url'],
+                "platform": metadata.get('platform'),
+                "difficulty": metadata.get('difficulty'),
+                "duration_hours": metadata.get('duration_hours'),
+                "price": metadata.get('price'),
+                "is_free": metadata.get('is_free', False),
+                "has_certificate": metadata.get('has_certificate', False),
+                "course_type": metadata.get('course_type'),
+                "rating": metadata.get('rating'),
+                "num_reviews": metadata.get('num_reviews'),
+                "num_students": metadata.get('num_students'),
+                "topics_covered": metadata.get('topics_covered', []),
+                "prerequisites": metadata.get('prerequisites', []),
+                "learning_outcomes": metadata.get('learning_outcomes', []),
+                "enrollment_url": metadata.get('enrollment_url'),
+                "ai_topics": metadata.get('ai_topics', []),
+                "image_url": course_dict.get('image_url'),
+                "significance_score": course_dict['significance_score'],
+                "created_date": course_dict['created_date'],
+                "updated_date": course_dict['updated_date']
+            })
+        
+        logger.info(f"✅ Returning {len(transformed_courses)} courses")
+        
+        return {
+            "courses": transformed_courses,
+            "count": len(transformed_courses),
+            "filters": {
+                "topic": topic,
+                "difficulty": difficulty,
+                "is_free": is_free,
+                "platform": platform,
+                "min_rating": min_rating
+            },
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "has_more": len(transformed_courses) == limit
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching learning courses: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))

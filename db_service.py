@@ -7,6 +7,7 @@ Single database backend using psycopg2 with connection pooling
 import os
 import json
 import logging
+import string
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
@@ -68,10 +69,24 @@ class PostgreSQLService:
                 self.connection_pool.putconn(conn)
     
     def execute_query(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = True) -> Optional[Any]:
-        """Execute a query with automatic connection management"""
-        import os
-        import traceback
+        """Execute a query with automatic connection management
+        Args:
+            query: SQL query string
+            params: Query parameters tuple
+            fetch_one: If True, return single row dict instead of list
+            fetch_all: If False, don't fetch results (for INSERT/UPDATE/DELETE without RETURNING)
+        
+        Returns:
+            - Single RealDictRow if fetch_one=True
+            - List of RealDictRow if fetch_all=True
+            - Number of affected rows if fetch_all=False
+            - None if error occurs
+        """
         DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+        query_upper = query.strip().upper()
+        has_returning = 'RETURNING' in query_upper
+        is_select = query_upper.startswith('SELECT')
         
         if DEBUG:
             logger.debug(f"🔍 Executing query: {query[:200]}{'...' if len(query) > 200 else ''}")
@@ -81,20 +96,20 @@ class PostgreSQLService:
                 with conn.cursor() as cursor:
                     try:
                         cursor.execute(query, params)
-                        conn.commit()
-                        
-                        if fetch_one:
-                            result = cursor.fetchone()
-                            if DEBUG:
-                                logger.debug(f"🔍 Query returned one result: {result}")
-                            return result
-                        elif fetch_all:
-                            results = cursor.fetchall()
-                            if DEBUG:
-                                logger.debug(f"🔍 Query returned {len(results)} results")
-                                if results:
-                                    logger.debug(f"🔍 First result type: {type(results[0])}")
-                            return results
+                        conn.commit()                  
+                        if is_select or has_returning:
+                            if fetch_one:
+                                result = cursor.fetchone()
+                                if DEBUG:
+                                    logger.debug(f"🔍 Query returned one result: {result}")
+                                return result
+                            elif fetch_all:
+                                results = cursor.fetchall()
+                                if DEBUG:
+                                    logger.debug(f"🔍 Query returned {len(results)} results")
+                                    if results:
+                                        logger.debug(f"🔍 First result type: {type(results[0])}")
+                                return results
                         else:
                             rowcount = cursor.rowcount
                             if DEBUG:
@@ -863,7 +878,7 @@ class PostgreSQLService:
                         created_date
                     FROM articles
                     WHERE is_trending = TRUE
-                      AND created_date >= NOW() - INTERVAL '%s days'
+                      AND created_date >= NOW() - INTERVAL '{days} days'
                       AND keywords IS NOT NULL
                       AND keywords != ''
                 ),
@@ -895,7 +910,7 @@ class PostgreSQLService:
                 LIMIT %s
             """
             
-            results = self.execute_query(query, (days, limit), fetch_all=True)
+            results = self.execute_query(query, (limit,), fetch_all=True)
             
             if not results:
                 logger.info(f"ℹ️ No trending keywords found for last {days} day(s)")

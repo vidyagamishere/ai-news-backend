@@ -351,7 +351,8 @@ class ContentFilteringService:
                     a.content_type_id,
                     a.category_id,
                     a.publisher_id,
-                    ct.name as content_type_label,
+                    a.metadata,
+                    ct.display_name as content_type_label,
                     c.name as category_label,
                     -- User interaction flags (personal state)
                     CASE WHEN ai_like.id IS NOT NULL THEN TRUE ELSE FALSE END as has_liked,
