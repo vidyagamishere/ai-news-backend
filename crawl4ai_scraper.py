@@ -3775,14 +3775,14 @@ Return ONLY the JSON object, nothing else."""
                                 keywords_list.append(domain_name)
                         
                         # Add trending/special keyword if applicable
-                        if is_trending_query and trending_keyword:
-                            keywords_list.insert(0, trending_keyword)  # Put trending keyword first
-                        elif is_jobs_query and jobs_keyword:
-                            keywords_list.insert(0, jobs_keyword)
-                        elif is_events_query and events_keyword:
-                            keywords_list.insert(0, events_keyword)
-                        elif is_learning_query and learning_keyword:
-                            keywords_list.insert(0, learning_keyword)
+                        #if is_trending_query and trending_keyword:
+                        #    keywords_list.insert(0, trending_keyword)  # Put trending keyword first
+                        #elif is_jobs_query and jobs_keyword:
+                        #    keywords_list.insert(0, jobs_keyword)
+                        #elif is_events_query and events_keyword:
+                        #    keywords_list.insert(0, events_keyword)
+                        #elif is_learning_query and learning_keyword:
+                        #    keywords_list.insert(0, learning_keyword)
                         
                         # Fallback to generic AI/Tech keywords only if nothing else found
                         if not keywords_list:

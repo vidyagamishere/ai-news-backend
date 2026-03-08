@@ -86,7 +86,7 @@ class PostgreSQLService:
 
         query_upper = query.strip().upper()
         has_returning = 'RETURNING' in query_upper
-        is_select = query_upper.startswith('SELECT')
+        is_select = query_upper.startswith('SELECT') or query_upper.startswith('WITH')
         
         if DEBUG:
             logger.debug(f"🔍 Executing query: {query[:200]}{'...' if len(query) > 200 else ''}")
@@ -869,7 +869,7 @@ class PostgreSQLService:
         try:
             logger.info(f"🔥 Fetching trending keywords for last {days} day(s), limit: {limit}")
             
-            query = """
+            query = f"""
                 WITH trending_articles AS (
                     -- Get articles marked as trending within the time window
                     SELECT 

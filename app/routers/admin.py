@@ -1271,7 +1271,7 @@ async def search_learning_content(
     query: str = Query(..., description="Learning search query (e.g., 'Generative AI courses')"),
     max_results: int = Query(10, ge=1, le=50),
     enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for courses)"),
-    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    llm_model: str = Query('ollama', description="LLM to use: claude, gemini, ollama"),
     admin_api_key: str = Header(..., alias='X-Admin-API-Key')
 ):
     """
