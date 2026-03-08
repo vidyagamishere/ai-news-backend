@@ -22,12 +22,10 @@ class AuthService:
     def __init__(self):
         self.jwt_secret = os.getenv('JWT_SECRET_KEY', 'vidyagam-jwt-secret-2025')
         self.google_client_id = os.getenv('GOOGLE_CLIENT_ID', '')
-        logger.info(f"🔐 AuthService initialized - JWT secret length: {len(self.jwt_secret)}, Google Client ID: {'✅' if self.google_client_id else '❌'}")
     
     def create_jwt_token(self, user_data: Dict[str, Any]) -> str:
         """Create JWT token with HMAC-SHA256 signature"""
         try:
-            logger.info(f"🔐 Creating JWT token for user: {user_data.get('email', 'unknown')}")
             
             # Create JWT header
             header = {
@@ -78,9 +76,6 @@ class AuthService:
     def verify_jwt_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Verify JWT token and extract user data"""
         try:
-            logger.info("🔐 Verifying JWT token...")
-            logger.info(f"🔐 Token (first 50 chars): {token[:50]}...")
-            logger.info(f"🔐 JWT_SECRET (first 10 chars): {self.jwt_secret[:10]}...")
             
             # Split token into parts
             parts = token.split('.')
@@ -108,9 +103,6 @@ class AuthService:
             while len(expected_with_padding) % 4:
                 expected_with_padding += '='
             
-            logger.info(f"🔐 Received signature: {signature_to_verify[:20]}...")
-            logger.info(f"🔐 Expected signature: {expected_with_padding[:20]}...")
-            
             if signature_to_verify != expected_with_padding:
                 logger.warning("❌ JWT token signature verification failed - signatures don't match")
                 logger.warning(f"❌ Received signature length: {len(signature_to_verify)}, Expected: {len(expected_with_padding)}")
@@ -130,7 +122,6 @@ class AuthService:
                 logger.warning("❌ JWT token has expired")
                 return None
             
-            logger.info(f"✅ JWT token verified successfully for: {payload_data.get('email', 'unknown')}")
             return payload_data
             
         except Exception as e:
@@ -290,7 +281,6 @@ class AuthService:
                                 logger.warning(f"⚠️ Skipping invalid publisher ID: {pid}")
                                 continue
                     cleaned_preferences['publisher_ids_selected'] = cleaned_ids
-                    logger.info(f"🧹 Cleaned publisher_ids: {len(publisher_ids)} -> {len(cleaned_ids)}")
             
             # Clean category_ids_selected - ensure all are integers
             if 'category_ids_selected' in cleaned_preferences:

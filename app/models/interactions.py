@@ -7,7 +7,7 @@ Maps to existing database schema with tables:
 - article_collections, collection_articles
 """
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, date
 from enum import Enum, IntEnum
 
@@ -142,21 +142,30 @@ class BookmarkArticle(BaseModel):
     """Article in bookmark list"""
     id: int
     title: str
-    summary: Optional[str]
+    summary: Optional[str] = None
     url: str
-    source_name: str
-    published_date: Optional[str]
-    content_type_name: str
-    thumbnail_url: Optional[str]
-    category_name: Optional[str]
-    significance: Optional[int]
-    bookmarked_at: datetime
+    source: Optional[str] = None
+    source_name: Optional[str] = None
+    published_date: Optional[Union[datetime, str]] = None
+    content_type: Optional[str] = None
+    content_type_name: Optional[str] = None
+    content_type_label: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    category_name: Optional[str] = None
+    significance: Optional[int] = None
+    bookmarked_at: Optional[datetime] = None
     engagement_score: Optional[float] = 0
+    likes_count: Optional[int] = 0
+    comments_count: Optional[int] = 0
+    bookmarks_count: Optional[int] = 0
+    shares_count: Optional[int] = 0
 
 class BookmarksListResponse(BaseModel):
     """List of bookmarked articles"""
     articles: List[BookmarkArticle]
-    count: int
+    count: Optional[int] = 0
+    total: Optional[int] = None
+    content_type_filter: Optional[str] = None
 
 # ==========================================
 # READING STREAK MODELS

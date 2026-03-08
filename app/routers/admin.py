@@ -7,6 +7,10 @@ Handles admin-only endpoints for source management and system control
 import os
 import sys
 import logging
+import asyncio
+import uuid
+import traceback
+from datetime import datetime,timezone
 from typing import Optional, List, Dict, Any
 from fastapi import Body, APIRouter, Depends, HTTPException, Request, Query, Header
 
@@ -19,11 +23,15 @@ from app.services.content_service import ContentService
 from db_service import get_database_service
 from scheduler_service import get_scheduler
 from app.services.shorts_service import create_shorts_for_articles
+from crawl4ai_scraper import Crawl4AIScraper
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin")
+
+# Global job tracker for background scraping jobs
+scraping_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 def get_content_service() -> ContentService:
@@ -36,6 +44,13 @@ def require_admin_access(request: Request) -> bool:
     # Check for admin API key first
     admin_api_key = request.headers.get('X-Admin-API-Key')
     expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+
+    # 🐛 DEBUG: Log what we're receiving
+    #logger.debug(f"🔑 Admin access check:")
+    #logger.debug(f"   Received API key: {admin_api_key}")
+    #logger.debug(f"   Expected API key: {expected_api_key}")
+    #logger.debug(f"   Match: {admin_api_key == expected_api_key}")
+    #logger.debug(f"   All headers: {dict(request.headers)}")
     
     if admin_api_key and admin_api_key == expected_api_key:
         return True
@@ -454,21 +469,92 @@ async def get_scheduler_status(
         )
 
 
+@router.post("/scraping/trigger")
+async def trigger_content_scraping(
+    content_type: str = Body(..., description="Content type: blog, podcast, or video"),
+    llm_model: str = Body('gemini', description="LLM model to use: claude, gemini, huggingface, or ollama"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Trigger scraping for specific content type with LLM model selection
+    Frontend endpoint for ScrapingControls component
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    logger.info(f"🔧 Admin scraping triggered - Type: {content_type}, Model: {llm_model}")
+    
+    # Validate LLM model parameter
+    if llm_model not in ['claude', 'gemini', 'huggingface', 'ollama']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid llm_model. Must be 'claude', 'gemini', 'huggingface', or 'ollama'"
+        )
+    
+    # Validate content type
+    if content_type not in ['blog', 'podcast', 'video']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid content_type. Must be 'blog', 'podcast', or 'video'"
+        )
+    
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+        scraper = Crawl4AIScraper()
+        
+        # Route to appropriate scraping function based on content type
+        if content_type == 'blog':
+            # RSS feed scraping
+            result = await scraper.scrape_rss_feeds(llm_model=llm_model, scrape_frequency=1)
+            return {
+                "success": True,
+                "message": f"RSS feed scraping completed with {llm_model}",
+                "content_type": "blog",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+        elif content_type == 'podcast':
+            # Podcast scraping
+            result = await scraper.scrape_podcasts(llm_model=llm_model)
+            return {
+                "success": True,
+                "message": f"Podcast scraping completed with {llm_model}",
+                "content_type": "podcast",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+        elif content_type == 'video':
+            # Video scraping
+            result = await scraper.scrape_videos(llm_model=llm_model)
+            return {
+                "success": True,
+                "message": f"Video scraping completed with {llm_model}",
+                "content_type": "video",
+                "llm_model": llm_model,
+                "result": result
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ Admin scraping failed for {content_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/scrape")
 async def trigger_scraping(
     llm_model: str = Query('claude', description="LLM model to use: claude, gemini, or huggingface"),
     scrape_frequency: int = Query(1, description="Scrape frequency in days: 1 (daily), 7 (weekly), 30 (monthly)"),
-    admin_key: str = Header(None, alias="X-Admin-API-Key")
+    admin_access: bool = Depends(require_admin_access)
 ):
     """
-    Trigger admin-initiated scraping with LLM model selection and frequency filtering
+    Trigger admin-initiated scraping as background job (returns immediately with job_id)
+    Use /scrape/status/{job_id} to check progress
     """
     # Validate admin authentication
-    ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
-    if not admin_key or admin_key != ADMIN_API_KEY:
+    if not admin_access:
         raise HTTPException(status_code=401, detail="Invalid admin API key")
-    
-    logger.info(f"🔧 Admin scraping triggered with model: {llm_model}, frequency: {scrape_frequency} days")
     
     # Validate frequency parameter
     if scrape_frequency not in [1, 7, 30]:
@@ -484,7 +570,44 @@ async def trigger_scraping(
             detail="Invalid llm_model. Must be 'claude', 'gemini', 'huggingface', or 'ollama'"
         )
     
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
+    
+    # Initialize job status
+    scraping_jobs[job_id] = {
+        'job_id': job_id,
+        'status': 'started',
+        'llm_model': llm_model,
+        'scrape_frequency': scrape_frequency,
+        'started_at': datetime.utcnow().isoformat(),
+        'progress': 'Initializing scraping...',
+        'articles_found': 0,
+        'articles_inserted': 0,
+        'sources_scraped': 0,
+        'error': None
+    }
+    
+    logger.info(f"🔧 Admin scraping job {job_id} created with model: {llm_model}, frequency: {scrape_frequency} days")
+    
+    # Start scraping in background (non-blocking)
+    asyncio.create_task(_run_scraping_job(job_id, llm_model, scrape_frequency))
+    
+    # Return immediately with job ID
+    return {
+        'success': True,
+        'message': 'Scraping job started in background',
+        'job_id': job_id,
+        'status_endpoint': f'/admin/scrape/status/{job_id}',
+        'estimated_duration': '5-15 minutes depending on sources'
+    }
+
+
+async def _run_scraping_job(job_id: str, llm_model: str, scrape_frequency: int):
+    """Background task to run scraping job"""
     try:
+        scraping_jobs[job_id]['status'] = 'running'
+        scraping_jobs[job_id]['progress'] = 'Fetching sources...'
+        
         # Get database service
         from db_service import get_database_service
         db = get_database_service()
@@ -493,6 +616,9 @@ async def trigger_scraping(
         from crawl4ai_scraper import AdminScrapingInterface
         admin_interface = AdminScrapingInterface(db)
         
+        logger.info(f"🚀 Job {job_id}: Starting scraping process...")
+        scraping_jobs[job_id]['progress'] = 'Scraping articles with LLM...'
+        
         # Run scraping with selected model and frequency
         result = await admin_interface.initiate_scraping(
             admin_email="admin@vidyagam.com",
@@ -500,10 +626,823 @@ async def trigger_scraping(
             scrape_frequency=scrape_frequency
         )
         
-        return result
+        # Update job with results
+        scraping_jobs[job_id]['status'] = 'completed'
+        scraping_jobs[job_id]['completed_at'] = datetime.utcnow().isoformat()
+        scraping_jobs[job_id]['progress'] = 'Completed successfully'
+        scraping_jobs[job_id]['articles_found'] = result.get('articles_found', 0)
+        scraping_jobs[job_id]['articles_inserted'] = result.get('articles_inserted', 0)
+        scraping_jobs[job_id]['sources_scraped'] = result.get('sources_scraped', 0)
+        scraping_jobs[job_id]['result'] = result
+        
+        logger.info(f"✅ Job {job_id}: Completed successfully - {result.get('articles_inserted', 0)} articles inserted")
         
     except Exception as e:
-        logger.error(f"❌ Admin scraping failed: {str(e)}")
+        logger.error(f"❌ Job {job_id}: Failed - {str(e)}")
+        scraping_jobs[job_id]['status'] = 'failed'
+        scraping_jobs[job_id]['completed_at'] = datetime.utcnow().isoformat()
+        scraping_jobs[job_id]['progress'] = f'Failed: {str(e)}'
+        scraping_jobs[job_id]['error'] = str(e)
+
+
+@router.get("/scrape/status/{job_id}")
+async def get_scraping_status(
+    job_id: str,
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get status of a scraping job
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    if job_id not in scraping_jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    return scraping_jobs[job_id]
+
+
+@router.get("/scrape/jobs")
+async def list_scraping_jobs(
+    admin_access: bool = Depends(require_admin_access),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    List recent scraping jobs
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    # Return most recent jobs
+    jobs_list = list(scraping_jobs.values())
+    jobs_list.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+    
+    return {
+        'jobs': jobs_list[:limit],
+        'total': len(jobs_list)
+    }
+
+# ==================== ENHANCED ARTICLE MANAGEMENT (NEW) ====================
+
+@router.get("/articles/filtered")
+async def get_filtered_articles(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    category_id: Optional[int] = Query(None),
+    publisher_id: Optional[int] = Query(None),
+    llm_model: Optional[str] = Query(None),
+    from_date: Optional[str] = Query(None),
+    to_date: Optional[str] = Query(None),
+    content_type_id: Optional[int] = Query(None),
+    search_query: Optional[str] = Query(None),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get filtered articles with advanced search options
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        db = get_database_service()
+        
+        # Build dynamic WHERE clause
+        where_clauses = []
+        params = []
+        
+        if category_id:
+            where_clauses.append("a.category_id = %s")
+            params.append(category_id)
+        
+        if publisher_id:
+            where_clauses.append("a.publisher_id = %s")
+            params.append(publisher_id)
+        
+        if llm_model:
+            where_clauses.append("a.llm_processed = %s")
+            params.append(llm_model)
+        
+        if from_date:
+            where_clauses.append("a.scraped_date >= %s")
+            params.append(from_date)
+        
+        if to_date:
+            where_clauses.append("a.scraped_date <= %s")
+            params.append(to_date)
+        
+        if content_type_id:
+            where_clauses.append("a.content_type_id = %s")
+            params.append(content_type_id)
+        
+        if search_query:
+            where_clauses.append("(a.title ILIKE %s OR a.summary ILIKE %s)")
+            search_pattern = f"%{search_query}%"
+            params.extend([search_pattern, search_pattern])
+        
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        # Get total count
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM articles a
+            WHERE {where_sql}
+        """
+        count_result = db.execute_query(count_query, tuple(params), fetch_all=True)
+        total = count_result[0]['total'] if count_result and len(count_result) > 0 else 0
+        
+        # Get paginated results with joins
+        offset = (page - 1) * page_size
+        params.extend([page_size, offset])
+        
+        articles_query = f"""
+            SELECT 
+                a.id, a.title, a.url, a.summary, a.author, a.source,
+                a.significance_score, a.complexity_level, a.reading_time,
+                a.published_date, a.scraped_date, CAST(a.keywords AS TEXT), a.llm_processed,
+                a.content_type_id, a.category_id, a.publisher_id,
+                a.image_url, a.is_yt_shorts, a.is_insta_reels,
+                c.name as category_name,
+                p.publisher_name,
+                ct.name as content_type_name
+            FROM articles a
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
+            LEFT JOIN publishers_master p ON a.publisher_id = p.id
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            WHERE {where_sql}
+            ORDER BY a.scraped_date DESC
+            LIMIT %s OFFSET %s
+        """
+        
+        articles = db.execute_query(articles_query, tuple(params), fetch_all=True)
+        
+        return {
+            "success": True,
+            "articles": articles or [],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch filtered articles: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/articles/{article_id}")
+async def delete_article(
+    article_id: int,
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Delete a single article by ID
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        db = get_database_service()
+        
+        # Check if article exists
+        check_query = "SELECT id FROM articles WHERE id = %s"
+        article = db.execute_query(check_query, (article_id,), fetch_all=True)
+        
+        if not article or len(article) == 0:
+            raise HTTPException(status_code=404, detail=f"Article {article_id} not found")
+        
+        # Delete article
+        delete_query = "DELETE FROM articles WHERE id = %s"
+        db.execute_query(delete_query, (article_id,), fetch_all=False)
+        
+        logger.info(f"✅ Article {article_id} deleted by admin")
+        
+        return {
+            "success": True,
+            "message": f"Article {article_id} deleted successfully",
+            "article_id": article_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to delete article {article_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/articles/bulk-delete")
+async def bulk_delete_articles(
+    article_ids: List[int] = Body(..., embed=True),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Delete multiple articles by IDs
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        if not article_ids:
+            raise HTTPException(status_code=400, detail="No article IDs provided")
+        
+        db = get_database_service()
+        
+        # Use parameterized query with IN clause
+        placeholders = ','.join(['%s'] * len(article_ids))
+        delete_query = f"DELETE FROM articles WHERE id IN ({placeholders}) RETURNING id"
+        
+        deleted = db.execute_query(delete_query, tuple(article_ids), fetch_all=True)
+        deleted_count = len(deleted) if deleted else 0
+        
+        logger.info(f"✅ Bulk deleted {deleted_count} articles by admin")
+        
+        return {
+            "success": True,
+            "message": f"{deleted_count} articles deleted successfully",
+            "deleted_count": deleted_count,
+            "requested_count": len(article_ids)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Bulk delete failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== ENHANCED SOURCE MANAGEMENT (NEW) ====================
+
+@router.get("/sources/by-type")
+async def get_sources_by_type(
+    content_type: str = Query(..., description="blogs, podcasts, or videos"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get sources filtered by content type (blogs/podcasts/videos)
+    Returns from ai_sources (blogs), ai_podcasts, or ai_videos table
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        # Map content type to table
+        if content_type.lower() == "podcasts":
+            table = "ai_podcasts"
+            url_field = "url"
+        elif content_type.lower() == "videos":
+            table = "ai_videos"
+            url_field = "url"
+        elif content_type.lower() == "blogs":
+            table = "ai_sources"
+            url_field = "rss_url"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid content_type. Use: blogs, podcasts, or videos")
+        
+        db = get_database_service()
+        
+        # Query structure varies slightly by table
+        if table == "ai_sources":
+            query = f"""
+                SELECT 
+                    s.id, s.name, s.rss_url as url, s.website, s.category_id, 
+                    s.priority, s.enabled, s.is_active, 
+                    s.scrape_frequency_days, s.updated_date as last_scraped_date,
+                    c.name as category_name
+                FROM {table} s
+                LEFT JOIN ai_categories_master c ON s.category_id = c.id
+                ORDER BY s.priority DESC, s.name ASC
+            """
+        else:
+            query = f"""
+                SELECT 
+                    s.id, s.name, s.{url_field} as url, s.category_id, s.priority,
+                    s.is_active, s.scraped_status, s.last_scraped_date,
+                    c.name as category_name
+                FROM {table} s
+                LEFT JOIN ai_categories_master c ON s.category_id = c.id
+                ORDER BY s.priority DESC, s.name ASC
+            """
+        
+        sources = db.execute_query(query, fetch_all=True)
+        
+        return {
+            "success": True,
+            "content_type": content_type,
+            "sources": sources or [],
+            "count": len(sources) if sources else 0
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch sources by type: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sources/bulk-update")
+async def bulk_update_sources(
+    source_ids: List[int] = Body(...),
+    enabled: Optional[bool] = Body(None),
+    priority: Optional[int] = Body(None),
+    scrape_frequency_days: Optional[int] = Body(None),
+    content_type: str = Body("blogs", description="blogs, podcasts, or videos"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Bulk update sources (enable/disable, change priority, etc.)
+    Works with ai_sources, ai_podcasts, or ai_videos tables
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="No source IDs provided")
+        
+        # Map content type to table
+        if content_type.lower() == "podcasts":
+            table = "ai_podcasts"
+        elif content_type.lower() == "videos":
+            table = "ai_videos"
+        else:
+            table = "ai_sources"
+        
+        # Build dynamic UPDATE clause
+        update_fields = []
+        params = []
+        
+        if enabled is not None:
+            update_fields.append("is_active = %s")
+            params.append(enabled)
+            # For ai_sources, also update enabled field
+            if table == "ai_sources":
+                update_fields.append("enabled = %s")
+                params.append(enabled)
+        
+        if priority is not None:
+            update_fields.append("priority = %s")
+            params.append(priority)
+        
+        if scrape_frequency_days is not None and table == "ai_sources":
+            update_fields.append("scrape_frequency_days = %s")
+            params.append(scrape_frequency_days)
+        
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No update fields provided")
+        
+        # Add updated timestamp
+        if table == "ai_sources":
+            update_fields.append("updated_date = CURRENT_TIMESTAMP")
+        
+        db = get_database_service()
+        
+        # Update query
+        placeholders = ','.join(['%s'] * len(source_ids))
+        params.extend(source_ids)
+        
+        update_query = f"""
+            UPDATE {table}
+            SET {', '.join(update_fields)}
+            WHERE id IN ({placeholders})
+            RETURNING id
+        """
+        
+        updated = db.execute_query(update_query, tuple(params), fetch_all=True)
+        updated_count = len(updated) if updated else 0
+        
+        logger.info(f"✅ Bulk updated {updated_count} sources in {table} by admin")
+        
+        return {
+            "success": True,
+            "message": f"{updated_count} sources updated successfully",
+            "updated_count": updated_count,
+            "requested_count": len(source_ids),
+            "table": table
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Bulk update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sources/bulk-delete")
+async def bulk_delete_sources(
+    source_ids: List[int] = Body(..., embed=True),
+    content_type: str = Body("blogs", description="blogs, podcasts, or videos"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Bulk delete sources (soft delete by setting is_active=false)
+    Works with ai_sources, ai_podcasts, or ai_videos tables
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        if not source_ids:
+            raise HTTPException(status_code=400, detail="No source IDs provided")
+        
+        # Map content type to table
+        if content_type.lower() == "podcasts":
+            table = "ai_podcasts"
+        elif content_type.lower() == "videos":
+            table = "ai_videos"
+        else:
+            table = "ai_sources"
+        
+        db = get_database_service()
+        
+        # Soft delete (set is_active = false)
+        placeholders = ','.join(['%s'] * len(source_ids))
+        
+        if table == "ai_sources":
+            delete_query = f"""
+                UPDATE {table}
+                SET is_active = false, updated_date = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                RETURNING id
+            """
+        else:
+            delete_query = f"""
+                UPDATE {table}
+                SET is_active = false
+                WHERE id IN ({placeholders})
+                RETURNING id
+            """
+        
+        deleted = db.execute_query(delete_query, tuple(source_ids), fetch_all=True)
+        deleted_count = len(deleted) if deleted else 0
+        
+        logger.info(f"✅ Bulk deleted {deleted_count} sources from {table} by admin")
+        
+        return {
+            "success": True,
+            "message": f"{deleted_count} sources deleted successfully",
+            "deleted_count": deleted_count,
+            "requested_count": len(source_ids),
+            "table": table
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Bulk delete failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== CATEGORIES MANAGEMENT (NEW) ====================
+
+@router.get("/categories/all")
+async def get_all_categories(
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get all categories for admin management with article/source counts
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        db = get_database_service()
+        
+        query = """
+            SELECT 
+                c.id, c.name, c.description, c.priority, 
+                c.category_label, c.is_active,
+                COUNT(DISTINCT a.id) as article_count,
+                COUNT(DISTINCT s.id) as source_count
+            FROM ai_categories_master c
+            LEFT JOIN articles a ON c.id = a.category_id
+            LEFT JOIN ai_sources s ON c.id = s.category_id
+            GROUP BY c.id, c.name, c.description, c.priority, c.category_label, c.is_active
+            ORDER BY c.priority DESC, c.name ASC
+        """
+        
+        categories = db.execute_query(query, fetch_all=True)
+        
+        return {
+            "success": True,
+            "categories": categories or [],
+            "count": len(categories) if categories else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch categories: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== SCRAPING JOB MONITORING (NEW) ====================
+
+@router.get("/scraping/active-jobs")
+async def get_active_scraping_jobs(
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get currently active scraping jobs from scheduler
+    """
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        # Get scheduler status
+        from scheduler_service import get_scheduler
+        scheduler = get_scheduler()
+        
+        if not scheduler:
+            return {
+                "success": True,
+                "active_jobs": [],
+                "scheduler_running": False
+            }
+        
+        # Get job information
+        jobs = []
+        for job in scheduler.scheduler.get_jobs():
+            jobs.append({
+                "id": job.id,
+                "name": job.name,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                "trigger": str(job.trigger),
+                "args": str(job.args) if job.args else None
+            })
+        
+        return {
+            "success": True,
+            "active_jobs": jobs,
+            "scheduler_running": scheduler.is_running and scheduler.scheduler.running,
+            "job_count": len(jobs)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch active jobs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tavily/search")
+async def trigger_tavily_search(
+    query: str = Query(..., description="Search query for Tavily"),
+    max_results: int = Query(10, ge=1, le=50, description="Maximum results (1-50)"),
+    enrich_with_llm: bool = Query(False, description="Enhance with LLM processing"),
+    llm_model: str = Query('gemini', description="LLM model: claude, gemini, or ollama"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Trigger Tavily search for AI articles with LLM enrichment option
+    
+    Free tier: 1,000 searches/month
+    """
+    # Validate admin authentication
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    logger.info(f"🔧 Admin Tavily search triggered: '{query}' with model: {llm_model}, enrich: {enrich_with_llm}")
+    
+    # Validate LLM model parameter
+    if llm_model not in ['claude', 'gemini', 'ollama']:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid llm_model. Must be 'claude', 'gemini', or 'ollama'"
+        )
+    
+    try:
+        # Initialize scraper directly (no AdminScrapingInterface needed for Tavily)
+        scraper = Crawl4AIScraper()
+        
+        # Run Tavily search with selected model
+        result = await scraper.search_and_insert_tavily_articles(
+            query=query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model,
+            include_domains=None,
+            exclude_domains=None
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Admin Tavily search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tavily/searches")
+async def get_tavily_search_history(
+    limit: int = Query(50, description="Number of recent searches to retrieve"),
+    admin_access: bool = Depends(require_admin_access)
+):
+    """
+    Get history of Tavily searches from tavily_searches table
+    """
+    # Validate admin authentication
+    if not admin_access:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+    
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+        
+        searches = db.execute_query(
+            """
+            SELECT id, query, max_results, enrich_with_llm, llm_model,
+                   articles_found, articles_inserted, articles_skipped,
+                   created_at, completed_at, error_message,
+                   search_params
+            FROM tavily_searches
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+            fetch_all=True
+        )
+        
+        return {
+            "success": True,
+            "searches": searches or [],
+            "count": len(searches) if searches else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch search history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tavily/search/courses")
+async def search_learning_content(
+    request: Request,
+    query: str = Query(..., description="Learning search query (e.g., 'Generative AI courses')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for courses)"),
+    llm_model: str = Query('ollama', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI learning content (courses, tutorials) using Tavily API.
+    Automatically formats query as "learning | {query}" for optimal results.
+    
+    Example: 
+        POST /admin/tavily/search/courses?query=Generative AI&max_results=20
+        
+    Returns structured course data with metadata (difficulty, price, ratings, etc.)
+    """
+    try:
+        # Verify admin API key
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+        
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+        
+        logger.info(f"📚 Admin learning search: '{query}' (max_results={max_results}, llm={llm_model})")
+        
+        # Format query for learning content
+        formatted_query = f"learning | {query}"
+        
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+        
+        # Perform learning search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+        
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Courses",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Learning search error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tavily/search/jobs")
+async def search_jobs_content(
+    request: Request,
+    query: str = Query(..., description="Job search query (e.g., 'ML Engineer Generative AI')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for jobs)"),
+    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI/ML job listings using Tavily API.
+    Searches linkedin.com/jobs, indeed.com, greenhouse.io.
+    Only retrieves Gen AI, Machine Learning, Deep Learning, Neural Networks,
+    Cloud Computing, Quantum Computing, AI Infrastructure roles.
+
+    Example:
+        POST /admin/tavily/search/jobs?query=ML Engineer Generative AI&max_results=20
+    """
+    try:
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+        logger.info(f"💼 Admin jobs search: '{query}' (max_results={max_results}, llm={llm_model})")
+
+        # Format query for jobs content
+        formatted_query = f"jobs | {query}"
+
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+
+        # Perform jobs search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Jobs",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Jobs search error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tavily/search/events")
+async def search_events_content(
+    request: Request,
+    query: str = Query(..., description="Event search query (e.g., 'AI Summit 2025')"),
+    max_results: int = Query(10, ge=1, le=50),
+    enrich_with_llm: bool = Query(True, description="Enrich with LLM (recommended for events)"),
+    llm_model: str = Query('gemini', description="LLM to use: claude, gemini, ollama"),
+    admin_api_key: str = Header(..., alias='X-Admin-API-Key')
+):
+    """
+    Search for AI/ML/Cloud events using Tavily API.
+    Searches eventbrite.com, meetup.com, lu.ma.
+    Only retrieves AI, cloud computing, and machine learning related events globally.
+
+    Example:
+        POST /admin/tavily/search/events?query=NeurIPS 2025&max_results=20
+    """
+    try:
+        admin_api_key = request.headers.get('X-Admin-API-Key')
+        expected_api_key = os.getenv('ADMIN_API_KEY', 'admin-api-key-2024')
+
+        if admin_api_key != expected_api_key:
+            raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+        logger.info(f"📅 Admin events search: '{query}' (max_results={max_results}, llm={llm_model})")
+
+        # Format query for events content
+        formatted_query = f"events | {query}"
+
+        # Initialize scraper
+        scraper = Crawl4AIScraper()
+
+        # Perform events search
+        result = await scraper.search_and_insert_tavily_articles(
+            query=formatted_query,
+            max_results=max_results,
+            enrich_with_llm=enrich_with_llm,
+            llm_model=llm_model
+        )
+
+        return {
+            "success": result.get('success', False),
+            "message": result.get('message', ''),
+            "search_query": query,
+            "formatted_query": formatted_query,
+            "content_type": "Events",
+            "articles_inserted": result.get('articles_inserted', 0),
+            "articles_skipped": result.get('articles_skipped', 0),
+            "articles_failed": result.get('articles_failed', 0),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Events search error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))

@@ -290,7 +290,8 @@ async def search_content(
                 c.name as category,
                 c.category_label,
                 ct.name as content_type,
-                ct.display_name as content_type_display,
+                ct.display_name as content_type_label,
+                a.metadata,
                 p.publisher_name,
                 p.priority as publisher_priority,
                 ({relevance_score}) AS relevance_score,
@@ -385,39 +386,42 @@ async def search_content(
                 'category': r['category'] or 'General',
                 'category_label': r['category_label'] or 'general',
                 'content_type': r['content_type'],
-                'content_type_display': r['content_type_display'],
+                'content_type_label': r.get('content_type_label', ''),
+                'metadata': r.get('metadata') or {},
                 'relevance_score': float(r['relevance_score']),
                 'ranking_score': float(r['ranking_score']) if r.get('ranking_score') else 0.0
             } for r in results]
         
-        # Execute searches for each content type separately
-        blogs = execute_search_for_type(1, 'blogs')
-        podcasts = execute_search_for_type(3, 'podcasts')
-        videos = execute_search_for_type(2, 'videos')
-        
-        # Validate results - ensure each array only contains its own type
-        blogs = [b for b in blogs if b.get('content_type') == 'blogs']
-        podcasts = [p for p in podcasts if p.get('content_type') == 'podcasts']
-        videos = [v for v in videos if v.get('content_type') == 'videos']
-        
-        logger.info(f"✅ Search complete - Found: {len(blogs)} blogs, {len(podcasts)} podcasts, {len(videos)} videos")
-        
+        # Fetch all active content types from DB for generic search (covers all types including courses)
+        ct_query = "SELECT id, name, display_name FROM content_types WHERE is_active = TRUE ORDER BY display_order ASC"
+        active_content_types = db.execute_query(ct_query, fetch_all=True)
+        if not active_content_types:
+            active_content_types = [
+                {'id': 1, 'name': 'blogs', 'display_name': 'Blogs'},
+                {'id': 2, 'name': 'videos', 'display_name': 'Videos'},
+                {'id': 3, 'name': 'podcasts', 'display_name': 'Podcasts'},
+            ]
+
+        # Execute search for every active content type generically
+        results_by_type = {}
+        for ct in active_content_types:
+            type_results = execute_search_for_type(ct['id'], ct['name'])
+            # Validate: only keep articles matching their own type
+            results_by_type[ct['name']] = [r for r in type_results if r.get('content_type') == ct['name']]
+
+        total = sum(len(v) for v in results_by_type.values())
+        counts = {ct['name']: len(results_by_type[ct['name']]) for ct in active_content_types}
+        counts['total'] = total
+
+        logger.info(f"✅ Search complete - Types: {list(results_by_type.keys())}, Counts: {counts}")
+
         return {
             'query': query,
             'category': category_name,
             'category_id': category_id,
             'days_filter': days_filter,
-            'results': {
-                'blogs': blogs,
-                'podcasts': podcasts,
-                'videos': videos
-            },
-            'counts': {
-                'blogs': len(blogs),
-                'podcasts': len(podcasts),
-                'videos': len(videos),
-                'total': len(blogs) + len(podcasts) + len(videos)
-            },
+            'results': results_by_type,
+            'counts': counts,
             'metadata': {
                 'search_type': 'weighted_fulltext',
                 'filters_applied': {
@@ -975,18 +979,37 @@ async def get_landing_content(
     content_type_id: Optional[int] = Query(None, description="Filter by specific content type (1=blogs, 2=videos, 3=podcasts, 4=posts, 5=learning)")
 ):
     """
-    Get all categories and content types for landing page
-    Returns content organized by category (Generative AI, AI Applications, AI Startups)
-    Each category contains content types (blogs, podcasts, videos) with max 100 items per type
-    No authentication required - public endpoint for landing page
-    
-    Endpoint: GET /landing-content
-    Query params: 
-        - limit_per_type (default: 50, max: 100)
-        - days_filter (default: 7, filter by published date in last N days)
-        - category_id (optional: filter by specific category, None = all)
-        - content_type_id (optional: filter by specific content type, None = all)
-    """
+        Get landing page content with all content types including courses
+        
+        Returns:
+        {
+        "categories": [
+            {
+            "id": 1,
+            "name": "AI Research",
+            "category": "research",
+            "description": "Latest AI research papers and findings",
+            "priority": 1,
+            "content": {
+                "blogs": [Article, ...],      # Article[] with content_type_label = "Blogs"
+                "podcasts": [Article, ...],   # Article[] with content_type_label = "Podcasts"
+                "videos": [Article, ...],     # Article[] with content_type_label = "Videos"
+                "courses": [Article, ...]     # Article[] with content_type_label = "Courses" ✅ NEW
+            }
+            },
+            ...
+        ],
+        "total_categories": 8
+        }
+        
+        Each Article object includes:
+        - Common fields: id, title, summary, url, source, category_label, content_type_label
+        - Course-specific fields (when content_type_label = "Courses"):
+        - instructor, platform, difficulty, duration_hours, price, is_free
+        - rating, num_reviews, num_students
+        - topics_covered, learning_outcomes, prerequisites
+        - enrollment_url, has_certificate
+        """
     try:
         logger.info(f"🏠 Landing content requested - Limit: {limit_per_type}, Days: {days_filter}, Category: {category_id}, ContentType: {content_type_id}")
         
@@ -1050,18 +1073,20 @@ async def get_landing_content(
             'total_categories': len(categories)
         }
         
+        # Build all expected content-type keys from the DB list (plus ensure frontend-required ones are present)
+        all_content_keys = {ct['name'] for ct in content_types}
+        # Always include keys the frontend iterates over, even if not yet in DB
+        frontend_required_keys = {'blogs', 'podcasts', 'videos', 'courses', 'posts', 'events', 'jobs'}
+        all_content_keys.update(frontend_required_keys)
+
         for category in categories:
-            # Always initialize all three content type arrays for consistent response structure
+            # Dynamically initialize all content type arrays for consistent response structure
             category_data = {
                 'id': category['id'],
                 'name': category['name'],
                 'priority': category['priority'],
                 'description': category.get('description', ''),
-                'content': {
-                    'blogs': [],
-                    'podcasts': [],
-                    'videos': []
-                }
+                'content': {key: [] for key in all_content_keys}
             }
             logger.info(f"🔍 Processing category: {category['name']} (ID: {category['id']})")
             
@@ -1076,6 +1101,7 @@ async def get_landing_content(
                 
                 articles_query = """
                     SELECT 
+                        a.id,
                         a.title, 
                         a.summary, 
                         a.url, 
@@ -1084,10 +1110,11 @@ async def get_landing_content(
                         a.published_date, 
                         a.author, 
                         ct.name as content_type_name,
+                        ct.display_name as content_type_label,
                         cm.name as category_name,
                         p.publisher_name,
                         p.priority as publisher_priority,
-                        
+                        a.metadata,
                         -- DYNAMIC RANKING SCORE (hybrid approach)
                         (
                             -- Static component (pre-computed publisher + significance)
@@ -1122,6 +1149,7 @@ async def get_landing_content(
                 formatted_articles = []
                 for article in articles:
                     formatted_articles.append({
+                        'id': article.get('id'),
                         'title': article['title'],
                         'summary': (article['summary'] or '') if IS_SUMMARY else '',
                         'url': article['url'],
@@ -1131,7 +1159,9 @@ async def get_landing_content(
                         'author': article.get('author', ''),
                         'category': category['name'],
                         'content_type': content_type['name'],
-                        'ranking_score': float(article.get('ranking_score', 0.0))
+                        'content_type_label': article.get('content_type_label', content_type.get('display_name', '')),
+                        'ranking_score': float(article.get('ranking_score', 0.0)),
+                        'metadata': article.get('metadata', {})
                     })
                 logger.info(f"✅ Found {len(formatted_articles)} articles for type: {content_type['name']} in category: {category['name']}")
                 category_data['content'][content_type['name']] = formatted_articles
@@ -1150,6 +1180,308 @@ async def get_landing_content(
                 'message': str(e)
             }
         )
+
+
+@router.get("/posts")
+async def get_posts(
+    limit: int = Query(50, ge=1, le=100, description="Max number of posts to return"),
+    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    days_filter: int = Query(3650, ge=1, le=3650, description="Filter by published date (days back)")
+):
+    """
+    Get posts (content_type_id = 4) from articles table.
+    Returns community posts ordered by published_date desc.
+
+    Endpoint: GET /posts
+    """
+    try:
+        logger.info(f"📝 Posts requested - Limit: {limit}, Category: {category_id}, Days: {days_filter}")
+
+        from db_service import get_database_service
+        from datetime import datetime, timedelta, timezone
+        db = get_database_service()
+
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_filter)
+
+        category_filter = "AND a.category_id = %s" if category_id else ""
+
+        query = f"""
+            SELECT
+                a.id,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.significance_score,
+                a.published_date,
+                a.author,
+                a.keywords,
+                c.name as category,
+                c.category_label,
+                p.publisher_name
+            FROM articles a
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
+            LEFT JOIN publishers_master p ON a.publisher_id = p.id
+            WHERE a.content_type_id = 4
+              AND (a.published_date >= %s OR a.published_date IS NULL)
+              {category_filter}
+            ORDER BY a.published_date DESC
+            LIMIT %s
+        """
+
+        params: list = [cutoff_date]
+        if category_id:
+            params.append(category_id)
+        params.append(limit)
+
+        rows = db.execute_query(query, tuple(params), fetch_all=True)
+
+        posts = []
+        for r in rows:
+            posts.append({
+                'id': r['id'],
+                'title': r['title'],
+                'summary': r['summary'] or '',
+                'url': r['url'] or '',
+                'source': r['source'] or '',
+                'significance_score': float(r['significance_score']) if r['significance_score'] else 7.0,
+                'published_date': r['published_date'].isoformat() if r['published_date'] else None,
+                'author': r['author'] or '',
+                'keywords': r['keywords'] or '',
+                'category': r['category'] or 'General',
+                'category_label': r['category_label'] or 'general',
+                'content_type': 'posts',
+            })
+
+        logger.info(f"✅ Posts retrieved: {len(posts)}")
+        return {
+            'posts': posts,
+            'count': len(posts),
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Posts endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to get posts', 'message': str(e)}
+        )
+
+
+@router.post("/posts")
+async def create_post(
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Create a new post (any authenticated user).
+    Inserts a record into the articles table with content_type_id = 4.
+
+    Body (JSON):
+      - title: str (required)
+      - html_content: str  (rich HTML body, stored in summary field)
+      - author: str
+      - category_id: int
+      - significance_score: float
+      - url: str (optional external link)
+      - source: str (optional source label)
+      - keywords: str (comma-separated tags)
+
+    Endpoint: POST /posts
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        body = await request.json()
+        title = body.get('title', '').strip()
+        if not title:
+            raise HTTPException(status_code=400, detail='title is required')
+
+        html_content = body.get('html_content', '')
+        # Use authenticated user's name/email as author fallback
+        author = body.get('author', '') or current_user.name or current_user.email or 'Anonymous'
+        category_id = body.get('category_id', 1)
+        significance_score = float(body.get('significance_score', 7.0))
+        url = body.get('url', '').strip()
+        source = body.get('source', 'Community Post')
+        keywords = body.get('keywords', '')
+
+        from db_service import get_database_service
+        from datetime import datetime, timezone
+        import uuid
+        import re
+        db = get_database_service()
+        
+        # ✅ Generate unique URL for community posts without external URLs
+        if not url:
+            # Create slug from title (lowercase, replace spaces with hyphens, remove special chars)
+            title_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
+            # Generate unique URL using UUID
+            unique_id = str(uuid.uuid4())[:8]  # Use first 8 chars of UUID
+            url = f"/posts/{title_slug}-{unique_id}"
+            logger.info(f"📝 Generated unique URL for post: {url}")
+
+        insert_query = """
+            INSERT INTO articles
+                (title, summary, url, source, significance_score, published_date,
+                 author, keywords, content_type_id, category_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 4, %s)
+            RETURNING id
+        """
+        now = datetime.now(timezone.utc)
+        result = db.execute_query(
+            insert_query,
+            (title, html_content, url, source, significance_score, now,
+             author, keywords, category_id),
+            fetch_one=True
+        )
+
+        new_id = result['id'] if result else None
+        logger.info(f"✅ New post created - ID: {new_id}, Title: '{title}'")
+
+        return {
+            'success': True,
+            'id': new_id,
+            'title': title,
+            'message': 'Post created successfully',
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Create post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to create post', 'message': str(e)}
+        )
+
+
+@router.put("/posts/{post_id}")
+async def update_post(
+    post_id: int,
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Update a post. Only the original author can update their own post.
+
+    Endpoint: PUT /posts/{post_id}
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        body = await request.json()
+
+        from db_service import get_database_service
+        db = get_database_service()
+
+        # Verify post exists and check ownership
+        row = db.execute_query(
+            "SELECT author FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,), fetch_one=True
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail='Post not found')
+
+        stored_author = row['author'] or ''
+        user_name = current_user.name or ''
+        user_email = current_user.email or ''
+        is_owner = stored_author and (stored_author == user_name or stored_author == user_email)
+        if not is_owner:
+            raise HTTPException(status_code=403, detail='You can only edit your own posts')
+
+        title = body.get('title', '').strip()
+        if not title:
+            raise HTTPException(status_code=400, detail='title is required')
+
+        html_content = body.get('html_content', '')
+        author = body.get('author', stored_author) or stored_author
+        category_id = body.get('category_id', 1)
+        significance_score = float(body.get('significance_score', 7.0))
+        url = body.get('url', '').strip()
+        source = body.get('source', 'Community Post')
+        keywords = body.get('keywords', '')
+        
+        # ✅ Preserve existing URL if none provided in update
+        if not url:
+            # Get existing URL from database
+            existing_url_row = db.execute_query(
+                "SELECT url FROM articles WHERE id = %s",
+                (post_id,), fetch_one=True
+            )
+            url = existing_url_row['url'] if existing_url_row else ''
+            logger.info(f"📝 Preserving existing URL for post {post_id}: {url}")
+
+        db.execute_query(
+            """UPDATE articles SET
+                title = %s, summary = %s, url = %s, source = %s,
+                significance_score = %s, author = %s, keywords = %s, category_id = %s
+               WHERE id = %s AND content_type_id = 4""",
+            (title, html_content, url, source, significance_score, author, keywords, category_id, post_id),
+            fetch_all=False
+        )
+
+        logger.info(f"✅ Post updated - ID: {post_id}, Title: '{title}'")
+        return {'success': True, 'id': post_id, 'message': 'Post updated successfully'}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Update post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to update post', 'message': str(e)}
+        )
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(
+    post_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Delete a post. Only the original author can delete their own post.
+
+    Endpoint: DELETE /posts/{post_id}
+    Headers: Authorization: Bearer <token>
+    """
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+
+        # Verify post exists and check ownership
+        row = db.execute_query(
+            "SELECT author FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,), fetch_one=True
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail='Post not found')
+
+        stored_author = row['author'] or ''
+        user_name = current_user.name or ''
+        user_email = current_user.email or ''
+        is_owner = stored_author and (stored_author == user_name or stored_author == user_email)
+        if not is_owner:
+            raise HTTPException(status_code=403, detail='You can only delete your own posts')
+
+        db.execute_query(
+            "DELETE FROM articles WHERE id = %s AND content_type_id = 4",
+            (post_id,),
+            fetch_all=False
+        )
+
+        logger.info(f"✅ Post deleted - ID: {post_id}")
+        return {'success': True, 'message': 'Post deleted successfully'}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Delete post failed: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to delete post', 'message': str(e)}
+        )
+
 
 # Global scraping job tracker
 scraping_jobs = {}

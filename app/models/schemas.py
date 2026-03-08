@@ -6,6 +6,8 @@ Pydantic models for request/response validation
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, EmailStr, Field
+from dataclasses import dataclass, asdict
+import json
 
 
 # =============================================================================
@@ -164,7 +166,12 @@ class Article(BaseModel):
     total_shares: Optional[int] = 0
     total_comments: Optional[int] = 0
     engagement_score: Optional[float] = 0.0
-
+    is_trending: Optional[bool] = False
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    is_remote: Optional[bool] = False
+    metadata: Optional[Dict[str, Any]] = {}
     
 
 class ContentFilterRequest(BaseModel):
@@ -252,3 +259,239 @@ class NotFoundResponse(BaseModel):
     available_endpoints: List[str]
     database: str = "postgresql"
     message: str
+
+# ✅ NEW: Content-type specific metadata schemas for articles.metadata JSONB column
+
+@dataclass
+class CourseMetadata:
+    """
+    Metadata schema for courses/learning resources (content_type_id = 5).
+    Stored in articles.metadata JSONB column.
+    """
+    # Core course details
+    course_title: str
+    platform: str  # "Coursera", "Udemy", "DeepLearning.AI", "YouTube", "edX"
+    instructor: Optional[str] = None
+    provider: Optional[str] = None  # "Stanford", "Google", "MIT"
+    course_url: Optional[str] = None  # Direct enrollment/access URL
+    
+    # Duration & difficulty
+    duration_hours: Optional[float] = None
+    duration_weeks: Optional[int] = None
+    difficulty: str = "Intermediate"  # "Beginner", "Intermediate", "Advanced"
+    
+    # Pricing
+    price: Optional[float] = None
+    currency: str = "USD"
+    is_free: bool = False
+    has_certificate: bool = False
+    course_type: str = "Free"  # "Free", "Paid", "Certification", "Audit"
+    
+    # Course structure
+    modules: Optional[List[str]] = None  # ["Intro to ML", "Neural Networks", ...]
+    prerequisites: Optional[List[str]] = None
+    learning_outcomes: Optional[List[str]] = None
+    topics_covered: Optional[List[str]] = None
+    
+    # Ratings & popularity
+    rating: Optional[float] = None  # 4.8/5.0
+    num_reviews: Optional[int] = None
+    num_students: Optional[int] = None  # Completed learners
+    completion_rate: Optional[float] = None  # Percentage
+    
+    # Enrollment
+    enrollment_url: Optional[str] = None
+    start_date: Optional[str] = None
+    is_self_paced: bool = True
+    enrollment_open: bool = True
+    
+    # LLM-enriched fields
+    ai_topics: Optional[List[str]] = None  # ["Deep Learning", "Computer Vision"]
+    recommended_for: Optional[str] = None  # "ML Engineers", "Data Scientists"
+    skill_level_required: Optional[str] = None  # "Basic Python", "Advanced Math"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON storage"""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'CourseMetadata':
+        """Create instance from dictionary"""
+        return cls(**data)
+
+
+@dataclass
+class JobMetadata:
+    """
+    Metadata schema for AI/ML job listings (content_type_id = 6).
+    Stored in articles.metadata JSONB column.
+    Only for Gen AI, Machine Learning, Deep Learning, Neural Networks,
+    Cloud Computing, Quantum Computing, AI Infrastructure roles.
+    """
+    # Core job details
+    job_title: str
+    company: str
+    job_location: Optional[str] = None  # "San Francisco, CA" or "Remote"
+    is_remote: bool = False
+    employment_type: str = "Full-time"  # "Full-time", "Part-time", "Contract", "Internship"
+    job_type: Optional[str] = None  # "Engineering", "Research", "Data Science", etc.
+
+    # Compensation
+    salary_range: Optional[str] = None  # "$120K - $180K" or None if not disclosed
+    currency: str = "USD"
+
+    # Requirements
+    experience_level: Optional[str] = None  # "Entry", "Mid", "Senior", "Staff", "Principal"
+    skills_required: Optional[List[str]] = None  # ["Python", "PyTorch", "LLMs", ...]
+    education_required: Optional[str] = None  # "BS/MS in CS", "PhD preferred", etc.
+
+    # Application info
+    application_url: Optional[str] = None  # Direct apply link
+    application_deadline: Optional[str] = None  # "YYYY-MM-DD" or None if rolling
+
+    # AI-domain categorization
+    ai_domain: Optional[str] = None  # "Generative AI", "Machine Learning", "MLOps", "AI Infrastructure"
+    company_size: Optional[str] = None  # "Startup", "Series B", "Enterprise"
+    posted_date: Optional[str] = None  # "YYYY-MM-DD"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON storage"""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'JobMetadata':
+        """Create instance from dictionary"""
+        return cls(**data)
+
+
+@dataclass
+class EventMetadata:
+    """
+    Metadata schema for AI/ML/Cloud events (content_type_id = 7).
+    Stored in articles.metadata JSONB column.
+    Only for AI, cloud computing, machine learning related events globally.
+    """
+    # Core event details
+    event_name: str
+    event_date: Optional[str] = None      # "YYYY-MM-DD" or date range start
+    event_end_date: Optional[str] = None  # "YYYY-MM-DD" or None for single-day
+    event_location: Optional[str] = None  # "San Francisco, CA" or "Online"
+    is_virtual: bool = False
+    event_type: Optional[str] = None  # "Conference", "Workshop", "Meetup", "Hackathon", "Webinar", "Summit"
+    event_format: Optional[str] = None  # "In-person", "Virtual", "Hybrid"
+
+    # Hosts & organizers
+    event_hosts: Optional[List[str]] = None  # ["Google", "DeepMind", "Hugging Face"]
+    speakers: Optional[List[str]] = None  # Notable speaker names
+
+    # Registration
+    registration_url: Optional[str] = None  # Direct registration link
+    ticket_price: Optional[str] = None  # "Free", "$299", "$299 - $999"
+    registration_deadline: Optional[str] = None  # "YYYY-MM-DD" or None
+
+    # Themes
+    ai_topics: Optional[List[str]] = None  # ["LLMs", "Computer Vision", "MLOps"]
+    target_audience: Optional[str] = None  # "Researchers", "Practitioners", "Developers", "Everyone"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON storage"""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'EventMetadata':
+        """Create instance from dictionary"""
+        return cls(**data)
+
+
+def get_metadata_schema(content_type_id: int) -> Optional[type]:
+    """
+    Get metadata dataclass for content type.
+    Returns appropriate metadata schema based on content type ID.
+    
+    Args:
+        content_type_id: Content type identifier (1=Blogs, 5=Courses, 6=Jobs, 7=Events)
+    
+    Returns:
+        Metadata dataclass or None if no specific schema exists
+    """
+    schemas = {
+        5: CourseMetadata,   # Courses/Learning
+        6: JobMetadata,      # AI/ML Jobs
+        7: EventMetadata,    # AI/ML Events
+    }
+    return schemas.get(content_type_id)
+
+
+def validate_metadata(content_type_id: int, metadata: Dict[str, Any]) -> bool:
+    """
+    Validate metadata against schema for content type.
+    
+    Args:
+        content_type_id: Content type identifier
+        metadata: Metadata dictionary to validate
+    
+    Returns:
+        True if valid, False otherwise
+    """
+    schema = get_metadata_schema(content_type_id)
+    if not schema:
+        return True  # No validation needed for content types without metadata
+    
+    try:
+        # Try to instantiate the dataclass (will fail if required fields missing)
+        schema(**metadata)
+        return True
+    except (TypeError, ValueError) as e:
+        logger.warning(f"⚠️ Metadata validation failed: {e}")
+        return False
+
+
+# ✅ NEW: Pydantic schemas for API requests/responses
+
+class CourseFilterRequest(BaseModel):
+    """Request schema for filtering courses"""
+    topic: Optional[str] = None
+    difficulty: Optional[str] = None
+    is_free: Optional[bool] = None
+    platform: Optional[str] = None
+    min_rating: Optional[float] = None
+    limit: int = 50
+    offset: int = 0
+
+
+class CourseResponse(BaseModel):
+    """Response schema for course data"""
+    id: int
+    title: str
+    instructor: str
+    summary: str
+    url: str
+    platform: Optional[str]
+    difficulty: Optional[str]
+    duration_hours: Optional[float]
+    price: Optional[float]
+    is_free: bool
+    has_certificate: bool
+    course_type: Optional[str]
+    rating: Optional[float]
+    num_reviews: Optional[int]
+    num_students: Optional[int]
+    topics_covered: List[str] = []
+    prerequisites: List[str] = []
+    learning_outcomes: List[str] = []
+    enrollment_url: Optional[str]
+    ai_topics: List[str] = []
+    image_url: Optional[str]
+    significance_score: float
+    created_date: datetime
+    updated_date: datetime
+
+
+class CoursesListResponse(BaseModel):
+    """Response schema for courses list"""
+    courses: List[CourseResponse]
+    count: int
+    filters: Dict[str, Any]
+    pagination: Dict[str, Any]
+
+

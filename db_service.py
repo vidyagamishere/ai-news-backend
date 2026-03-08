@@ -7,6 +7,7 @@ Single database backend using psycopg2 with connection pooling
 import os
 import json
 import logging
+import string
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
@@ -68,37 +69,47 @@ class PostgreSQLService:
                 self.connection_pool.putconn(conn)
     
     def execute_query(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = True) -> Optional[Any]:
-        """Execute a query with automatic connection management"""
-        import os
-        import traceback
+        """Execute a query with automatic connection management
+        Args:
+            query: SQL query string
+            params: Query parameters tuple
+            fetch_one: If True, return single row dict instead of list
+            fetch_all: If False, don't fetch results (for INSERT/UPDATE/DELETE without RETURNING)
+        
+        Returns:
+            - Single RealDictRow if fetch_one=True
+            - List of RealDictRow if fetch_all=True
+            - Number of affected rows if fetch_all=False
+            - None if error occurs
+        """
         DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+        query_upper = query.strip().upper()
+        has_returning = 'RETURNING' in query_upper
+        is_select = query_upper.startswith('SELECT') or query_upper.startswith('WITH')
         
         if DEBUG:
             logger.debug(f"🔍 Executing query: {query[:200]}{'...' if len(query) > 200 else ''}")
-            if params:
-                logger.debug(f"🔍 Query parameters: {params}")
         
         try:
             with self.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    if DEBUG:
-                        logger.debug(f"🔍 Cursor type: {type(cursor)}")
                     try:
                         cursor.execute(query, params)
-                        conn.commit()
-                        
-                        if fetch_one:
-                            result = cursor.fetchone()
-                            if DEBUG:
-                                logger.debug(f"🔍 Query returned one result: {result}")
-                            return result
-                        elif fetch_all:
-                            results = cursor.fetchall()
-                            if DEBUG:
-                                logger.debug(f"🔍 Query returned {len(results)} results")
-                                if results:
-                                    logger.debug(f"🔍 First result type: {type(results[0])}")
-                            return results
+                        conn.commit()                  
+                        if is_select or has_returning:
+                            if fetch_one:
+                                result = cursor.fetchone()
+                                if DEBUG:
+                                    logger.debug(f"🔍 Query returned one result: {result}")
+                                return result
+                            elif fetch_all:
+                                results = cursor.fetchall()
+                                if DEBUG:
+                                    logger.debug(f"🔍 Query returned {len(results)} results")
+                                    if results:
+                                        logger.debug(f"🔍 First result type: {type(results[0])}")
+                                return results
                         else:
                             rowcount = cursor.rowcount
                             if DEBUG:
@@ -383,7 +394,7 @@ class PostgreSQLService:
         # Define fallback IDs in case the LLM returns an invalid label
         # These should correspond to 'Articles/Blogs' and 'AI News & Updates' in your master tables.
         FALLBACK_CONTENT_TYPE_ID = 1  
-        FALLBACK_TOPIC_ID = 21       
+        FALLBACK_TOPIC_ID = 5       
 
         try:
             url = article_data.get('url')
@@ -426,8 +437,8 @@ class PostgreSQLService:
             
             # Priority 1: Try Claude AI category first
             if topic_category_label:
-                topic_query = "SELECT id FROM ai_categories_master WHERE name = %s"
-                ai_topic_result = self.execute_query(topic_query, (topic_category_label,), fetch_one=True)
+                topic_query = "SELECT id FROM ai_categories_master WHERE name = %s OR LOWER(name) = LOWER(%s)"
+                ai_topic_result = self.execute_query(topic_query, (topic_category_label, topic_category_label.lower()), fetch_one=True)
                 
                 if ai_topic_result:
                     final_ai_topic_id = ai_topic_result['id'] if isinstance(ai_topic_result, dict) else ai_topic_result[0]
@@ -439,7 +450,7 @@ class PostgreSQLService:
             # Priority 2: If Claude AI failed, try RSS source category
             if category_source == "hardcoded_fallback" and source_category and source_category != 'general':
                 source_topic_query = "SELECT id FROM ai_categories_master WHERE name = %s OR LOWER(name) = LOWER(%s)"
-                source_topic_result = self.execute_query(source_topic_query, (source_category, source_category), fetch_one=True)
+                source_topic_result = self.execute_query(source_topic_query, (source_category, source_category.lower()), fetch_one=True)
                 
                 if source_topic_result:
                     final_ai_topic_id = source_topic_result['id'] if isinstance(source_topic_result, dict) else source_topic_result[0]
@@ -476,18 +487,25 @@ class PostgreSQLService:
                 # Convert to comma-separated string immediately
                 article_data['keywords'] = ', '.join(keywords)
             elif isinstance(keywords, str):
-                # Convert comma-separated string to list
-                keywords = [k.strip() for k in keywords.split(',') if k.strip()]
-                article_data['keywords'] = keywords
-            
+                # If already a string, ensure it's properly formatted (not character-split)
+                # Check if it's already comma-separated properly
+                if ',' in keywords:
+                    # Split by comma and rejoin to normalize spacing
+                    keywords = [k.strip() for k in keywords.split(',') if k.strip()]
+                    article_data['keywords'] = ', '.join(keywords)
+                else:
+                    # Single keyword or space-separated - keep as is
+                    article_data['keywords'] = keywords.strip()
+                logger.debug(f"🔑 Processed string keywords: {article_data['keywords']}") 
             # Convert keywords list to comma-separated string for database
-            if isinstance(keywords, list):
+            elif isinstance(keywords, list):
                 keywords_str = ', '.join(keywords)
                 article_data['keywords'] = keywords_str
-                logger.debug(f"🔑 Final keywords for article: {keywords_str}")
+                logger.debug(f"🔑 Converted list to string keywords: {article_data['keywords']}")
             else:
+                article_data['keywords'] = str(keywords)
                 logger.debug(f"🔑 Final keywords for article: {keywords}")
-
+            logger.debug(f"🔑 Final keywords stored: {article_data['keywords']}")
             # --- 5. ✅ FIX: Convert string "null" to None for all date fields ---
             date_fields = ['published_date', 'scraped_date', 'created_date', 'updated_date']
             for field in date_fields:
@@ -511,6 +529,24 @@ class PostgreSQLService:
                 # Use created_date as fallback to ensure ranking score works correctly
                 article_data['published_date'] = article_data['created_date']
                 logger.debug(f"📅 Using created_date as published_date fallback for: {article_data.get('title', url)[:50]}...")
+            
+            # ✅ NEW: Check if published_date is in the future and replace with created_date
+            published_date = article_data.get('published_date')
+            if published_date:
+                # Ensure both dates are timezone-aware for comparison
+                now = datetime.now(timezone.utc)
+                
+                # Convert published_date to timezone-aware if needed
+                if isinstance(published_date, datetime):
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
+                    
+                    # Check if published_date is in the future
+                    if published_date > now:
+                        logger.warning(f"⚠️ Future published_date detected: {published_date.isoformat()} (current: {now.isoformat()})")
+                        article_data['published_date'] = article_data['created_date']
+                        logger.info(f"✅ Replaced future published_date with created_date for: {article_data.get('title', url)[:50]}...")
+            
             
              # --- 6. ✅ NEW: Extract image data ---
             image_url = article_data.get('image_url')
@@ -543,17 +579,30 @@ class PostgreSQLService:
             else:
                 logger.debug(f"📎 Using provided publisher_id {publisher_id_val} for article")
 
+            is_trending = article_data.get('is_trending', False)
+            if is_trending: 
+                logger.info(f"🔥 Article marked as trending: {article_data.get('title', url)[:50]}...")
+
+            country = article_data.get('country')
+            region = article_data.get('region')
+            city = article_data.get('city')
+            is_remote = article_data.get('is_remote', False)
+            
+            # ✅ Extract metadata (missing in your code)
+            metadata = article_data.get('metadata', {})
+            metadata_json = json.dumps(metadata) if metadata else None
+
             # --- 8. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
                     content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
                     llm_processed, content_type_id, category_id, reading_time, author, complexity_level, 
                     updated_date, created_date, keywords, publisher_id,
-                    image_url, image_source
+                    image_url, image_source, is_trending, country, region, city, is_remote, metadata
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, 
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                    %s, %s, %s, %s, %s, %s
                 ) ON CONFLICT (url) DO UPDATE SET
                     content_hash = EXCLUDED.content_hash,
                     title = EXCLUDED.title,
@@ -573,7 +622,13 @@ class PostgreSQLService:
                     keywords = EXCLUDED.keywords,
                     publisher_id = EXCLUDED.publisher_id,
                     image_url = COALESCE(EXCLUDED.image_url, articles.image_url),
-                    image_source = COALESCE(EXCLUDED.image_source, articles.image_source)
+                    image_source = COALESCE(EXCLUDED.image_source, articles.image_source),
+                    is_trending = COALESCE(EXCLUDED.is_trending, articles.is_trending),
+                    country = COALESCE(EXCLUDED.country, articles.country),
+                    region = COALESCE(EXCLUDED.region, articles.region),
+                    city = COALESCE(EXCLUDED.city, articles.city),
+                    is_remote = COALESCE(EXCLUDED.is_remote, articles.is_remote),
+                    metadata = COALESCE(EXCLUDED.metadata, articles.metadata)
             """
             
             values = (
@@ -595,8 +650,14 @@ class PostgreSQLService:
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', 'Generative AI, Technology'),  # Now a string instead of list
                 article_data.get('publisher_id'),  # Will be the created/found publisher_id
-                image_url,      # ✅ ADDED
-                image_source    # ✅ ADDED
+                image_url,      
+                image_source,
+                is_trending,
+                country,
+                region,
+                city,
+                is_remote,
+                metadata_json
             )            
             # Debug logging for LLM model used
             llm_model_used = article_data.get('llm_processed')
@@ -810,6 +871,87 @@ class PostgreSQLService:
             logger.error(f"❌ Error checking multiple URLs: {str(e)}")
             # Default all to False (allow scraping) on error
             return {url: False for url in urls}
+
+    def get_trending_keywords(self, days: int = 1, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get trending keywords from articles marked as is_trending=TRUE in the last N days.
+        Extracts keywords from articles.keywords column (comma-separated format).
+        
+        Args:
+            days: Number of days to look back (default: 1 for today)
+            limit: Maximum number of keywords to return (default: 10)
+        
+        Returns:
+            List of dicts with 'id', 'label', 'count' fields
+        """
+        try:
+            logger.info(f"🔥 Fetching trending keywords for last {days} day(s), limit: {limit}")
+            
+            query = f"""
+                WITH trending_articles AS (
+                    -- Get articles marked as trending within the time window
+                    SELECT 
+                        id,
+                        keywords,
+                        created_date
+                    FROM articles
+                    WHERE is_trending = TRUE
+                      AND created_date >= NOW() - INTERVAL '{days} days'
+                      AND keywords IS NOT NULL
+                      AND keywords != ''
+                ),
+                keyword_splits AS (
+                    -- Split comma-separated keywords into individual rows
+                    SELECT 
+                        id,
+                        TRIM(unnest(string_to_array(keywords, ','))) as keyword
+                    FROM trending_articles
+                ),
+                keyword_stats AS (
+                    -- Count occurrences of each keyword
+                    SELECT 
+                        keyword,
+                        COUNT(*) as article_count,
+                        COUNT(DISTINCT id) as unique_articles
+                    FROM keyword_splits
+                    WHERE LENGTH(keyword) > 2  -- Filter out very short keywords
+                      AND keyword != ''
+                      AND keyword NOT IN ('AI', 'Technology', 'Tech')  -- Filter common generic terms
+                    GROUP BY keyword
+                )
+                SELECT 
+                    keyword as label,
+                    article_count as count
+                FROM keyword_stats
+                WHERE article_count >= 1  -- At least 1 article
+                ORDER BY article_count DESC, keyword ASC
+                LIMIT %s
+            """
+            
+            results = self.execute_query(query, (limit,), fetch_all=True)
+            
+            if not results:
+                logger.info(f"ℹ️ No trending keywords found for last {days} day(s)")
+                return []
+            
+            # Transform results into expected format
+            trending_keywords = []
+            for row in results:
+                trending_keywords.append({
+                    'id': row['label'].lower().replace(' ', '-').replace(',', ''),  # URL-safe ID
+                    'label': row['label'],
+                    'count': row['count']
+                })
+            
+            logger.info(f"✅ Found {len(trending_keywords)} trending keywords for last {days} day(s)")
+            logger.debug(f"🔥 Top trending keywords: {[k['label'] for k in trending_keywords[:5]]}")
+            
+            return trending_keywords
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching trending keywords: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
 
     def get_all_articles_pending_shorts(self):
         logger.info("Fetching articles pending shorts/reels")
