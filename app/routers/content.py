@@ -1300,13 +1300,24 @@ async def create_post(
         author = body.get('author', '') or current_user.name or current_user.email or 'Anonymous'
         category_id = body.get('category_id', 1)
         significance_score = float(body.get('significance_score', 7.0))
-        url = body.get('url', '')
+        url = body.get('url', '').strip()
         source = body.get('source', 'Community Post')
         keywords = body.get('keywords', '')
 
         from db_service import get_database_service
         from datetime import datetime, timezone
+        import uuid
+        import re
         db = get_database_service()
+        
+        # ✅ Generate unique URL for community posts without external URLs
+        if not url:
+            # Create slug from title (lowercase, replace spaces with hyphens, remove special chars)
+            title_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:50]
+            # Generate unique URL using UUID
+            unique_id = str(uuid.uuid4())[:8]  # Use first 8 chars of UUID
+            url = f"/posts/{title_slug}-{unique_id}"
+            logger.info(f"📝 Generated unique URL for post: {url}")
 
         insert_query = """
             INSERT INTO articles
@@ -1385,9 +1396,19 @@ async def update_post(
         author = body.get('author', stored_author) or stored_author
         category_id = body.get('category_id', 1)
         significance_score = float(body.get('significance_score', 7.0))
-        url = body.get('url', '')
+        url = body.get('url', '').strip()
         source = body.get('source', 'Community Post')
         keywords = body.get('keywords', '')
+        
+        # ✅ Preserve existing URL if none provided in update
+        if not url:
+            # Get existing URL from database
+            existing_url_row = db.execute_query(
+                "SELECT url FROM articles WHERE id = %s",
+                (post_id,), fetch_one=True
+            )
+            url = existing_url_row['url'] if existing_url_row else ''
+            logger.info(f"📝 Preserving existing URL for post {post_id}: {url}")
 
         db.execute_query(
             """UPDATE articles SET

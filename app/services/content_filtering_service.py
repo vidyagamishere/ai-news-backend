@@ -6,6 +6,7 @@ Provides advanced search, filtering, and recommendation capabilities
 
 import logging
 import re
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -149,7 +150,12 @@ class ContentFilteringService:
         return now - timedelta(days=7)
 
     def build_search_query(self, criteria: FilterCriteria) -> Tuple[str, List]:
-        """Build optimized SQL query with search and filters"""
+        """
+        Build optimized SQL query with search and filters
+        
+        Special handling:
+        - Courses (5), Jobs (6), Events (7) are auto-included and exempt from time filtering
+        """
         
         # Base query with joins for metadata
         base_query = """
@@ -170,25 +176,29 @@ class ContentFilteringService:
         
         params = []
         
-        # Time filter - ✅ FIXED: Include NULL published_dates to match landing-content behavior
+        # Time filter - Exclude courses (5), jobs (6), events (7) as they contain future-oriented content
         time_threshold = self.parse_time_filter(criteria.time_filter)
         if time_threshold:
-            base_query += " AND (a.published_date >= %s OR a.published_date IS NULL)"
+            base_query += " AND (a.content_type_id IN (5, 6, 7) OR a.published_date >= %s OR a.published_date IS NULL)"
             params.append(time_threshold)
         
         # Content type filter - prioritize ID-based filtering
+        # ✅ SPECIAL HANDLING: Always include courses (5), jobs (6), events (7) regardless of filter
         if criteria.content_type_ids:
-            # Use ID-based filtering (preferred)
-            placeholders = ",".join(["%s"] * len(criteria.content_type_ids))
+            # Add courses/jobs/events to the filter if not already present
+            extended_content_types = list(set(criteria.content_type_ids + [5, 6, 7]))
+            placeholders = ",".join(["%s"] * len(extended_content_types))
             base_query += " AND ct.id IN (" + placeholders + ")"
-            params.extend(criteria.content_type_ids)
+            params.extend(extended_content_types)
         elif criteria.content_types:
             # Fallback to name-based filtering (handle both uppercase and lowercase)
-            placeholders = ",".join(["%s"] * len(criteria.content_types))
+            # Always include courses, jobs, events
+            extended_names = list(set(criteria.content_types + ['COURSES', 'JOBS', 'EVENTS', 'courses', 'jobs', 'events']))
+            placeholders = ",".join(["%s"] * len(extended_names))
             base_query += " AND (UPPER(ct.name) IN (" + placeholders + ") OR LOWER(ct.name) IN (" + placeholders + "))"
             # Add both uppercase and lowercase versions
-            params.extend([ct.upper() for ct in criteria.content_types])
-            params.extend([ct.lower() for ct in criteria.content_types])
+            params.extend([ct.upper() for ct in extended_names])
+            params.extend([ct.lower() for ct in extended_names])
         
         # Category filter - prioritize ID-based filtering
         if criteria.category_ids:
@@ -311,7 +321,19 @@ class ContentFilteringService:
         return terms[:10]  # Limit to 10 terms for performance
     
     def get_filtered_content(self, criteria: FilterCriteria) -> List[Dict[str, Any]]:
-        """Get filtered content based on criteria with MANDATORY time filtering"""
+        """
+        Get filtered content based on criteria with CONDITIONAL time filtering
+        
+        Time filtering behavior:
+        - Courses (content_type_id=5), Jobs (6), and Events (7) are EXEMPT from time filtering
+          as they contain future-oriented content
+        - All other content types (Blogs, Podcasts, Videos, Posts) are filtered by time
+        
+        Content type filtering behavior:
+        - Courses (5), Jobs (6), and Events (7) are ALWAYS INCLUDED regardless of content_type_ids filter
+        - This ensures future-oriented content is always available to users
+        - Other content types (1-4) are filtered normally based on user selection
+        """
         try:
             # ✅ CRITICAL FIX: Parse time filter FIRST
             time_threshold = self.parse_time_filter(criteria.time_filter) if criteria.time_filter else None
@@ -398,11 +420,13 @@ class ContentFilteringService:
             logger.info(f"👤 Filtering with user_id: {user_id_param} (type: {type(user_id_param).__name__})")
             params.extend([user_id_param, user_id_param, user_id_param])
             
-            # ✅ CRITICAL: Apply time filter FIRST and ALWAYS if provided
+            # ✅ CRITICAL: Apply time filter CONDITIONALLY
+            # Exclude courses (5), jobs (6), events (7) as they contain future-oriented content
             if time_threshold:
-                query += " AND a.published_date >= %s"
+                query += " AND (a.content_type_id IN (5, 6, 7) OR a.published_date >= %s)"
                 params.append(time_threshold)
-                logger.info(f"✅ SQL WHERE clause added: AND a.published_date >= %s (param: {time_threshold.isoformat()})")
+                logger.info(f"✅ SQL WHERE clause added: Time filter applied EXCEPT for courses/jobs/events (content_type_ids 5,6,7)")
+                logger.info(f"   📅 Time threshold for other content types: {time_threshold.isoformat()}")
             
             # Apply category filter (ID-based preferred)
             if criteria.category_ids:
@@ -412,11 +436,15 @@ class ContentFilteringService:
                 logger.info(f"✅ SQL WHERE clause added: AND a.category_id IN ({criteria.category_ids})")
         
             # Apply content type filter (ID-based preferred)
+            # ✅ SPECIAL HANDLING: Always include courses (5), jobs (6), events (7) regardless of filter
             if criteria.content_type_ids:
-                placeholders = ','.join(['%s'] * len(criteria.content_type_ids))
+                # Add courses/jobs/events to the filter if not already present
+                extended_content_types = list(set(criteria.content_type_ids + [5, 6, 7]))
+                placeholders = ','.join(['%s'] * len(extended_content_types))
                 query += f" AND a.content_type_id IN ({placeholders})"
-                params.extend(criteria.content_type_ids)
-                logger.info(f"✅ SQL WHERE clause added: AND a.content_type_id IN ({criteria.content_type_ids})")
+                params.extend(extended_content_types)
+                logger.info(f"✅ SQL WHERE clause added: AND a.content_type_id IN ({extended_content_types})")
+                logger.info(f"   📚 Note: Courses (5), Jobs (6), Events (7) auto-included")
         
             # Apply publisher filter (ID-based preferred)
             if criteria.publisher_ids:
@@ -463,10 +491,19 @@ class ContentFilteringService:
                 logger.info(f"📅 Sample published dates (first 5): {sample_dates}")
                 
                 # ✅ FIX: Compare naive datetimes (remove timezone awareness before comparison)
+                # Skip courses (5), jobs (6), events (7) from verification as they're exempt from time filtering
                 if time_threshold:
                     outside_filter = []
+                    exempt_content_types = {5, 6, 7}  # Courses, Jobs, Events
+                    
                     for r in results:
                         pub_date = r.get('published_date')
+                        content_type_id = r.get('content_type_id')
+                        
+                        # Skip verification for exempt content types
+                        if content_type_id in exempt_content_types:
+                            continue
+                            
                         if pub_date:
                             # Ensure both datetimes are naive for comparison
                             if hasattr(pub_date, 'tzinfo') and pub_date.tzinfo:
@@ -482,7 +519,8 @@ class ContentFilteringService:
                         logger.warning(f"   Threshold: {time_threshold.isoformat()}")
                         logger.warning(f"   Sample old dates: {[r.get('published_date').isoformat() if hasattr(r.get('published_date'), 'isoformat') else str(r.get('published_date')) for r in outside_filter[:3]]}")
                     else:
-                        logger.info(f"✅ Time filter verified: ALL {len(results)} articles are after {time_threshold.isoformat()}")
+                        logger.info(f"✅ Time filter verified: ALL non-exempt articles are after {time_threshold.isoformat()}")
+                        logger.info(f"   📚 Note: Courses (5), Jobs (6), Events (7) are exempt from time filtering")
             
             # ✅ Log interaction states for debugging
             if results and criteria.user_id:

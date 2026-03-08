@@ -530,6 +530,24 @@ class PostgreSQLService:
                 article_data['published_date'] = article_data['created_date']
                 logger.debug(f"📅 Using created_date as published_date fallback for: {article_data.get('title', url)[:50]}...")
             
+            # ✅ NEW: Check if published_date is in the future and replace with created_date
+            published_date = article_data.get('published_date')
+            if published_date:
+                # Ensure both dates are timezone-aware for comparison
+                now = datetime.now(timezone.utc)
+                
+                # Convert published_date to timezone-aware if needed
+                if isinstance(published_date, datetime):
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
+                    
+                    # Check if published_date is in the future
+                    if published_date > now:
+                        logger.warning(f"⚠️ Future published_date detected: {published_date.isoformat()} (current: {now.isoformat()})")
+                        article_data['published_date'] = article_data['created_date']
+                        logger.info(f"✅ Replaced future published_date with created_date for: {article_data.get('title', url)[:50]}...")
+            
+            
              # --- 6. ✅ NEW: Extract image data ---
             image_url = article_data.get('image_url')
             image_source = article_data.get('image_source', 'scraped' if image_url else None)

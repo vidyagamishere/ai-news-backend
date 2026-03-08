@@ -518,6 +518,8 @@ async def get_personalized_feed(
             # Convert publisher names to IDs (fallback)
             publisher_ids = content_filtering_service.get_publisher_ids_from_names(use_publishers)
         
+        
+
         # Create filter criteria with both name and ID-based filtering
         criteria = FilterCriteria(
             interests=use_categories,  # Keep for backward compatibility
