@@ -163,6 +163,45 @@ if DEBUG:
     logger.debug(f"📝 IS_SUMMARY environment variable: {IS_SUMMARY}")
 
 
+def extract_metadata_fields(metadata_dict: dict) -> dict:
+    """
+    Extract key metadata fields to top level for easier frontend access.
+    Used for Events (content_type_id=7), Courses (5), and Jobs (6).
+    
+    Args:
+        metadata_dict: JSONB metadata from database
+        
+    Returns:
+        Dictionary with extracted fields (or None if field doesn't exist)
+    """
+    if not metadata_dict:
+        return {}
+    
+    return {
+        # Event fields (content_type_id=7)
+        'event_date': metadata_dict.get('event_date'),
+        'event_location': metadata_dict.get('event_location'),
+        'event_type': metadata_dict.get('event_type'),
+        'is_virtual': metadata_dict.get('is_virtual'),
+        'event_hosts': metadata_dict.get('event_hosts'),
+        'registration_url': metadata_dict.get('registration_url'),
+        
+        # Course fields (content_type_id=5)
+        'instructor': metadata_dict.get('instructor'),
+        'platform': metadata_dict.get('platform'),
+        'difficulty': metadata_dict.get('difficulty'),
+        'duration_hours': metadata_dict.get('duration_hours'),
+        'is_free': metadata_dict.get('is_free'),
+        
+        # Job fields (content_type_id=6)
+        'company': metadata_dict.get('company'),
+        'job_title': metadata_dict.get('job_title'),
+        'job_location': metadata_dict.get('job_location'),
+        'is_remote': metadata_dict.get('is_remote'),
+        'salary_range': metadata_dict.get('salary_range'),
+    }
+
+
 def get_content_service() -> ContentService:
     """Dependency to get ContentService instance"""
     return ContentService()
@@ -374,23 +413,32 @@ async def search_content(
             else:
                 logger.info(f"   → No results found for {content_type_name}")
             
-            return [{
-                'id': r['id'],
-                'title': r['title'],
-                'summary': (r['summary'] or '') if IS_SUMMARY else '',
-                'url': r['url'],
-                'source': r['source'],
-                'significanceScore': float(r['significance_score']) if r['significance_score'] else 7.0,
-                'published_date': r['published_date'].isoformat() if r['published_date'] else None,
-                'author': r['author'] or '',
-                'category': r['category'] or 'General',
-                'category_label': r['category_label'] or 'general',
-                'content_type': r['content_type'],
-                'content_type_label': r.get('content_type_label', ''),
-                'metadata': r.get('metadata') or {},
-                'relevance_score': float(r['relevance_score']),
-                'ranking_score': float(r['ranking_score']) if r.get('ranking_score') else 0.0
-            } for r in results]
+            
+            # Serialize results with extracted metadata fields
+            serialized_results = []
+            for r in results:
+                metadata = r.get('metadata') or {}
+                article = {
+                    'id': r['id'],
+                    'title': r['title'],
+                    'summary': (r['summary'] or '') if IS_SUMMARY else '',
+                    'url': r['url'],
+                    'source': r['source'],
+                    'significanceScore': float(r['significance_score']) if r['significance_score'] else 7.0,
+                    'published_date': r['published_date'].isoformat() if r['published_date'] else None,
+                    'author': r['author'] or '',
+                    'category': r['category'] or 'General',
+                    'category_label': r['category_label'] or 'general',
+                    'content_type': r['content_type'],
+                    'content_type_label': r.get('content_type_label', ''),
+                    'metadata': metadata,
+                    **extract_metadata_fields(metadata),  # ✅ Extract key fields to top level
+                    'relevance_score': float(r['relevance_score']),
+                    'ranking_score': float(r['ranking_score']) if r.get('ranking_score') else 0.0
+                }
+                serialized_results.append(article)
+            
+            return serialized_results
         
         # Fetch all active content types from DB for generic search (covers all types including courses)
         ct_query = "SELECT id, name, display_name FROM content_types WHERE is_active = TRUE ORDER BY display_order ASC"

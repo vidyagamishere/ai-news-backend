@@ -964,6 +964,105 @@ class Crawl4AIScraper:
             logger.warning(f"⚠️ Date normalization error for '{date_str}': {e}")
             return None
     
+    def _extract_event_date_from_text(self, text: str, title: str = "") -> Optional[str]:
+        """
+        Extract event dates from text content or title using regex patterns.
+        Supports multiple date formats commonly found in event descriptions.
+        
+        Args:
+            text: Event description/content text
+            title: Event title (optional)
+            
+        Returns:
+            Normalized date string (YYYY-MM-DD) or None if no date found
+        """
+        if not text and not title:
+            return None
+            
+        combined_text = f"{title} {text}"
+        
+        try:
+            import re
+            from datetime import datetime
+            
+            # Pattern 1: ISO format dates (2026-03-15, 2026/03/15)
+            iso_pattern = r'\b(202[4-9]|203[0-9])[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12][0-9]|3[01])\b'
+            iso_match = re.search(iso_pattern, combined_text)
+            if iso_match:
+                date_str = iso_match.group(0).replace('/', '-')
+                logger.info(f"📅 Extracted ISO date from text: {date_str}")
+                # Return date-only format (YYYY-MM-DD) without timestamp
+                return date_str
+            
+            # Pattern 2: Month Day, Year (March 15, 2026 | Dec 25, 2025)
+            month_day_year_pattern = r'\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(202[4-9]|203[0-9])\b'
+            month_match = re.search(month_day_year_pattern, combined_text, re.IGNORECASE)
+            if month_match:
+                try:
+                    month_str = month_match.group(1)
+                    day_str = month_match.group(2)
+                    year_str = month_match.group(3)
+                    date_obj = datetime.strptime(f"{month_str} {day_str} {year_str}", "%B %d %Y")
+                    normalized = date_obj.strftime("%Y-%m-%d")
+                    logger.info(f"📅 Extracted date from text: {normalized}")
+                    return normalized
+                except ValueError:
+                    try:
+                        date_obj = datetime.strptime(f"{month_str} {day_str} {year_str}", "%b %d %Y")
+                        normalized = date_obj.strftime("%Y-%m-%d")
+                        logger.info(f"📅 Extracted date from text: {normalized}")
+                        return normalized
+                    except ValueError:
+                        pass
+            
+            # Pattern 3: Day Month Year (15 March 2026 | 25 Dec 2025)
+            day_month_year_pattern = r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?,?\s+(202[4-9]|203[0-9])\b'
+            day_month_match = re.search(day_month_year_pattern, combined_text, re.IGNORECASE)
+            if day_month_match:
+                try:
+                    day_str = day_month_match.group(1)
+                    month_str = day_month_match.group(2)
+                    year_str = day_month_match.group(3)
+                    date_obj = datetime.strptime(f"{day_str} {month_str} {year_str}", "%d %B %Y")
+                    normalized = date_obj.strftime("%Y-%m-%d")
+                    logger.info(f"📅 Extracted date from text: {normalized}")
+                    return normalized
+                except ValueError:
+                    try:
+                        date_obj = datetime.strptime(f"{day_str} {month_str} {year_str}", "%d %b %Y")
+                        normalized = date_obj.strftime("%Y-%m-%d")
+                        logger.info(f"📅 Extracted date from text: {normalized}")
+                        return normalized
+                    except ValueError:
+                        pass
+            
+            # Pattern 4: Month Year only (March 2026) - use first day of month
+            month_year_pattern = r'\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(202[4-9]|203[0-9])\b'
+            month_year_match = re.search(month_year_pattern, combined_text, re.IGNORECASE)
+            if month_year_match:
+                try:
+                    month_str = month_year_match.group(1)
+                    year_str = month_year_match.group(2)
+                    date_obj = datetime.strptime(f"{month_str} 1 {year_str}", "%B %d %Y")
+                    normalized = date_obj.strftime("%Y-%m-%d")
+                    logger.info(f"📅 Extracted month/year from text (using 1st): {normalized}")
+                    return normalized
+                except ValueError:
+                    try:
+                        date_obj = datetime.strptime(f"{month_str} 1 {year_str}", "%b %d %Y")
+                        normalized = date_obj.strftime("%Y-%m-%d")
+                        logger.info(f"📅 Extracted month/year from text (using 1st): {normalized}")
+                        return normalized
+                    except ValueError:
+                        pass
+            
+            logger.debug(f"⚠️ No date pattern found in text/title")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Date extraction error: {e}")
+            return None
+    
     def _is_category_or_root_url(self, url: str) -> bool:
         """
         Detect if a URL is a category/root page rather than an individual article.
@@ -3829,10 +3928,30 @@ Return ONLY the JSON object, nothing else."""
                             }
                         elif is_events_query:
                             content_text_lower = result.get('content', '').lower()
+                            content_text = result.get('content', '')
+                            event_title = result.get('title', 'Unknown Event')
+                            
+                            # 🎯 COMPREHENSIVE EVENT DATE EXTRACTION
+                            # Priority 1: Extract from content/title using regex patterns
+                            extracted_date = self._extract_event_date_from_text(content_text, event_title)
+                            
+                            # Priority 2: Use Tavily's published_date as fallback
+                            if not extracted_date:
+                                raw_tavily_date = result.get('published_date')
+                                if raw_tavily_date:
+                                    extracted_date = self._normalize_date(raw_tavily_date)
+                                    if extracted_date:
+                                        logger.info(f"📅 Using Tavily published_date as event_date: {extracted_date}")
+                            
+                            # Priority 3: Use current date as last resort (event happening now)
+                            if not extracted_date:
+                                logger.warning(f"⚠️ No event date found for: {event_title[:60]}... Using current date as fallback")
+                                extracted_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                            
                             basic_metadata = {
-                                'event_name': result.get('title', 'Unknown Event'),
-                                'event_date': None,
-                                'event_end_date': None,
+                                'event_name': event_title,
+                                'event_date': extracted_date,  # ✅ Now always populated
+                                'event_end_date': None,  # Could be enhanced with similar extraction
                                 'event_location': 'Online' if any(k in content_text_lower for k in ['online', 'virtual', 'webinar']) else None,
                                 'is_virtual': any(k in content_text_lower for k in ['online', 'virtual', 'webinar']),
                                 'event_type': 'Conference',
@@ -3842,6 +3961,8 @@ Return ONLY the JSON object, nothing else."""
                                 'ticket_price': 'Free' if 'free' in content_text_lower else None,
                                 'ai_topics': [events_keyword] if events_keyword else None
                             }
+                            
+                            logger.info(f"📅 Event date set for '{event_title[:40]}...': {extracted_date}")
                         else:
                             basic_metadata = {}
 
@@ -3875,6 +3996,18 @@ Return ONLY the JSON object, nothing else."""
                     
                     logger.info(f"📝 Prepared tavily article data for insertion: {article_data['title'][:60]}...")
                     logger.info(f"🏷️ Final keywords: {article_data['keywords']}")
+                    
+                    # ✅ VALIDATION: Ensure event_date is populated for events
+                    if is_events_query:
+                        event_date = article_data.get('metadata', {}).get('event_date')
+                        if not event_date or event_date in ['null', 'None', None]:
+                            logger.error(f"❌ EVENT DATE MISSING for: {article_data['title'][:60]}...")
+                            logger.error(f"   ↳ Metadata: {article_data.get('metadata')}")
+                            logger.warning(f"⚠️ Skipping event insertion - event_date is mandatory")
+                            articles_skipped += 1
+                            continue
+                        else:
+                            logger.info(f"✅ Event date validated: {event_date}")
                     
                     # ✅ REMOVED: No longer adding trending keyword twice
                     # The keywords are already set correctly above
@@ -4160,7 +4293,7 @@ Content: {scraped_data.get('content', '')[:4000]}
 
     "metadata": {{
         "event_name": "Full official event name",
-        "event_date": "YYYY-MM-DD start date or null",
+        "event_date": "YYYY-MM-DD start date (REQUIRED - extract from content/title)",
         "event_end_date": "YYYY-MM-DD end date or null if single day",
         "event_location": "City, Country or 'Online' or 'Hybrid - City, Country'",
         "is_virtual": true if online/virtual/webinar, false if in-person,
@@ -4176,12 +4309,16 @@ Content: {scraped_data.get('content', '')[:4000]}
     }}
 }}
 
-**RULES:**
-- If NOT an AI/ML/cloud event, set significance_score to 1 and still return valid JSON
-- event_date: Use the earliest/start date. Format as YYYY-MM-DD
-- is_virtual: true for webinar/online/virtual, false for in-person venues
-- speakers: Only include names explicitly mentioned in the content
-- ticket_price: "Free" if free registration, dollar amount if priced, null if not mentioned
+**CRITICAL RULES:**
+- event_date is MANDATORY: Search aggressively in title/content for dates like "March 15, 2026", "2026-03-15", "15 March 2026", "March 2026".
+- If exact day unknown but month/year found, use 1st of that month (e.g., "March 2026" → "2026-03-01").
+- If only year found, use January 1st (e.g., "2026" → "2026-01-01").
+- Only use null if absolutely no temporal information exists in the content.
+- If NOT an AI/ML/cloud event, set significance_score to 1 and still return valid JSON.
+- Format as YYYY-MM-DD. Use the earliest/start date for multi-day events.
+- is_virtual: true for webinar/online/virtual, false for in-person venues.
+- speakers: Only include names explicitly mentioned in the content.
+- ticket_price: "Free" if free registration, dollar amount if priced, null if not mentioned.
 
 Return ONLY the JSON object, no additional text:"""
 
