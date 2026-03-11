@@ -24,6 +24,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def extract_metadata_fields(metadata_dict: dict) -> dict:
+    """
+    Extract key metadata fields to top level for easier frontend access.
+    Used for Events (content_type_id=7), Courses (5), and Jobs (6).
+    
+    Args:
+        metadata_dict: JSONB metadata from database
+        
+    Returns:
+        Dictionary with extracted fields (or None if field doesn't exist)
+    """
+    if not metadata_dict:
+        return {}
+    
+    return {
+        # Event fields (content_type_id=7)
+        'event_date': metadata_dict.get('event_date'),
+        'event_location': metadata_dict.get('event_location'),
+        'event_type': metadata_dict.get('event_type'),
+        'is_virtual': metadata_dict.get('is_virtual'),
+        'event_hosts': metadata_dict.get('event_hosts'),
+        'registration_url': metadata_dict.get('registration_url'),
+        
+        # Course fields (content_type_id=5)
+        'instructor': metadata_dict.get('instructor'),
+        'platform': metadata_dict.get('platform'),
+        'difficulty': metadata_dict.get('difficulty'),
+        'duration_hours': metadata_dict.get('duration_hours'),
+        'is_free': metadata_dict.get('is_free'),
+        
+        # Job fields (content_type_id=6)
+        'company': metadata_dict.get('company'),
+        'job_title': metadata_dict.get('job_title'),
+        'job_location': metadata_dict.get('job_location'),
+        'is_remote': metadata_dict.get('is_remote'),
+        'salary_range': metadata_dict.get('salary_range'),
+        'application_deadline': metadata_dict.get('application_deadline'),
+    }
+
+
 def parse_time_filter(time_filter: str) -> Optional[datetime]:
     """Convert time filter string to datetime with enhanced validation and timezone awareness"""
     if not time_filter or time_filter == "All Time":
@@ -634,6 +674,7 @@ async def get_personalized_feed(
             # Convert articles to Article objects
             article_objects = []
             for item in items:
+                metadata = item.get('metadata', {})
                 article = Article(
                     id=item['id'],
                     source=item.get('source'),
@@ -662,8 +703,9 @@ async def get_personalized_feed(
                     total_shares=item.get('total_shares', 0),
                     total_comments=item.get('total_comments', 0),
                     engagement_score=item.get('engagement_score', 0.0),
-                    metadata=item.get('metadata', {})
-
+                    metadata=metadata,
+                    # ✅ Extract metadata fields to top level (event_date, instructor, company, etc.)
+                    **extract_metadata_fields(metadata)
                 )
                 article_objects.append(article)
             
