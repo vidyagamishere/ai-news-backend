@@ -144,6 +144,7 @@ class Article(BaseModel):
     source: Optional[str] = None
     title: Optional[str] = None
     url: Optional[str] = None
+    slug: Optional[str] = None
     published_date: Optional[datetime] = None
     description: Optional[str] = None
     content_hash: Optional[str] = None
