@@ -14,7 +14,7 @@ from app.models.schemas import DigestResponse, ContentByTypeResponse, UserRespon
 from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -1327,6 +1327,163 @@ async def get_posts(
             status_code=500,
             detail={'error': 'Failed to get posts', 'message': str(e)}
         )
+
+
+@router.get("/prerender/manifest")
+async def get_prerender_manifest():
+    """
+    Build-time manifest for frontend prerendering.
+
+    Returns active article/category slugs plus metadata for strict validation.
+    """
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+
+        gone_article_slugs_query = """
+            SELECT DISTINCT a.slug
+            FROM articles a
+            WHERE a.slug IS NOT NULL
+              AND btrim(a.slug) <> ''
+              AND COALESCE(a.metadata->>'lifecycle_status', '') = 'gone'
+            ORDER BY a.slug ASC
+        """
+
+        article_slugs_query = """
+            SELECT DISTINCT a.slug
+            FROM articles a
+            WHERE a.slug IS NOT NULL
+              AND btrim(a.slug) <> ''
+              AND COALESCE(a.metadata->>'lifecycle_status', '') <> 'gone'
+            ORDER BY a.slug ASC
+        """
+
+        category_slugs_query = """
+            SELECT DISTINCT c.category_label
+            FROM ai_categories_master c
+            WHERE c.is_active = TRUE
+              AND c.category_label IS NOT NULL
+              AND btrim(c.category_label) <> ''
+            ORDER BY c.category_label ASC
+        """
+
+        gone_article_rows = db.execute_query(gone_article_slugs_query, fetch_all=True) or []
+        article_rows = db.execute_query(article_slugs_query, fetch_all=True) or []
+        category_rows = db.execute_query(category_slugs_query, fetch_all=True) or []
+
+        gone_article_slugs = [row['slug'] for row in gone_article_rows if row.get('slug')]
+        active_article_slugs = [row['slug'] for row in article_rows if row.get('slug')]
+        active_category_slugs = [row['category_label'] for row in category_rows if row.get('category_label')]
+
+        generated_at = datetime.now(timezone.utc).isoformat()
+        max_age_seconds = int(os.getenv('PRERENDER_MANIFEST_MAX_AGE_SECONDS', '21600'))
+
+        return {
+            'schema_version': '2026-07-04',
+            'generated_at': generated_at,
+            'max_age_seconds': max_age_seconds,
+            'counts': {
+                'active_article_slugs': len(active_article_slugs),
+                'active_category_slugs': len(active_category_slugs),
+                'gone_article_slugs': len(gone_article_slugs),
+            },
+            'active_article_slugs': active_article_slugs,
+            'active_category_slugs': active_category_slugs,
+            'gone_article_slugs': gone_article_slugs,
+            # Contract signal for gap-window behavior (published between deploys).
+            'unknown_slug_policy': {
+                'article': 'spa_fallback',
+                'category': 'spa_fallback',
+                'notes': 'Unknown slugs should not be treated as missing until next prerender cycle.',
+            },
+        }
+    except Exception as e:
+        logger.error(f"❌ Prerender manifest endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to generate prerender manifest', 'message': str(e)}
+        )
+
+
+@router.post("/admin/prerender/gone-slugs")
+async def update_gone_slugs(
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Admin endpoint to mark/unmark article slugs as gone.
+    Gone slugs are served as HTTP 410 by prerender middleware once deployed.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail='Admin access required')
+
+    try:
+        body = await request.json()
+        raw_slugs = body.get('slugs', [])
+        mark_gone = bool(body.get('mark_gone', True))
+
+        if not isinstance(raw_slugs, list):
+            raise HTTPException(status_code=400, detail='slugs must be an array')
+
+        cleaned_slugs = []
+        for value in raw_slugs:
+            slug = str(value).strip()
+            if slug and len(slug) <= 240:
+                cleaned_slugs.append(slug)
+
+        cleaned_slugs = list(dict.fromkeys(cleaned_slugs))
+        if not cleaned_slugs:
+            raise HTTPException(status_code=400, detail='No valid slugs provided')
+
+        from db_service import get_database_service
+        db = get_database_service()
+
+        count_query = """
+            SELECT COUNT(*) AS match_count
+            FROM articles
+            WHERE slug = ANY(%s)
+        """
+        count_row = db.execute_query(count_query, (cleaned_slugs,), fetch_one=True) or {'match_count': 0}
+
+        if mark_gone:
+            update_query = """
+                UPDATE articles
+                SET metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{lifecycle_status}',
+                        '"gone"'::jsonb,
+                        true
+                    ),
+                    updated_date = NOW()
+                WHERE slug = ANY(%s)
+            """
+            action = 'marked_gone'
+        else:
+            update_query = """
+                UPDATE articles
+                SET metadata = CASE
+                        WHEN metadata IS NULL THEN NULL
+                        ELSE metadata - 'lifecycle_status'
+                    END,
+                    updated_date = NOW()
+                WHERE slug = ANY(%s)
+            """
+            action = 'unmarked_gone'
+
+        db.execute_query(update_query, (cleaned_slugs,), fetch_all=False)
+
+        return {
+            'success': True,
+            'action': action,
+            'requested_slugs': len(cleaned_slugs),
+            'matched_articles': int(count_row.get('match_count', 0)),
+            'slugs': cleaned_slugs,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to update gone slugs: {str(e)}")
+        raise HTTPException(status_code=500, detail={'error': 'Failed to update gone slugs', 'message': str(e)})
 
 
 @router.get("/article/{slug}")
