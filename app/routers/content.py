@@ -14,7 +14,7 @@ from app.models.schemas import DigestResponse, ContentByTypeResponse, UserRespon
 from app.dependencies.auth import get_current_user_optional, get_current_user
 from app.services.content_service import ContentService
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +319,7 @@ async def search_content(
         base_search_query = f"""
             SELECT 
                 a.id,
+                a.slug,
                 a.title,
                 a.summary,
                 a.url,
@@ -420,6 +421,7 @@ async def search_content(
                 metadata = r.get('metadata') or {}
                 article = {
                     'id': r['id'],
+                    'slug': r.get('slug'),
                     'title': r['title'],
                     'summary': (r['summary'] or '') if IS_SUMMARY else '',
                     'url': r['url'],
@@ -685,6 +687,7 @@ async def get_breaking_news_alerts(
         # Use articles with high significance scores for breaking news
         query = """
             SELECT 
+                a.slug,
                 a.title, 
                 a.summary, 
                 a.url, 
@@ -726,6 +729,7 @@ async def get_breaking_news_alerts(
         result = []
         for article in articles:
             result.append({
+                'slug': article.get('slug'),
                 'title': article['title'],
                 'summary': (article['summary'] or '') if IS_SUMMARY else '',
                 'url': article['url'],
@@ -777,6 +781,7 @@ async def get_generative_ai_stories(
         # Get articles focused on Generative AI with composite ranking
         query = """
             SELECT 
+                a.slug,
                 a.title, 
                 a.summary, 
                 a.url, 
@@ -817,6 +822,7 @@ async def get_generative_ai_stories(
         result = []
         for article in articles:
             result.append({
+                'slug': article.get('slug'),
                 'title': article['title'],
                 'summary': (article['summary'] or '') if IS_SUMMARY else '',
                 'url': article['url'],
@@ -867,6 +873,7 @@ async def get_ai_applications_stories(
     
         query = """
             SELECT 
+                a.slug,
                 a.title, 
                 a.summary, 
                 a.url, 
@@ -904,6 +911,7 @@ async def get_ai_applications_stories(
         result = []
         for article in articles:
             result.append({
+                'slug': article.get('slug'),
                 'title': article['title'],
                 'summary': (article['summary'] or '') if IS_SUMMARY else '',
                 'url': article['url'],
@@ -953,6 +961,7 @@ async def get_ai_startups_stories(
         
         query = """
             SELECT 
+                a.slug,
                 a.title, 
                 a.summary, 
                 a.url, 
@@ -990,6 +999,7 @@ async def get_ai_startups_stories(
         result = []
         for article in articles:
             result.append({
+                'slug': article.get('slug'),
                 'title': article['title'],
                 'summary': (article['summary'] or '') if IS_SUMMARY else '',
                 'url': article['url'],
@@ -1150,6 +1160,7 @@ async def get_landing_content(
                 articles_query = """
                     SELECT 
                         a.id,
+                        a.slug,
                         a.title, 
                         a.summary, 
                         a.url, 
@@ -1198,6 +1209,7 @@ async def get_landing_content(
                 for article in articles:
                     formatted_articles.append({
                         'id': article.get('id'),
+                        'slug': article.get('slug'),
                         'title': article['title'],
                         'summary': (article['summary'] or '') if IS_SUMMARY else '',
                         'url': article['url'],
@@ -1256,6 +1268,7 @@ async def get_posts(
         query = f"""
             SELECT
                 a.id,
+                a.slug,
                 a.title,
                 a.summary,
                 a.url,
@@ -1288,6 +1301,7 @@ async def get_posts(
         for r in rows:
             posts.append({
                 'id': r['id'],
+                'slug': r.get('slug'),
                 'title': r['title'],
                 'summary': r['summary'] or '',
                 'url': r['url'] or '',
@@ -1313,6 +1327,317 @@ async def get_posts(
             status_code=500,
             detail={'error': 'Failed to get posts', 'message': str(e)}
         )
+
+
+@router.get("/prerender/manifest")
+async def get_prerender_manifest():
+    """
+    Build-time manifest for frontend prerendering.
+
+    Returns active article/category slugs plus metadata for strict validation.
+    """
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+
+        gone_article_slugs_query = """
+            SELECT DISTINCT a.slug
+            FROM articles a
+            WHERE a.slug IS NOT NULL
+              AND btrim(a.slug) <> ''
+              AND COALESCE(a.metadata->>'lifecycle_status', '') = 'gone'
+            ORDER BY a.slug ASC
+        """
+
+        article_slugs_query = """
+            SELECT DISTINCT a.slug
+            FROM articles a
+            WHERE a.slug IS NOT NULL
+              AND btrim(a.slug) <> ''
+              AND COALESCE(a.metadata->>'lifecycle_status', '') <> 'gone'
+            ORDER BY a.slug ASC
+        """
+
+        category_slugs_query = """
+            SELECT DISTINCT c.category_label
+            FROM ai_categories_master c
+            WHERE c.is_active = TRUE
+              AND c.category_label IS NOT NULL
+              AND btrim(c.category_label) <> ''
+            ORDER BY c.category_label ASC
+        """
+
+        gone_article_rows = db.execute_query(gone_article_slugs_query, fetch_all=True) or []
+        article_rows = db.execute_query(article_slugs_query, fetch_all=True) or []
+        category_rows = db.execute_query(category_slugs_query, fetch_all=True) or []
+
+        gone_article_slugs = [row['slug'] for row in gone_article_rows if row.get('slug')]
+        active_article_slugs = [row['slug'] for row in article_rows if row.get('slug')]
+        active_category_slugs = [row['category_label'] for row in category_rows if row.get('category_label')]
+
+        generated_at = datetime.now(timezone.utc).isoformat()
+        max_age_seconds = int(os.getenv('PRERENDER_MANIFEST_MAX_AGE_SECONDS', '21600'))
+
+        return {
+            'schema_version': '2026-07-04',
+            'generated_at': generated_at,
+            'max_age_seconds': max_age_seconds,
+            'counts': {
+                'active_article_slugs': len(active_article_slugs),
+                'active_category_slugs': len(active_category_slugs),
+                'gone_article_slugs': len(gone_article_slugs),
+            },
+            'active_article_slugs': active_article_slugs,
+            'active_category_slugs': active_category_slugs,
+            'gone_article_slugs': gone_article_slugs,
+            # Contract signal for gap-window behavior (published between deploys).
+            'unknown_slug_policy': {
+                'article': 'spa_fallback',
+                'category': 'spa_fallback',
+                'notes': 'Unknown slugs should not be treated as missing until next prerender cycle.',
+            },
+        }
+    except Exception as e:
+        logger.error(f"❌ Prerender manifest endpoint failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'Failed to generate prerender manifest', 'message': str(e)}
+        )
+
+
+@router.post("/admin/prerender/gone-slugs")
+async def update_gone_slugs(
+    request: Request,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Admin endpoint to mark/unmark article slugs as gone.
+    Gone slugs are served as HTTP 410 by prerender middleware once deployed.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail='Admin access required')
+
+    try:
+        body = await request.json()
+        raw_slugs = body.get('slugs', [])
+        mark_gone = bool(body.get('mark_gone', True))
+
+        if not isinstance(raw_slugs, list):
+            raise HTTPException(status_code=400, detail='slugs must be an array')
+
+        cleaned_slugs = []
+        for value in raw_slugs:
+            slug = str(value).strip()
+            if slug and len(slug) <= 240:
+                cleaned_slugs.append(slug)
+
+        cleaned_slugs = list(dict.fromkeys(cleaned_slugs))
+        if not cleaned_slugs:
+            raise HTTPException(status_code=400, detail='No valid slugs provided')
+
+        from db_service import get_database_service
+        db = get_database_service()
+
+        count_query = """
+            SELECT COUNT(*) AS match_count
+            FROM articles
+            WHERE slug = ANY(%s)
+        """
+        count_row = db.execute_query(count_query, (cleaned_slugs,), fetch_one=True) or {'match_count': 0}
+
+        if mark_gone:
+            update_query = """
+                UPDATE articles
+                SET metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{lifecycle_status}',
+                        '"gone"'::jsonb,
+                        true
+                    ),
+                    updated_date = NOW()
+                WHERE slug = ANY(%s)
+            """
+            action = 'marked_gone'
+        else:
+            update_query = """
+                UPDATE articles
+                SET metadata = CASE
+                        WHEN metadata IS NULL THEN NULL
+                        ELSE metadata - 'lifecycle_status'
+                    END,
+                    updated_date = NOW()
+                WHERE slug = ANY(%s)
+            """
+            action = 'unmarked_gone'
+
+        db.execute_query(update_query, (cleaned_slugs,), fetch_all=False)
+
+        return {
+            'success': True,
+            'action': action,
+            'requested_slugs': len(cleaned_slugs),
+            'matched_articles': int(count_row.get('match_count', 0)),
+            'slugs': cleaned_slugs,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to update gone slugs: {str(e)}")
+        raise HTTPException(status_code=500, detail={'error': 'Failed to update gone slugs', 'message': str(e)})
+
+
+@router.get("/article/{slug}")
+async def get_article_by_slug(slug: str):
+    """Get a single article by canonical slug."""
+    try:
+        from db_service import get_database_service
+        db = get_database_service()
+
+        query = """
+            SELECT
+                a.id,
+                a.slug,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.significance_score,
+                a.published_date,
+                a.author,
+                a.metadata,
+                ct.name as content_type,
+                ct.display_name as content_type_label,
+                c.name as category,
+                c.category_label,
+                p.publisher_name
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            LEFT JOIN ai_categories_master c ON a.category_id = c.id
+            LEFT JOIN publishers_master p ON a.publisher_id = p.id
+            WHERE a.slug = %s
+            LIMIT 1
+        """
+
+        row = db.execute_query(query, (slug,), fetch_one=True)
+        if not row:
+            raise HTTPException(status_code=404, detail={"error": "Article not found", "slug": slug})
+
+        metadata = row.get('metadata') or {}
+        article = {
+            'id': row['id'],
+            'slug': row.get('slug'),
+            'title': row.get('title'),
+            'summary': (row.get('summary') or '') if IS_SUMMARY else '',
+            'url': row.get('url'),
+            'source': row.get('source'),
+            'significanceScore': float(row['significance_score']) if row.get('significance_score') else 7.0,
+            'published_date': row['published_date'].isoformat() if row.get('published_date') else None,
+            'author': row.get('author') or '',
+            'category': row.get('category') or 'General',
+            'category_label': row.get('category_label') or 'general',
+            'content_type': row.get('content_type') or '',
+            'content_type_label': row.get('content_type_label') or '',
+            'publisher_name': row.get('publisher_name') or '',
+            'metadata': metadata,
+            **extract_metadata_fields(metadata),
+        }
+
+        return {'article': article}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Article by slug endpoint failed: {str(e)}")
+        raise HTTPException(status_code=500, detail={'error': 'Failed to get article', 'message': str(e)})
+
+
+@router.get("/category/{slug}")
+async def get_category_by_slug(
+    slug: str,
+    limit: int = Query(50, ge=1, le=100, description="Max articles to return"),
+    days_filter: int = Query(30, ge=1, le=3650, description="Filter articles by published date (days back)")
+):
+    """Get one category by slug with its recent content."""
+    try:
+        from db_service import get_database_service
+        from datetime import datetime, timedelta, timezone
+        db = get_database_service()
+
+        category_query = """
+            SELECT id, name, description, priority, category_label
+            FROM ai_categories_master
+            WHERE category_label = %s AND is_active = TRUE
+            LIMIT 1
+        """
+        category = db.execute_query(category_query, (slug,), fetch_one=True)
+
+        if not category:
+            raise HTTPException(status_code=404, detail={"error": "Category not found", "slug": slug})
+
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_filter)
+
+        articles_query = """
+            SELECT
+                a.id,
+                a.slug,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.significance_score,
+                a.published_date,
+                a.author,
+                a.metadata,
+                ct.name as content_type,
+                ct.display_name as content_type_label
+            FROM articles a
+            LEFT JOIN content_types ct ON a.content_type_id = ct.id
+            WHERE a.category_id = %s
+              AND (a.published_date >= %s OR a.published_date IS NULL)
+            ORDER BY a.published_date DESC
+            LIMIT %s
+        """
+
+        rows = db.execute_query(articles_query, (category['id'], cutoff_date, limit), fetch_all=True)
+
+        articles = []
+        for row in rows:
+            metadata = row.get('metadata') or {}
+            articles.append({
+                'id': row['id'],
+                'slug': row.get('slug'),
+                'title': row.get('title'),
+                'summary': (row.get('summary') or '') if IS_SUMMARY else '',
+                'url': row.get('url'),
+                'source': row.get('source'),
+                'significanceScore': float(row['significance_score']) if row.get('significance_score') else 7.0,
+                'published_date': row['published_date'].isoformat() if row.get('published_date') else None,
+                'author': row.get('author') or '',
+                'category': category['name'],
+                'category_label': category.get('category_label'),
+                'content_type': row.get('content_type') or '',
+                'content_type_label': row.get('content_type_label') or '',
+                'metadata': metadata,
+                **extract_metadata_fields(metadata),
+            })
+
+        return {
+            'category': {
+                'id': category['id'],
+                'name': category['name'],
+                'slug': category.get('category_label'),
+                'description': category.get('description') or '',
+                'priority': category.get('priority'),
+            },
+            'articles': articles,
+            'count': len(articles),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Category by slug endpoint failed: {str(e)}")
+        raise HTTPException(status_code=500, detail={'error': 'Failed to get category', 'message': str(e)})
 
 
 @router.post("/posts")
@@ -1367,17 +1692,20 @@ async def create_post(
             url = f"/posts/{title_slug}-{unique_id}"
             logger.info(f"📝 Generated unique URL for post: {url}")
 
+        # Reuse the post URL slug segment as canonical slug for deep links.
+        slug = url.rstrip('/').split('/')[-1] if '/' in url else re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:80]
+
         insert_query = """
             INSERT INTO articles
-                (title, summary, url, source, significance_score, published_date,
+                (title, summary, url, slug, source, significance_score, published_date,
                  author, keywords, content_type_id, category_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 4, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 4, %s)
             RETURNING id
         """
         now = datetime.now(timezone.utc)
         result = db.execute_query(
             insert_query,
-            (title, html_content, url, source, significance_score, now,
+            (title, html_content, url, slug, source, significance_score, now,
              author, keywords, category_id),
             fetch_one=True
         )

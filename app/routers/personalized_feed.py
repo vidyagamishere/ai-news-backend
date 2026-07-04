@@ -677,6 +677,7 @@ async def get_personalized_feed(
                 metadata = item.get('metadata', {})
                 article = Article(
                     id=item['id'],
+                    slug=item.get('slug'),
                     source=item.get('source'),
                     title=item.get('title'),
                     url=item.get('url'),

@@ -159,7 +159,7 @@ class ContentFilteringService:
         
         # Base query with joins for metadata
         base_query = """
-            SELECT DISTINCT a.id, a.title, a.summary, a.url, a.source,
+            SELECT DISTINCT a.id, a.slug, a.title, a.summary, a.url, a.source,
                    a.published_date, a.scraped_date, a.significance_score,
                    a.reading_time, a.image_url, a.keywords, a.content_hash,
                    ct.name as content_type_label,
@@ -358,6 +358,7 @@ class ContentFilteringService:
             query = """
                 SELECT DISTINCT
                     a.id,
+                    a.slug,
                     a.title,
                     a.summary,
                     a.content_hash,

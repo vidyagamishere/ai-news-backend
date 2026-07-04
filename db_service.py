@@ -9,6 +9,8 @@ import json
 import logging
 import string
 import traceback
+import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 from contextlib import contextmanager
@@ -127,6 +129,42 @@ class PostgreSQLService:
                 logger.debug(f"🔍 Failed params: {params}")
             raise e
     
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """Create URL-safe slug fragment from free text."""
+        if not text:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+        return normalized[:80]
+
+    def _build_article_slug(self, article_data: Dict[str, Any], url: str) -> str:
+        """
+        Build deterministic article slug using title + source + stable short suffix.
+        Suffix format: [mmdd-]hash6 to reduce collisions while staying readable.
+        """
+        title_part = self._slugify(article_data.get("title") or "untitled")
+        source_part = self._slugify(article_data.get("source") or "source")
+
+        date_part = None
+        published_date = article_data.get("published_date")
+        if isinstance(published_date, datetime):
+            date_part = published_date.strftime("%m%d")
+        elif isinstance(published_date, str) and published_date and published_date.lower() != "null":
+            try:
+                dt = datetime.fromisoformat(published_date.replace("Z", "+00:00"))
+                date_part = dt.strftime("%m%d")
+            except ValueError:
+                date_part = None
+
+        content_hash = article_data.get("content_hash")
+        if isinstance(content_hash, str) and content_hash.strip():
+            hash_part = content_hash[:6].lower()
+        else:
+            hash_part = hashlib.md5(url.encode("utf-8")).hexdigest()[:6]
+
+        suffix = f"{date_part}-{hash_part}" if date_part else hash_part
+        return f"{title_part}-{source_part}-{suffix}"[:120].strip("-")
+
     def initialize_database(self):
         """Initialize PostgreSQL database schema - COMMENTED OUT (handled manually)"""
         logger.info("🏗️ Database schema initialization skipped - handled manually by admin")
@@ -592,22 +630,26 @@ class PostgreSQLService:
             metadata = article_data.get('metadata', {})
             metadata_json = json.dumps(metadata) if metadata else None
 
+            # Generate stable slug once; on conflict we preserve existing slug.
+            generated_slug = article_data.get('slug') or self._build_article_slug(article_data, url)
+
             # --- 8. ✅ UPDATED: Insert New Article with Images ---
             insert_query = """
                 INSERT INTO articles (
-                    content_hash, title, summary, url, source, significance_score, published_date, scraped_date, 
+                    content_hash, title, summary, url, source, slug, significance_score, published_date, scraped_date, 
                     llm_processed, content_type_id, category_id, reading_time, author, complexity_level, 
                     updated_date, created_date, keywords, publisher_id,
                     image_url, image_source, is_trending, country, region, city, is_remote, metadata
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-                    %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s
                 ) ON CONFLICT (url) DO UPDATE SET
                     content_hash = EXCLUDED.content_hash,
                     title = EXCLUDED.title,
                     summary = EXCLUDED.summary,
                     source = EXCLUDED.source,
+                    slug = COALESCE(articles.slug, EXCLUDED.slug),
                     significance_score = EXCLUDED.significance_score,
                     published_date = EXCLUDED.published_date,
                     scraped_date = EXCLUDED.scraped_date,
@@ -637,6 +679,7 @@ class PostgreSQLService:
                 article_data.get('summary'),
                 url,
                 article_data.get('source'),
+                generated_slug,
                 article_data.get('significance_score'),
                 article_data.get('published_date'),
                 article_data.get('scraped_date'),
@@ -650,7 +693,7 @@ class PostgreSQLService:
                 article_data.get('created_date', datetime.now(timezone.utc)),
                 article_data.get('keywords', 'Generative AI, Technology'),  # Now a string instead of list
                 article_data.get('publisher_id'),  # Will be the created/found publisher_id
-                image_url,      
+                image_url,
                 image_source,
                 is_trending,
                 country,
