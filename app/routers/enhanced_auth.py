@@ -256,9 +256,19 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed_password: str) -> bool:
     """Verify password against hashed version"""
     try:
-        salt, password_hash = hashed_password.split(':')
-        return hashlib.sha256((password + salt).encode()).hexdigest() == password_hash
-    except ValueError:
+        # Current format: "salt:sha256"
+        if ':' in hashed_password:
+            salt, password_hash = hashed_password.split(':', 1)
+            return hashlib.sha256((password + salt).encode()).hexdigest() == password_hash
+
+        # Legacy support: bcrypt hashes from older auth flows
+        if hashed_password.startswith('$2a$') or hashed_password.startswith('$2b$') or hashed_password.startswith('$2y$'):
+            from passlib.context import CryptContext
+            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+            return pwd_context.verify(password, hashed_password)
+
+        return False
+    except Exception:
         return False
 
 
@@ -750,10 +760,10 @@ async def signin(
             user=user_response
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Signin failed: {str(e)}")
-        if "Invalid credentials" in str(e):
-            raise e
         raise HTTPException(status_code=500, detail="Signin failed")
 
 
